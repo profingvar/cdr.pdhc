@@ -259,3 +259,18 @@ class CambioDeliveryLog(db.Model):
     __table_args__ = (
         db.UniqueConstraint("ingest_raw_guid", "delivery_type", name="uq_delivery_raw_type"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase-1 platform-plan tables (FHIR per-type + history + sync_group +
+# cdr_audit_plan_miss + change_feed). Imported for side effect so SQLAlchemy
+# registers the tables on db.metadata.
+# ---------------------------------------------------------------------------
+from app.models import resources as _resources  # noqa: E402, F401
+from app.models.resources import (  # noqa: E402, F401
+    SyncGroup,
+    CdrAuditPlanMiss,
+    ChangeFeed,
+    live_model,
+    history_model,
+)

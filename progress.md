@@ -5,6 +5,11 @@
 Implementation in progress. Core service built 2026-04-10.
 15 tests passing (health, ingest, transformer, cambio).
 
+Platform-plan Phase 1 in flight (CDR completion). §1.1 schema migration
+done 2026-04-24 — adds 9 FHIR per-type live tables + 9 history tables +
+sync_group + cdr_audit_plan_miss + change_feed. Migration round-trips
+clean on fresh Postgres.
+
 ---
 
 ## Phase 1 — Foundation
@@ -75,3 +80,48 @@ Implementation in progress. Core service built 2026-04-10.
 - [ ] 10.a Documentation
 - [ ] 10.b Server preparation
 - [ ] 10.c Web deployment
+
+---
+
+## Platform-plan Phase 1 (CDR completion) — overlay on the local plan above
+
+Per `../plans/CDR_sim_dashboard_execution_plan.md` §1.
+
+### §1.1 Schema — DONE (2026-04-24)
+- [x] §1.1.a–c — per-type FHIR resource tables (patient, observation,
+  questionnaire_response, condition, medication_statement,
+  medication_request, allergy_intolerance, procedure, encounter,
+  diagnostic_report). Common columns + composite index
+  `(patient_guid, org_guid, code_canonical, effective_at)` + sync_group
+  index + org index + code index.
+- [x] §1.1.e — matching `*_history` tables, PK `(guid, version_id)`.
+- [x] §1.1.f — `version_id` column on every live row.
+- [x] §1.1.g — `sync_group` table.
+- [x] §1.1.h — `mapping_version` column on every resource.
+- [x] §1.1.i — `change_feed` table (also covers Phase 1.5 plumbing).
+- [x] §1.2.d.ii — `cdr_audit_plan_miss` table.
+- [ ] §1.1.d — `cdr_audit` event-detail append-only table is partially
+  covered by the existing `audit_log` table; verify column shape on
+  next pass.
+
+### §1.2 Ingest — pending
+
+Bundle endpoint, write-side canonicalisation through xlate→plan,
+dedup keys, version_id increment + history copy, ETag/If-Match,
+sync_group minting, mapping_version stamping.
+
+### §1.3 Query surface — pending
+
+FHIR Search with parameter coverage, $stats with materialised view,
+_has cohort, $everything, chained search, _include/_revinclude, vread,
+transaction Bundle endpoint, $lookup/$translate/$validate-code shims.
+
+### §1.5 Event backbone — change_feed table created (this commit);
+trigger inserts and `GET /events?since=` long-poll endpoint pending.
+
+## Known issues
+
+- Local dev DB at revision `1be600110381` (an orphan from before
+  ticket #78). Needs `flask db stamp 8aa2748e0139 && flask db upgrade`
+  before §1.2 work can run against it. The Phase 1.1 migration was
+  validated against a fresh `cdr_test_phase1` Postgres DB.
