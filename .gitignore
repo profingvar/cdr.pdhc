@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtualenvs (each release gets its own; never ship one)
+.venv/
+venv/
+cdr_app/venv/
+cdr_app/.venv/
+
+# Secrets — operator-managed per environment
+.env
+cdr_app/.env
+
+# Local logs and dev runtime
+logs/
+cdr_app/logs/
+*.log
+
+# pytest / tooling
+.pytest_cache/
+.coverage
+
+# Local results dirs (Rule 11 — kept locally, not committed)
+results/*/
+!results/.gitkeep
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# SQLite scratch
+*.sqlite
+*.sqlite3

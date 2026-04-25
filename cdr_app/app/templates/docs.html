@@ -1,0 +1,230 @@
+{% extends "base.html" %}
+{% block title %}Documentation{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Documentation</h1>
+    <p class="lead">Technical manual and API reference for cdr.pdhc</p>
+  </div>
+</div>
+
+<!-- Downloadable docs -->
+<div class="card mb-2">
+  <h2>Downloadable Documents</h2>
+  <table>
+    <thead>
+      <tr><th>Document</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for doc in docs %}
+      <tr>
+        <td>{{ doc.title }}</td>
+        <td><a href="{{ url_for('views.download_doc', filename=doc.filename) }}" class="btn btn-primary btn-sm">Download</a></td>
+      </tr>
+      {% endfor %}
+      {% if not docs %}
+      <tr><td colspan="2" class="text-muted">No downloadable documents.</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+<!-- Architecture -->
+<div class="card">
+  <h2>Architecture</h2>
+  <p>cdr.pdhc is the canonical clinical data repository for the PDHC platform. It receives normalised observations from gateway.pdhc and stores them in a three-layer architecture:</p>
+  <table>
+    <thead><tr><th>Layer</th><th>Table(s)</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Raw</strong></td><td><code>ingest_raw</code></td><td>Immutable payload archive with SHA-256 hash for deduplication</td></tr>
+      <tr><td><strong>Standard</strong></td><td><code>fhir_resources</code>, <code>openehr_compositions</code></td><td>Dual-format clinical data — FHIR R5 Observations and openEHR Compositions, cross-linked</td></tr>
+      <tr><td><strong>Canonical</strong></td><td><code>health_observations</code>, <code>activities</code></td><td>Query-optimised flat tables with metric, value, unit, concept_guid</td></tr>
+    </tbody>
+  </table>
+  <p class="mt-2">Supporting tables: <code>clinical_context</code> (provenance), <code>dedupe_registry</code>, <code>audit_log</code>, <code>loinc_archetype_map</code>, <code>service_keys</code>, <code>users</code>.</p>
+</div>
+
+<!-- Data Flow -->
+<div class="card">
+  <h2>Data Flow</h2>
+  <pre style="background:var(--code-bg);padding:0.75rem;border-radius:6px;overflow-x:auto;font-size:0.85em;">
+gateway.pdhc ──POST /api/v1/ingest──▶ cdr.pdhc
+                                        │
+         ┌──────────────────────────────┤
+         ▼                              ▼
+   1. Deduplicate (SHA-256)       2. Store raw (immutable)
+         │
+         ▼
+   3. Store/transform standard layer
+      ├── FHIR provided? Store + generate openEHR
+      └── openEHR provided? Store + generate FHIR
+         │
+         ▼
+   4. Store canonical (health_observations / activities)
+         │
+         ▼
+   5. Store clinical context (careplan, plandef, transaction)
+         │
+         ▼
+   6. Register in dedupe registry
+         │
+         ▼
+   7. Enqueue Cambio delivery (if concept-mapped)
+         │
+         ▼
+   8. Audit log
+  </pre>
+</div>
+
+<!-- FHIR↔openEHR Transformation -->
+<div class="card">
+  <h2>FHIR ↔ openEHR Transformation</h2>
+  <p>Bidirectional transformation using LOINC-to-archetype mapping. Currently 11 seed mappings:</p>
+  <table>
+    <thead><tr><th>LOINC</th><th>Metric</th><th>Archetype</th><th>Unit</th></tr></thead>
+    <tbody>
+      <tr><td>29463-7</td><td>body_weight_kg</td><td>body_weight.v2</td><td>kg</td></tr>
+      <tr><td>85354-9</td><td>blood_pressure_systolic</td><td>blood_pressure.v2</td><td>mmHg</td></tr>
+      <tr><td>8867-4</td><td>heart_rate_bpm</td><td>pulse.v2</td><td>/min</td></tr>
+      <tr><td>8310-5</td><td>body_temperature_c</td><td>body_temperature.v2</td><td>Cel</td></tr>
+      <tr><td>2708-6</td><td>spo2_percent</td><td>pulse_oximetry.v1</td><td>%</td></tr>
+      <tr><td>8302-2</td><td>body_height_cm</td><td>height.v2</td><td>cm</td></tr>
+      <tr><td>9279-1</td><td>respiratory_rate</td><td>respiration.v2</td><td>/min</td></tr>
+      <tr><td>39156-5</td><td>bmi</td><td>body_mass_index.v2</td><td>kg/m2</td></tr>
+      <tr><td>2339-0</td><td>blood_glucose_mmol</td><td>laboratory_test_result.v1</td><td>mmol/L</td></tr>
+      <tr><td>8280-0</td><td>waist_circumference_cm</td><td>waist_circumference.v2</td><td>cm</td></tr>
+      <tr><td>93832-4</td><td>sleep_hours</td><td>sleep.v0</td><td>h</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- API Reference -->
+<div class="card">
+  <h2>API Reference</h2>
+  <h3>Authentication</h3>
+  <p>Ingest endpoints require two headers:</p>
+  <table>
+    <thead><tr><th>Header</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>X-Service-Key</code></td><td>Shared secret for the source service</td></tr>
+      <tr><td><code>X-Source-Service</code></td><td>Service identifier (e.g. <code>gateway.pdhc</code>)</td></tr>
+    </tbody>
+  </table>
+
+  <h3 class="mt-2">Ingest</h3>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>POST</code></td><td><code>/api/v1/ingest</code></td><td>Single observation ingest. Returns 202 (accepted) or 200 (duplicate).</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/v1/ingest/batch</code></td><td>Batch ingest (max 100 items). Accepts <code>{"items": [...]}</code> or bare array.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 class="mt-2">Ingest payload</h3>
+  <pre style="background:var(--code-bg);padding:0.75rem;border-radius:6px;overflow-x:auto;font-size:0.85em;">{
+  "patient_guid": "uuid",
+  "source_type": "fhir",
+  "fhir_resource": { FHIR Observation JSON },
+  "openehr_composition": { openEHR Composition JSON },
+  "canonical": {
+    "table": "health_observations",
+    "metric": "body_weight_kg",
+    "value": 85.2,
+    "unit": "kg",
+    "source_type": "fhir",
+    "source_code": "29463-7",
+    "concept_guid": "uuid",
+    "effective_at": "2026-04-10T10:00:00Z"
+  },
+  "clinical_context": {
+    "transaction_guid": "uuid",
+    "careplan_guid": "uuid",
+    "plandef_guid": "uuid"
+  }
+}</pre>
+
+  <h3 class="mt-2">Query endpoints</h3>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/api/v1/fhir/metadata</code></td><td>FHIR CapabilityStatement</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/v1/fhir/Observation</code></td><td>Search by patient_guid, loinc_code</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/v1/fhir/Observation/&lt;guid&gt;</code></td><td>Read single FHIR resource</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/v1/openehr/composition</code></td><td>Search by patient_guid, archetype_id</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/v1/openehr/composition/&lt;guid&gt;</code></td><td>Read single composition</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/v1/canonical/&lt;table_name&gt;</code></td><td>Query health_observations or activities by patient_guid</td></tr>
+    </tbody>
+  </table>
+
+  <h3 class="mt-2">Cambio delivery</h3>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/api/v1/cambio/status</code></td><td>Delivery counts by status</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/v1/cambio/patient/&lt;guid&gt;</code></td><td>Patient mapping + delivery history</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/v1/cambio/retry</code></td><td>Retry all failed deliveries</td></tr>
+    </tbody>
+  </table>
+
+  <h3 class="mt-2">Health</h3>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/healthz</code></td><td>Health check (includes DB status)</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/v1/stats</code></td><td>Dashboard statistics (row counts)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- Cambio Sandbox -->
+<div class="card">
+  <h2>Cambio CDR Sandbox Integration</h2>
+  <p>Observations with a <code>concept_guid</code> referencing plan.pdhc.se are automatically queued for delivery to the Cambio Platform Innovation sandbox. The delivery worker runs every 60 seconds with exponential backoff retry (max 5 attempts).</p>
+  <h3>Delivery flow</h3>
+  <ol style="padding-left:1.5rem;">
+    <li>Ingest pipeline creates <code>cambio_delivery_log</code> entries (status: pending)</li>
+    <li>Worker ensures patient exists in Cambio (creates via FHIR Patient + openEHR EHR)</li>
+    <li>Worker delivers FHIR Observation via FHIR Gateway and openEHR Composition via xCDR</li>
+    <li>On success: status → delivered, cambio_resource_id stored</li>
+    <li>On failure: retry with backoff (10s, 20s, 40s, 80s, 160s). After 5 failures: status → failed</li>
+  </ol>
+  <p class="mt-2"><strong>Delivery scope:</strong> Only observations with canonical references to plan.pdhc.se concepts. Data without concept mappings is stored locally but not pushed upstream.</p>
+</div>
+
+<!-- Operations -->
+<div class="card">
+  <h2>Operations</h2>
+  <h3>Ports</h3>
+  <table>
+    <thead><tr><th>Port</th><th>Service</th></tr></thead>
+    <tbody>
+      <tr><td>9046</td><td>Flask / Gunicorn (API + frontend)</td></tr>
+      <tr><td>9047</td><td>PostgreSQL</td></tr>
+      <tr><td>9048–9049</td><td>Reserved</td></tr>
+    </tbody>
+  </table>
+
+  <h3 class="mt-2">Scripts</h3>
+  <table>
+    <thead><tr><th>Script</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>start.sh</code></td><td>Full cold start: venv, Docker DB, migrations, gunicorn</td></tr>
+      <tr><td><code>safe_restart.sh</code></td><td>Graceful restart: kill ports, pip install, migrate, restart gunicorn</td></tr>
+    </tbody>
+  </table>
+
+  <h3 class="mt-2">Environment variables</h3>
+  <table>
+    <thead><tr><th>Variable</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>DATABASE_URL</code></td><td>PostgreSQL connection string</td></tr>
+      <tr><td><code>AUTH_MODE</code></td><td><code>off</code> (dev) or <code>sso</code> (production)</td></tr>
+      <tr><td><code>SSO_BASE_URL</code></td><td>SSO service URL</td></tr>
+      <tr><td><code>GATEWAY_PDHC_SERVICE_KEY</code></td><td>Shared secret for gateway.pdhc ingest</td></tr>
+      <tr><td><code>CAMBIO_DELIVERY_ENABLED</code></td><td><code>true</code> to activate Cambio delivery worker</td></tr>
+      <tr><td><code>CAMBIO_CLIENT_ID</code> / <code>CAMBIO_CLIENT_SECRET</code></td><td>Cambio OAuth2 credentials</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endblock %}

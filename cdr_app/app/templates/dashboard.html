@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Clinical Data Repository</h1>
+    <p class="lead">Three-layer storage — FHIR R5 + openEHR dual-standard</p>
+  </div>
+</div>
+
+<div class="dash-grid">
+  <div class="dash-card">
+    <i data-lucide="database"></i>
+    <h2>Raw Ingests</h2>
+    <div class="count" id="cnt-raw">—</div>
+    <p>Immutable payloads received</p>
+  </div>
+  <div class="dash-card">
+    <i data-lucide="file-json"></i>
+    <h2>FHIR Resources</h2>
+    <div class="count" id="cnt-fhir">—</div>
+    <p>Observations stored</p>
+  </div>
+  <div class="dash-card">
+    <i data-lucide="file-text"></i>
+    <h2>openEHR Compositions</h2>
+    <div class="count" id="cnt-openehr">—</div>
+    <p>Compositions stored</p>
+  </div>
+  <div class="dash-card">
+    <i data-lucide="activity"></i>
+    <h2>Health Observations</h2>
+    <div class="count" id="cnt-canonical">—</div>
+    <p>Canonical records</p>
+  </div>
+  <div class="dash-card">
+    <i data-lucide="copy-check"></i>
+    <h2>Deduplications</h2>
+    <div class="count" id="cnt-dedup">—</div>
+    <p>Unique hashes tracked</p>
+  </div>
+  <div class="dash-card">
+    <i data-lucide="users"></i>
+    <h2>Patients</h2>
+    <div class="count" id="cnt-patients">—</div>
+    <p>Distinct patient GUIDs</p>
+  </div>
+</div>
+
+<hr class="section-break">
+
+<div class="grid-2">
+  <div class="card">
+    <h2>Cambio Delivery</h2>
+    <div class="detail-grid" id="cambio-stats">
+      <span class="detail-label">Pending</span><span class="detail-value" id="cambio-pending">—</span>
+      <span class="detail-label">Delivered</span><span class="detail-value" id="cambio-delivered">—</span>
+      <span class="detail-label">Failed</span><span class="detail-value" id="cambio-failed">—</span>
+      <span class="detail-label">Skipped</span><span class="detail-value" id="cambio-skipped">—</span>
+      <span class="detail-label">Patients mapped</span><span class="detail-value" id="cambio-patients">—</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>API Endpoints</h2>
+    <table>
+      <tr><td><code>POST /api/v1/ingest</code></td><td>Single ingest</td></tr>
+      <tr><td><code>POST /api/v1/ingest/batch</code></td><td>Batch ingest (max 100)</td></tr>
+      <tr><td><code>GET /api/v1/fhir/Observation</code></td><td>FHIR search</td></tr>
+      <tr><td><code>GET /api/v1/openehr/composition</code></td><td>openEHR search</td></tr>
+      <tr><td><code>GET /api/v1/canonical/{table}</code></td><td>Canonical query</td></tr>
+      <tr><td><code>GET /api/v1/cambio/status</code></td><td>Delivery status</td></tr>
+    </table>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadStats() {
+  try {
+    const r = await fetch('/api/v1/stats');
+    if (!r.ok) return;
+    const d = await r.json();
+    document.getElementById('cnt-raw').textContent = d.ingest_raw || 0;
+    document.getElementById('cnt-fhir').textContent = d.fhir_resources || 0;
+    document.getElementById('cnt-openehr').textContent = d.openehr_compositions || 0;
+    document.getElementById('cnt-canonical').textContent = d.health_observations || 0;
+    document.getElementById('cnt-dedup').textContent = d.dedupe_registry || 0;
+    document.getElementById('cnt-patients').textContent = d.patients || 0;
+  } catch(e) {}
+  try {
+    const r2 = await fetch('/api/v1/cambio/status');
+    if (!r2.ok) return;
+    const c = await r2.json();
+    document.getElementById('cambio-pending').textContent = c.pending || 0;
+    document.getElementById('cambio-delivered').textContent = c.delivered || 0;
+    document.getElementById('cambio-failed').textContent = c.failed || 0;
+    document.getElementById('cambio-skipped').textContent = c.skipped || 0;
+    document.getElementById('cambio-patients').textContent = c.patients_mapped || 0;
+  } catch(e) {}
+}
+loadStats();
+</script>
+{% endblock %}

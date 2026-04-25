@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}CDR{% endblock %} — cdr.pdhc</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/pdhc.css') }}">
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+  <nav>
+    <div style="display:flex;align-items:center;gap:0.6rem;">
+      <a class="brand" href="https://www.pdhc.se/services.html" style="opacity:0.75;font-size:0.85em;">PDHC</a>
+      <span style="color:rgba(255,255,255,0.3);">/</span>
+      <a class="brand" href="/">CDR</a>
+    </div>
+    <ul class="nav-links">
+      <li><a href="/" {% if request.path == '/' %}class="active"{% endif %}>Dashboard</a></li>
+      <li><a href="/docs" {% if request.path == '/docs' %}class="active"{% endif %}>Docs</a></li>
+      <li><a href="/auth/logout">Logout</a></li>
+    </ul>
+  </nav>
+
+  <div class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+    <div class="flash flash-{{ cat }}">{{ msg }}</div>
+    {% endfor %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </div>
+
+  <script>lucide.createIcons();</script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
