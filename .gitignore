@@ -34,3 +34,6 @@ results/*/
 # SQLite scratch
 *.sqlite
 *.sqlite3
+
+# R session history
+.Rhistory
