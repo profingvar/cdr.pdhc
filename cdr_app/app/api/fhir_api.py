@@ -1,10 +1,20 @@
-"""FHIR R5 read API and CapabilityStatement."""
+"""FHIR CapabilityStatement for cdr.pdhc.
+
+The actual resource read / search / vread / $everything / $stats / terminology
+endpoints live in ``fhir_read.py`` and the create / update / Bundle endpoints
+live in ``fhir_write.py``. This module is now just the metadata surface.
+"""
 from datetime import datetime, timezone
-from flask import Blueprint, request, jsonify
-from app import db
-from app.models import FhirResource
+from flask import Blueprint, jsonify
 
 bp = Blueprint("fhir", __name__)
+
+
+_RESOURCE_TYPES = [
+    "Patient", "Observation", "QuestionnaireResponse", "Condition",
+    "MedicationStatement", "MedicationRequest", "AllergyIntolerance",
+    "Procedure", "Encounter", "DiagnosticReport",
+]
 
 
 @bp.get("/metadata")
@@ -12,57 +22,75 @@ def capability_statement():
     return jsonify({
         "resourceType": "CapabilityStatement",
         "id": "cdr-pdhc",
+        "url": "https://cdr.pdhc.se/fhir/metadata",
         "status": "active",
         "kind": "instance",
         "date": datetime.now(timezone.utc).isoformat(),
+        "publisher": "PDHC platform",
+        "software": {"name": "cdr.pdhc", "version": "0.2.0"},
         "fhirVersion": "5.0.0",
         "format": ["json"],
         "rest": [{
             "mode": "server",
+            "documentation": (
+                "Common Clinical Data Repository. Per-type FHIR R5 tables, "
+                "transaction Bundle endpoint, $everything per Patient, "
+                "$stats per Observation code, terminology operations proxied "
+                "to termbank.pdhc / xlate.pdhc / plan.pdhc."
+            ),
             "resource": [
                 {
-                    "type": "Observation",
-                    "interaction": [{"code": "read"}, {"code": "search-type"}],
+                    "type": rt,
+                    "interaction": [
+                        {"code": "read"},
+                        {"code": "vread"},
+                        {"code": "search-type"},
+                        {"code": "create"},
+                        {"code": "update"},
+                        {"code": "history-instance"},
+                    ],
                     "searchParam": [
                         {"name": "patient", "type": "reference"},
                         {"name": "code", "type": "token"},
                         {"name": "date", "type": "date"},
+                        {"name": "_tag", "type": "token"},
+                        {"name": "_id", "type": "token"},
                         {"name": "_count", "type": "number"},
                     ],
+                }
+                for rt in _RESOURCE_TYPES
+            ] + [
+                {
+                    "type": "CodeSystem",
+                    "operation": [{
+                        "name": "lookup",
+                        "definition": "http://hl7.org/fhir/OperationDefinition/CodeSystem-lookup",
+                    }],
+                },
+                {
+                    "type": "ConceptMap",
+                    "operation": [{
+                        "name": "translate",
+                        "definition": "http://hl7.org/fhir/OperationDefinition/ConceptMap-translate",
+                    }],
+                },
+                {
+                    "type": "ValueSet",
+                    "operation": [{
+                        "name": "validate-code",
+                        "definition": "http://hl7.org/fhir/OperationDefinition/ValueSet-validate-code",
+                    }],
+                },
+            ],
+            "operation": [
+                {
+                    "name": "everything",
+                    "definition": "http://hl7.org/fhir/OperationDefinition/Patient-everything",
+                },
+                {
+                    "name": "stats",
+                    "definition": "http://hl7.org/fhir/OperationDefinition/Observation-stats",
                 },
             ],
         }],
     }), 200
-
-
-@bp.get("/Observation")
-def search_observations():
-    patient = request.args.get("patient", "").strip()
-    code = request.args.get("code", "").strip()
-    count = min(int(request.args.get("_count", 100)), 500)
-
-    if not patient:
-        return jsonify({"error": "patient parameter required"}), 400
-
-    q = FhirResource.query.filter_by(patient_guid=patient, resource_type="Observation")
-    if code:
-        q = q.filter_by(loinc_code=code)
-    q = q.order_by(FhirResource.effective_at.desc()).limit(count)
-    rows = q.all()
-
-    bundle = {
-        "resourceType": "Bundle",
-        "type": "searchset",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "total": len(rows),
-        "entry": [{"resource": r.resource_json} for r in rows],
-    }
-    return jsonify(bundle), 200
-
-
-@bp.get("/Observation/<guid>")
-def read_observation(guid):
-    row = FhirResource.query.filter_by(guid=guid, resource_type="Observation").first()
-    if not row:
-        return jsonify({"error": "not found"}), 404
-    return jsonify(row.resource_json), 200

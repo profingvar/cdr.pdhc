@@ -127,14 +127,35 @@ Per `../plans/CDR_sim_dashboard_execution_plan.md` §1.
 - [x] §1.2.j — mapping_version stamped on every resource.
 - 16 new pytest tests pass; 31/31 total.
 
-### §1.3 Query surface — pending
+### §1.3 Query surface — DONE (2026-04-24)
+- [x] §1.3.a — `GET /api/v1/fhir/<Type>` Search with patient / code /
+  date / _id / _tag / _count.
+- [x] §1.3.b–c — `GET /Observation/$stats` returns
+  `{n, min, max, mean, sd, p25, p50, p75, histogram[]}` (live
+  aggregation; materialised-view caching deferred to perf-tuning pass).
+- [x] §1.3.d — `_has:Observation:patient:code=<code>` reverse-chain.
+- [x] §1.3.e — `GET /Patient/<guid>/$everything` with `_since`,
+  `_type`, `_count`. Org-scoped via Rule 24.
+- [x] §1.3.f — chained search: `Observation?patient.identifier=...`
+  (and `subject.identifier`).
+- [x] §1.3.g — `_include` (e.g. `Observation:patient`) and
+  `_revinclude` (e.g. `Observation:patient` against Patient search).
+- [x] §1.3.h — `GET /<Type>/<guid>/_history` (version list) and
+  `GET /<Type>/<guid>/_history/<vid>` (vread).
+- [x] §1.3.i — `POST /api/v1/fhir/Bundle` covered by §1.2.
+- [x] §1.3.j — terminology shims:
+    - `POST /CodeSystem/$lookup` → termbank.pdhc
+    - `POST /ConceptMap/$translate` → xlate.pdhc
+    - `POST /ValueSet/$validate-code` → plan.pdhc
+- 24 new tests in `test_fhir_read.py`; 55/55 total.
 
-FHIR Search with parameter coverage, $stats with materialised view,
-_has cohort, $everything, chained search, _include/_revinclude, vread,
-transaction Bundle endpoint, $lookup/$translate/$validate-code shims.
-
-### §1.5 Event backbone — change_feed table created (this commit);
-trigger inserts and `GET /events?since=` long-poll endpoint pending.
+### §1.5 Event backbone — DONE (2026-04-24)
+- [x] `change_feed` table created in §1.1.
+- [x] Write-path inserts a `change_feed` row on every create / update
+  (§1.2); no DB triggers needed since we own the writer.
+- [x] `GET /api/v1/fhir/events?since=&_count=&resource_type=` — pull-based
+  long-poll surface for sibling services (dashboard, simulator, other
+  CDRs). Org-scoped per Rule 24.
 
 ## Known issues
 

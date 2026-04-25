@@ -59,13 +59,14 @@ def create_app(config_override=None):
     app.register_blueprint(views_bp)
 
     from .api import (
-        health_bp, ingest_bp, fhir_bp, fhir_write_bp, openehr_bp,
-        canonical_bp, cambio_bp, stats_bp,
+        health_bp, ingest_bp, fhir_bp, fhir_write_bp, fhir_read_bp,
+        openehr_bp, canonical_bp, cambio_bp, stats_bp,
     )
     app.register_blueprint(health_bp)
     app.register_blueprint(ingest_bp, url_prefix="/api/v1")
     app.register_blueprint(fhir_bp, url_prefix="/api/v1/fhir")
     app.register_blueprint(fhir_write_bp, url_prefix="/api/v1/fhir")
+    app.register_blueprint(fhir_read_bp, url_prefix="/api/v1/fhir")
     app.register_blueprint(openehr_bp, url_prefix="/api/v1/openehr")
     app.register_blueprint(canonical_bp, url_prefix="/api/v1/canonical")
     app.register_blueprint(cambio_bp, url_prefix="/api/v1/cambio")
