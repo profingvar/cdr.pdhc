@@ -104,11 +104,28 @@ Per `../plans/CDR_sim_dashboard_execution_plan.md` §1.
   covered by the existing `audit_log` table; verify column shape on
   next pass.
 
-### §1.2 Ingest — pending
-
-Bundle endpoint, write-side canonicalisation through xlate→plan,
-dedup keys, version_id increment + history copy, ETag/If-Match,
-sync_group minting, mapping_version stamping.
+### §1.2 Ingest — DONE (2026-04-24)
+- [x] §1.2.a — `POST /api/v1/fhir/Bundle` (transaction + batch dispatch).
+- [x] §1.2.b — `POST /api/v1/fhir/<Type>` per-resource endpoints.
+- [x] §1.2.c — write-side canonicalisation step 1 (xlate.pdhc /translate
+  via `app/services/xlate_client.py`).
+- [x] §1.2.d — step 2 (plan.pdhc $validate-code via
+  `app/services/plan_client.py`); rewrites `coding[]` so the canonical
+  is at index 0 with foreign codings preserved.
+- [x] §1.2.d.i — xlate miss → 422 + xlate_miss OperationOutcome with
+  `issue.location`.
+- [x] §1.2.d.ii — plan miss → 422 + plan_miss OperationOutcome and
+  `cdr_audit_plan_miss` upsert (seen_count, first_seen_at, last_seen_at,
+  last_request_id).
+- [x] §1.2.e — dedup keys per resource type
+  (Observation/QR/Condition/MedStmt/MedReq/Encounter/Procedure/AllergyIntol/DxReport/Patient).
+- [x] §1.2.f — provenance stamping in `meta.source / .tag / .security`.
+- [x] §1.2.g — history copy on update + version_id increment.
+- [x] §1.2.h — ETag (`W/"<n>"`) on every read, If-Match required for
+  PUT, returns 412 on mismatch.
+- [x] §1.2.i — sync_group_id minted on every write.
+- [x] §1.2.j — mapping_version stamped on every resource.
+- 16 new pytest tests pass; 31/31 total.
 
 ### §1.3 Query surface — pending
 

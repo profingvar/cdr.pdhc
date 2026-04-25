@@ -390,7 +390,14 @@ class ChangeFeed(db.Model):
     """
     __tablename__ = "change_feed"
 
-    seq = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
+    # BigInteger on Postgres (production scale) but Integer on SQLite where
+    # only INTEGER PRIMARY KEY autoincrements via ROWID. The variant keeps
+    # the in-memory test fixture working without ad-hoc seq fudging.
+    seq = db.Column(
+        db.BigInteger().with_variant(db.Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     event_type = db.Column(db.String(32), nullable=False)  # 'create' | 'update' | 'delete'
     resource_type = db.Column(db.String(64), nullable=False)
     resource_guid = db.Column(db.String(36), nullable=False)
