@@ -1,0 +1,35 @@
+# Suggested diff for ~/T7_sidewinder/server_backup_all.sh on miserver.
+#
+# Adds pg_dump for all five CDR instance DBs. Operator applies and
+# tests against a throwaway directory before the next regular backup
+# window.
+#
+# The script is server-local; this is a draft. Adjust paths if the
+# server's compose-project naming has drifted.
+
+# Append to the body of server_backup_all.sh, alongside the other
+# pg_dumps:
+
+for n in 1 2 3 4 5; do
+    container="cdr_pdhc_${n}_db"
+    out="$BACKUP_DIR/cdr${n}_db_dump.pgdump"
+
+    if ! docker ps --format '{{.Names}}' | grep -qx "$container"; then
+        echo "skip cdr${n}: container $container not running" >&2
+        continue
+    fi
+
+    docker exec "$container" pg_dump \
+        -U cdr_user -d cdr_db \
+        --format=custom \
+        --no-owner \
+        --no-acl \
+        > "$out"
+
+    if [[ -s "$out" ]]; then
+        echo "ok cdr${n} → $out  ($(wc -c < "$out") bytes)"
+    else
+        echo "FAIL cdr${n}: empty dump file $out" >&2
+        rm -f "$out"
+    fi
+done

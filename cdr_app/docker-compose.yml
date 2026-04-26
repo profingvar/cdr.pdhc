@@ -1,13 +1,31 @@
+# cdr.pdhc compose — parametrised so one file deploys all 5 CDR
+# instances. Each instance gets its own:
+#   - COMPOSE_PROJECT_NAME — distinct compose project (=> distinct
+#     container/network/volume namespaces)
+#   - CDR_INSTANCE — short label (cdr1 / cdr2 / ...) used in container
+#     names so `docker ps` shows what's what
+#   - APP_PORT / DB_PORT — port pair from the platform port plan
+#     (CDR1=9046/9045, CDR2=9146/9145, CDR3=9246/9245, CDR4=9346/9345,
+#     CDR5=9446/9445). Separated by 100 so Rule-16 kill-own-ports
+#     scripts cannot reach a sibling (Rule 22).
+#   - DB_VOLUME — explicit named volume so `docker volume ls` shows
+#     five distinct pgdata volumes.
+#
+# `deploy/stamp.sh N` (1..5) generates the matching `.env` for the
+# instance and is the recommended way to bring up a new one.
+#
+# Local-dev backwards compatibility: defaults match the existing CDR1
+# local-dev mapping (DB on 9047 historically) when env is empty.
 services:
   db:
     image: postgres:16
-    container_name: cdr_pdhc_db
+    container_name: ${CDR_INSTANCE:-cdr_pdhc}_db
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-cdr_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cdr_pass}
       POSTGRES_DB: ${POSTGRES_DB:-cdr_db}
     ports:
-      - "127.0.0.1:9047:5432"
+      - "127.0.0.1:${DB_PORT:-9047}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -18,12 +36,12 @@ services:
 
   app:
     build: .
-    container_name: cdr_pdhc_app
+    container_name: ${CDR_INSTANCE:-cdr_pdhc}_app
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-cdr_user}:${POSTGRES_PASSWORD:-cdr_pass}@db:5432/${POSTGRES_DB:-cdr_db}
     ports:
-      - "9046:9046"
+      - "127.0.0.1:${APP_PORT:-9046}:${APP_PORT:-9046}"
     depends_on:
       db:
         condition: service_healthy
@@ -32,3 +50,4 @@ services:
 
 volumes:
   pgdata:
+    name: ${DB_VOLUME:-cdr_pdhc_pgdata}

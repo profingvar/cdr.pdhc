@@ -157,6 +157,41 @@ Per `../plans/CDR_sim_dashboard_execution_plan.md` §1.
   long-poll surface for sibling services (dashboard, simulator, other
   CDRs). Org-scoped per Rule 24.
 
+### §3.1 Multi-instance compose — DONE (2026-04-26)
+- [x] §3.1.a — `cdr_app/docker-compose.yml` parametrised on
+  COMPOSE_PROJECT_NAME / CDR_INSTANCE / APP_PORT / DB_PORT / DB_VOLUME.
+  Defaults match local-dev so nothing breaks for existing workflows.
+- [x] §3.1.b — `deploy/stamp.sh N` emits `.env` for instance N (1..5);
+  port-block computed from N (no operator math required).
+- [x] §3.1.c — port blocks documented in `deploy/README.md` table:
+  9046/9045, 9146/9145, 9246/9245, 9346/9345, 9446/9445.
+- [x] §3.1.d — per-instance `shared/` layout described.
+
+### §3.2 SSO client registration — operator action (pending)
+Documented in `deploy/README.md`. Each instance N needs
+`SSO_CLIENT_ID_CDR{N}` / `SSO_CLIENT_SECRET_CDR{N}` in
+`sso.pdhc/.env` plus `https://cdr{N}.pdhc.se/auth/callback` in
+`ALLOWED_CALLBACK_URLS`.
+
+### §3.3 Reverse-proxy server blocks — operator action (pending)
+Each instance needs an nginx server block proxying
+`cdr{N}.pdhc.se → 127.0.0.1:{APP_PORT}`. Same TLS chain as the rest
+of pdhc.se.
+
+### §3.4 Seeding runs — DONE (locally; needs live CDRs to actually run)
+- Profiles authored in sim.pdhc: `cohort_{nord,syd,vast,ost,mitt}.yaml`.
+- `sim.pdhc/seed_all.sh` drives the five runs; SEEDING.md in
+  sim.pdhc captures the audit trail.
+
+### §3.5 Backups — diff drafted (operator applies on miserver)
+- `deploy/server_backup_all.diff` shows the change to add
+  `cdr_pdhc_{1..5}_db` pg_dumps to `server_backup_all.sh`.
+
+### §3.6 Phase 3 tests
+- Smoke / isolation / auth / seeding-validation / backup-restore
+  tests are server-side and operator-collaborative; they are not
+  drafted as pytest because they need real running instances.
+
 ## Known issues
 
 - Local dev DB at revision `1be600110381` (an orphan from before
