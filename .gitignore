@@ -37,3 +37,4 @@ results/*/
 
 # R session history
 .Rhistory
+deploy/instances/
