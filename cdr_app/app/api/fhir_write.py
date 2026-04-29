@@ -131,6 +131,22 @@ def _write_one(fhir: dict, ctx: WriteContext, *,
     # status == ok
     rewritten = result.rewritten or fhir
     ctx.primary_canonical_uri = result.primary_canonical_uri
+    # FHIR R5 "update as create" (PUT-by-id semantics): when the body
+    # carries an `id` and the caller didn't pass an explicit
+    # update_by_guid, route through the update-by-guid path so the
+    # writer upserts under that id (insert-if-missing, version-bump if
+    # present) rather than minting a new UUID. Required for sim
+    # provenance — every Observation/Condition references
+    # Patient/<sim_guid>, and sim re-emits the same logical fact across
+    # daily bundles using a stable content-addressed id, so we MUST
+    # upsert by id or the second occurrence trips the unique constraint
+    # on the per-type guid column. Applies to direct POSTs and Bundle
+    # entries (sim's bundles use `request.method=PUT`, but the
+    # dispatcher previously dropped that and forced POST semantics).
+    if resource_id is None and update_by_guid is None:
+        body_id = rewritten.get("id")
+        if isinstance(body_id, str) and body_id:
+            update_by_guid = body_id
     try:
         outcome = write_resource(
             rewritten, ctx,

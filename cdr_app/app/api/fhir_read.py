@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import requests
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy import and_, or_
 
 from app import db
@@ -63,21 +63,32 @@ def _operation_outcome(severity: str, code: str, text: str) -> dict:
 
 
 def _org_filter(query, Live, *, request_args=None):
-    """Apply Rule 24 org-scoping. Admins see all (header X-Is-Admin=1);
-    non-admins see only orgs in the X-Org-Guids header (comma-separated).
+    """Apply Rule 24 org-scoping.
 
-    For local-dev / tests with AUTH_MODE=off, we accept the headers as the
-    SSO blob's surrogates. The production wiring lives in app.auth and
-    will populate these from the SSO access blob.
+    Authoritative source is the SSO / service-key access blob loaded by
+    ``app.auth.install_request_loader`` into ``g.access_blob``:
+        - ``is_su_admin = True``  → bypass scoping (admin sees all).
+        - ``organization_ids``    → scope to that set.
+    Legacy ``X-Is-Admin`` / ``X-Org-Guids`` headers are still honoured
+    as a fallback for local-dev callers and the older test fixtures.
     """
+    blob = getattr(g, "access_blob", None) or {}
+    if blob.get("is_su_admin"):
+        return query
+    org_ids = blob.get("organization_ids")
+    if isinstance(org_ids, list) and org_ids:
+        return query.filter(Live.org_guid.in_(org_ids))
+
+    # Legacy header path
     if request.headers.get("X-Is-Admin") == "1":
         return query
-    org_guids = request.headers.get("X-Org-Guids", "").strip()
-    if not org_guids:
-        # Nothing to scope by — treat as "no orgs" so the user sees nothing.
-        return query.filter(Live.org_guid == "__no_org__")
-    orgs = [g.strip() for g in org_guids.split(",") if g.strip()]
-    return query.filter(Live.org_guid.in_(orgs))
+    org_guids_hdr = request.headers.get("X-Org-Guids", "").strip()
+    if org_guids_hdr:
+        orgs = [s.strip() for s in org_guids_hdr.split(",") if s.strip()]
+        return query.filter(Live.org_guid.in_(orgs))
+
+    # Nothing to scope by — non-admin user with no orgs sees nothing.
+    return query.filter(Live.org_guid == "__no_org__")
 
 
 # ---------------------------------------------------------------------------
@@ -251,8 +262,12 @@ def search(resource_type: str):
         rows = [r for r in rows if _has_tag(r.meta_tag or [], tag_arg)]
         return _bundle_searchset(rows, resource_type, with_includes=False)
 
-    # _count + sort (default to most recent first by effective_at)
-    count = min(int(request.args.get("_count", 100)), 500)
+    # _count + sort (default to most recent first by effective_at).
+    # Cap raised from 500 → 30000 (2026-04-28 F1 data-shape) so the
+    # nurse AGP can read a full 90-day CGM-raw window (~26k points)
+    # in one fetch. Gunicorn's 120s timeout + nginx proxy_buffering
+    # off (Block B') comfortably handle 30k-row responses.
+    count = min(int(request.args.get("_count", 100)), 30000)
     if hasattr(Live, "effective_at"):
         q = q.order_by(Live.effective_at.desc().nullslast())
     q = q.limit(count)
@@ -286,17 +301,19 @@ def _filter_patients_by_identifier(Patient, ident_value: str):
 
 
 def _filter_by_code(q, Live, code_arg: str):
-    """``code`` may be ``system|code``, ``url|code``, or just ``code``."""
+    """``code`` may be ``system|code``, ``url|code``, or just ``code``.
+
+    When the caller supplies the system, the equality match against the
+    indexed `code_canonical` column is enough — adding a `LIKE '%/<code>'`
+    OR-fallback forces a sequential scan on the per-type tables (2M+
+    rows on the demo CDRs), which made `$stats` take 4 s+ and timed out
+    the dashboard's 2 s fanout. The bare-code path keeps the LIKE since
+    no equality form is available."""
     parts = code_arg.split("|", 1)
     if len(parts) == 2:
         system, code = parts
-        # Look for the canonical URI built from system+code, OR the bare code
-        # in code_canonical's last segment.
         canonical_with_system = f"{system.rstrip('/')}/{code}"
-        return q.filter(or_(
-            Live.code_canonical == canonical_with_system,
-            Live.code_canonical.like(f"%/{code}"),
-        ))
+        return q.filter(Live.code_canonical == canonical_with_system)
     return q.filter(Live.code_canonical.like(f"%/{parts[0]}"))
 
 
@@ -724,11 +741,17 @@ def events():
     q = db.session.query(ChangeFeed).filter(ChangeFeed.seq > since)
     if type_filter:
         q = q.filter(ChangeFeed.resource_type == type_filter)
-    if request.headers.get("X-Is-Admin") != "1":
-        org_guids = request.headers.get("X-Org-Guids", "").strip()
-        if org_guids:
-            orgs = [g.strip() for g in org_guids.split(",") if g.strip()]
-            q = q.filter(ChangeFeed.org_guid.in_(orgs))
+
+    blob = getattr(g, "access_blob", None) or {}
+    if not blob.get("is_su_admin") and request.headers.get("X-Is-Admin") != "1":
+        org_ids = blob.get("organization_ids") or []
+        if not org_ids:
+            org_ids = [
+                s.strip() for s in request.headers.get("X-Org-Guids", "").split(",")
+                if s.strip()
+            ]
+        if org_ids:
+            q = q.filter(ChangeFeed.org_guid.in_(org_ids))
         else:
             q = q.filter(False)
     q = q.order_by(ChangeFeed.seq.asc()).limit(count)

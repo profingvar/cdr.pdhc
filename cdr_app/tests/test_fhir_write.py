@@ -285,6 +285,23 @@ def test_provenance_stamped(client, fake_canon):
     assert any(s.get("display") == "org-rumi" for s in sec)
 
 
+def test_post_preserves_client_supplied_id(client, fake_canon):
+    """FHIR R5 'create with client-supplied id': POST body's `id` is
+    persisted as the row guid. Required so sim's Patient.id matches the
+    patient_guid carried on every Observation/Condition reference."""
+    body = _hba1c_body()
+    body["id"] = "11111111-2222-3333-4444-555555555555"
+    resp = _post_observation(client, body)
+    assert resp.status_code == 201
+    out = resp.get_json()
+    assert out["id"] == "11111111-2222-3333-4444-555555555555"
+
+    Obs = live_model("Observation")
+    rows = Obs.query.all()
+    assert len(rows) == 1
+    assert rows[0].guid == "11111111-2222-3333-4444-555555555555"
+
+
 def test_integer_patient_rejected(client, fake_canon):
     body = _hba1c_body(patient="42")  # numeric — Rule 18 violation
     resp = _post_observation(client, body)
