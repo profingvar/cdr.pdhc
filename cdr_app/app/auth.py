@@ -103,11 +103,64 @@ def _public_path(path: str) -> bool:
     )
 
 
+# Service-key auth: trusted sibling services may write FHIR via
+# /api/v1/fhir/* and read via /api/v1/canonical/* without an SSO
+# session. Header pair: X-Source-Service + X-Service-Key.
+KNOWN_FHIR_SERVICES = {
+    "sim.pdhc":       "SIM_PDHC_SERVICE_KEY",
+    "dashboard.pdhc": "DASHBOARD_PDHC_SERVICE_KEY",
+}
+
+
+def _service_key_outcome(app):
+    """None = no headers (fall through), True = valid, False = bad."""
+    source = request.headers.get("X-Source-Service", "").strip()
+    key = request.headers.get("X-Service-Key", "").strip()
+    if not source and not key:
+        return None
+    if not source or not key:
+        return False
+    cfg_var = KNOWN_FHIR_SERVICES.get(source)
+    if not cfg_var:
+        return False
+    expected = app.config.get(cfg_var, "")
+    if not expected or key != expected:
+        return False
+    g.source_service = source
+    return True
+
+
+def _service_blob(source_service: str) -> dict:
+    """Synthetic access blob for service-key auth path. Marks the
+    request as SU-equivalent (organisation-blind) so Rule-24 org
+    scoping does not block sim's writes — tagged so downstream code can
+    distinguish service writes from human users."""
+    return {
+        "user_guid": f"00000000-0000-0000-0000-service-{source_service[:8]}",
+        "email": f"service:{source_service}",
+        "display_name": f"service:{source_service}",
+        "user_type": "service",
+        "is_su_admin": True,
+        "effective_phases": ["analysis", "ingestion"],
+        "organization_ids": [],
+        "service_source": source_service,
+    }
+
+
 def install_request_loader(app):
     @app.before_request
     def _loader():
         if _public_path(request.path):
             return None
+        sk = _service_key_outcome(app)
+        if sk is True:
+            blob = _service_blob(g.source_service)
+            g.access_blob = blob
+            g.current_user = _blob_to_user(blob)
+            return None
+        if sk is False:
+            from flask import jsonify
+            return jsonify({"error": "Invalid service credentials"}), 403
         mode = app.config.get("AUTH_MODE", "off")
         if mode == "off":
             g.access_blob = _DEV_BLOB

@@ -42,6 +42,19 @@ def create_app(config_override=None):
     # Service keys for inbound from gateways
     app.config["GATEWAY_PDHC_SERVICE_KEY"] = os.environ.get("GATEWAY_PDHC_SERVICE_KEY", "")
     app.config["TWOGATE_PDHC_SERVICE_KEY"] = os.environ.get("TWOGATE_PDHC_SERVICE_KEY", "")
+    app.config["SIM_PDHC_SERVICE_KEY"] = os.environ.get("SIM_PDHC_SERVICE_KEY", "")
+    app.config["DASHBOARD_PDHC_SERVICE_KEY"] = os.environ.get("DASHBOARD_PDHC_SERVICE_KEY", "")
+
+    # Canonicalisation: when sim emits FHIR resources whose
+    # coding[0].system = https://plan.pdhc.se/Concept, the canonicaliser
+    # short-circuits the xlate hop and trusts plan.pdhc as the authority.
+    # STRICT_CANONICALISATION=false additionally relaxes the plan-validate
+    # step on transient unreachability so seeding doesn't deadlock if
+    # plan.pdhc is briefly unreachable.
+    app.config["PLAN_BASE_URL"] = os.environ.get("PLAN_BASE_URL", "")
+    app.config["STRICT_CANONICALISATION"] = (
+        os.environ.get("STRICT_CANONICALISATION", "true").lower() in ("true", "1", "yes")
+    )
 
     if config_override:
         app.config.update(config_override)

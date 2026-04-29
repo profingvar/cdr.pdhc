@@ -43,6 +43,7 @@ from app.services.plan_client import PlanClient, PlanUnreachable, parse_canonica
 log = logging.getLogger(__name__)
 
 TERMBANK_PREFIX = "https://termbank.pdhc.se/"
+PLAN_CONCEPT_SYSTEM = "https://plan.pdhc.se/Concept"
 
 
 @dataclass
@@ -93,7 +94,10 @@ _CODE_PATHS: dict[str, list[str]] = {
     "MedicationRequest": ["medicationCodeableConcept"],
     "AllergyIntolerance": ["code"],
     "Procedure": ["code"],
-    "Encounter": ["class"],
+    # Encounter.class is the FHIR-structural coding (HL7 v3-ActCode —
+    # ambulatory / inpatient / emergency); we don't canonicalise it.
+    # Encounter.code holds the clinical-concept reference.
+    "Encounter": ["code"],
     "DiagnosticReport": ["code"],
     "QuestionnaireResponse": [],  # references a Questionnaire by canonical, no CodeableConcept on the body
     "Patient": [],  # no canonical concept on Patient
@@ -179,6 +183,38 @@ class Canonicaliser:
             return cc, None, []
 
         misses: list[CodeMiss] = []
+
+        # First-pass — plan.pdhc Concept GUID indirection. Sim emits
+        # coding[].system = https://plan.pdhc.se/Concept and the code is
+        # the Concept GUID. plan.pdhc IS the canonical authority, so we
+        # resolve once via /api/v1/concepts/<guid> and compose the
+        # termbank-style canonical URI from canonical_lib + refnumber.
+        # No xlate hop, no $validate-code (plan.pdhc would only have
+        # given us the GUID if the Concept is adopted).
+        for i, coding in enumerate(codings):
+            if coding.get("system") != PLAN_CONCEPT_SYSTEM:
+                continue
+            concept_guid = coding.get("code")
+            if not concept_guid:
+                continue
+            resolved = self.plan.resolve_concept(concept_guid)
+            if not resolved:
+                # GUID not found — treat as plan_miss so the writer can
+                # 422 and the producer fixes the coding.
+                misses.append(CodeMiss(
+                    kind="plan_miss",
+                    location=f"{location}.coding[{i}]",
+                    foreign_system=PLAN_CONCEPT_SYSTEM,
+                    foreign_code=concept_guid,
+                ))
+                continue
+            canonical_coding = {
+                "system": resolved["system"],
+                "code": resolved["canonical_refnumber"],
+                "display": resolved.get("display"),
+            }
+            new_codings = [canonical_coding] + codings  # original preserved
+            return self._with_codings(cc, new_codings), resolved["canonical_uri"], []
 
         # If any coding is already a termbank canonical, that's our chosen
         # canonical — verify against plan and we're done.

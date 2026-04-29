@@ -198,3 +198,50 @@ of pdhc.se.
   ticket #78). Needs `flask db stamp 8aa2748e0139 && flask db upgrade`
   before §1.2 work can run against it. The Phase 1.1 migration was
   validated against a fresh `cdr_test_phase1` Postgres DB.
+
+## 2026-04-28 — Multi-CDR canary + plan.pdhc indirection + service-key + seeded
+
+5-CDR demonstrator deploy completed end-to-end:
+
+- Steps 4–7 of the deploy-time smoke protocol (`plans/test_inventory.md`
+  Section B) all green: 4 stamped `.env` files, 4 docker-compose ups,
+  `flask db upgrade` × 4 (revision `2b6d8e6624ce`), `/healthz` 200 with
+  `database: connected` on every public hostname.
+- Two compose-template fixes caught during the cdr2 canary
+  (`docker-compose.yml`): port mapping was double-parametrised
+  (`${APP_PORT}:${APP_PORT}` while Dockerfile listens on hardcoded
+  9046) and the `volumes: - .:/app` bind mount hid the image's code
+  under an empty Colima dir.
+- Service-key auth path added to the SSO request loader: sim.pdhc
+  posts FHIR Bundles with `X-Source-Service: sim.pdhc` +
+  `X-Service-Key: $SIM_PDHC_SERVICE_KEY` and gets a synthetic
+  SU-equivalent access blob. Existing SSO flow unchanged.
+- Canonicaliser short-circuits on `https://plan.pdhc.se/Concept`
+  system codings: resolves the GUID via plan.pdhc, composes the
+  termbank canonical URI, promotes that coding, no xlate hop.
+  Encounter dispatch in `_CODE_PATHS` corrected to walk `code` (not
+  `class`).
+- 4 CDRs seeded with 100 patients each, 730-day window, plan.pdhc
+  indirection through the canonicaliser. Final state stored as
+  proper LOINC / SNOMED / ICD-10 / ATC URIs in `code_canonical`.
+
+### §3.5 Backups — exercised
+- Ad-hoc cdr1..5 pg_dump produced 5 dumps (29 KB legacy + 3-10 MB
+  per seeded instance). Restore-smoke on cdr3 returned exact-match
+  row counts (100 / 10800 / 512). The diff in
+  `deploy/server_backup_all.diff` is still pending operator
+  integration into `~/backup_pdhc_family.sh` (covered by Block D ack
+  in `plans/post_seed_followups.md`).
+
+## Known issues
+
+- Local dev DB at revision `1be600110381` (an orphan from before
+  ticket #78). Needs `flask db stamp 8aa2748e0139 && flask db upgrade`
+  before §1.2 work can run against it. The Phase 1.1 migration was
+  validated against a fresh `cdr_test_phase1` Postgres DB.
+- `fhir_read._org_filter` ignores `g.access_blob.is_su_admin`; service-
+  key callers and proper SSO admins need the legacy `X-Is-Admin: 1`
+  header today (`plans/post_seed_followups.md` Block G3).
+- nginx `client_body_temp` blocked by macOS provenance — Block B.
+- PlanClient should treat HTTP 429 as transient, not plan_miss —
+  Block A.
