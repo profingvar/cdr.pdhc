@@ -523,9 +523,20 @@ def patient_everything(guid: str):
 @bp.get("/Observation/%24stats")
 def observation_stats():
     """Return ``{n, min, max, mean, sd, p25, p50, p75, histogram[]}`` over
-    Observation.value_quantity rows matching the search constraints."""
+    Observation.value_quantity rows matching the search constraints.
+
+    Ticket #116: the original implementation pulled every matching row
+    into Python via `q.all()` and computed stats locally. On the
+    seeded demo CDRs (2M+ Observations) this took ~4 s even when the
+    result was empty, because SQLAlchemy still materialised every
+    column of every row. We now push the aggregation into the database
+    (Postgres) using `percentile_cont` + `width_bucket`, so n=0 returns
+    in low double-digit milliseconds. SQLite falls back to the Python
+    path so the existing unit tests don't need a Postgres fixture.
+    """
     Obs = live_model("Observation")
-    q = _org_filter(db.session.query(Obs), Obs)
+    q = _org_filter(db.session.query(Obs.value_quantity), Obs)
+    q = q.filter(Obs.value_quantity.isnot(None))
 
     code = request.args.get("code")
     if code:
@@ -537,15 +548,104 @@ def observation_stats():
         q = _apply_date_filter(q, Obs, date_arg)
     buckets = max(1, min(int(request.args.get("buckets", 20)), 100))
 
-    rows = q.all()
-    values = [float(r.value_quantity) for r in rows
-              if r.value_quantity is not None]
+    bind = db.session.get_bind()
+    dialect = bind.dialect.name if bind is not None else "sqlite"
+
+    if dialect == "postgresql":
+        return _stats_postgres(q, buckets)
+    return _stats_python(q, buckets)
+
+
+def _empty_stats_response():
+    return jsonify(_stats_parameters(
+        n=0, min_=None, max_=None, mean=None, sd=None,
+        p25=None, p50=None, p75=None, histogram=[],
+    )), 200
+
+
+def _stats_postgres(filtered_query, buckets):
+    """Single-round-trip aggregation against Postgres.
+
+    Folds the filtered query into a subquery so the WHERE clause runs
+    inside the aggregation. Avoids materialising rows in Python and
+    avoids loading the full SQLAlchemy ORM identity map.
+    """
+    from sqlalchemy import select, func
+
+    subq = filtered_query.subquery()
+    val = subq.c.value_quantity
+
+    agg = db.session.execute(
+        select(
+            func.count(val),
+            func.min(val),
+            func.max(val),
+            func.avg(val),
+            func.stddev_pop(val),
+            func.percentile_cont(0.25).within_group(val.asc()),
+            func.percentile_cont(0.5).within_group(val.asc()),
+            func.percentile_cont(0.75).within_group(val.asc()),
+        ).select_from(subq)
+    ).one()
+
+    n, mn, mx, mean, sd, p25, p50, p75 = agg
+    n = int(n or 0)
+    if n == 0:
+        return _empty_stats_response()
+
+    mn = float(mn)
+    mx = float(mx)
+    mean = float(mean)
+    sd = float(sd or 0.0)
+    p25 = float(p25)
+    p50 = float(p50)
+    p75 = float(p75)
+
+    if mn == mx:
+        histogram = [{"low": mn, "high": mx, "count": n}]
+    else:
+        width = (mx - mn) / buckets
+        # width_bucket(value, lo, hi, count) returns 1..count for values
+        # in [lo, hi), 0 below lo, and count+1 at or above hi. We bump
+        # the upper bound by a tiny epsilon so the maximum value falls
+        # into the last bucket — matches the Python implementation.
+        upper = mx + 1e-9
+        bucket_q = (
+            select(
+                func.width_bucket(val, mn, upper, buckets).label("b"),
+                func.count(val),
+            )
+            .select_from(subq)
+            .group_by("b")
+            .order_by("b")
+        )
+        counts = {int(row.b): int(row[1]) for row in db.session.execute(bucket_q)}
+        edges = [mn + i * width for i in range(buckets + 1)]
+        edges[-1] = upper
+        histogram = [
+            {
+                "low": edges[i],
+                "high": edges[i + 1],
+                # width_bucket returns 1-based bucket indices for in-range values
+                "count": counts.get(i + 1, 0),
+            }
+            for i in range(buckets)
+        ]
+
+    return jsonify(_stats_parameters(
+        n=n, min_=mn, max_=mx, mean=mean, sd=sd,
+        p25=p25, p50=p50, p75=p75, histogram=histogram,
+    )), 200
+
+
+def _stats_python(filtered_query, buckets):
+    """Original implementation. Retained so SQLite-based tests pass."""
+    rows = filtered_query.all()
+    # `rows` are 1-tuples since we selected just value_quantity
+    values = [float(r[0]) for r in rows if r[0] is not None]
 
     if not values:
-        return jsonify(_stats_parameters(
-            n=0, min_=None, max_=None, mean=None, sd=None,
-            p25=None, p50=None, p75=None, histogram=[],
-        )), 200
+        return _empty_stats_response()
 
     values_sorted = sorted(values)
     n = len(values_sorted)
