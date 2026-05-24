@@ -663,6 +663,246 @@ def _stats_python(filtered_query, buckets):
     )), 200
 
 
+# ---------------------------------------------------------------------------
+# GET /Observation/$agp — Ambulatory Glucose Profile aggregation (#issue:152
+#                          dashboard nurse view AGP timeout)
+# ---------------------------------------------------------------------------
+#
+# The dashboard's nurse view's AGP card was hitting CDR_FANOUT_TIMEOUT (8s)
+# because /Observation search materialised every CGM row's raw_json blob
+# into Python (~1MB per CDR for a 14-day window, ~26k rows for 90 days).
+# This operation pushes the aggregation into Postgres: 24-bin per-hour
+# percentile bands + TIR/TBR/TAR + n + mean + sd in two round-trips that
+# return ~2KB regardless of the underlying row count.
+#
+# Endpoint design mirrors $stats: a Parameters resource with named parts.
+# The dashboard's nurse.patient_agp merges per-CDR responses via a new
+# federation.merge_agp_bands helper.
+#
+# Args:
+#   patient  (required) — patient GUID
+#   code     (required) — system|code form (e.g. <termbank>|41653-7 for CGM)
+#   date     (optional, FHIR prefix syntax) — repeatable: gt/ge/lt/le/eq
+#   tir_low  (default 3.9 mmol/L)  — TIR lower threshold
+#   tir_high (default 10.0 mmol/L) — TIR upper threshold
+
+_AGP_HOURS = 24
+
+
+@bp.get("/Observation/$agp")
+@bp.get("/Observation/%24agp")
+def observation_agp():
+    Obs = live_model("Observation")
+    patient = request.args.get("patient")
+    if not patient:
+        return jsonify(_operation_outcome(
+            "error", "required", "patient is required",
+        )), 400
+    if "/" in patient:
+        patient = patient.rsplit("/", 1)[-1]
+
+    q = _org_filter(db.session.query(Obs.value_quantity, Obs.effective_at), Obs)
+    q = q.filter(Obs.patient_guid == patient)
+    q = q.filter(Obs.value_quantity.isnot(None))
+    q = q.filter(Obs.effective_at.isnot(None))
+
+    code = request.args.get("code")
+    if code:
+        q = _filter_by_code(q, Obs, code)
+    for date_arg in request.args.getlist("date"):
+        q = _apply_date_filter(q, Obs, date_arg)
+
+    try:
+        tir_low = float(request.args.get("tir_low", "3.9"))
+        tir_high = float(request.args.get("tir_high", "10.0"))
+    except ValueError:
+        return jsonify(_operation_outcome(
+            "error", "invalid", "tir_low / tir_high must be numbers",
+        )), 400
+
+    bind = db.session.get_bind()
+    dialect = bind.dialect.name if bind is not None else "sqlite"
+
+    if dialect == "postgresql":
+        return _agp_postgres(q, tir_low, tir_high)
+    return _agp_python(q, tir_low, tir_high)
+
+
+def _empty_agp_response():
+    return jsonify({
+        "resourceType": "Parameters",
+        "parameter": [
+            {"name": "n", "valueInteger": 0},
+            {"name": "tir_low", "valueDecimal": None},
+            {"name": "tir_high", "valueDecimal": None},
+            {"name": "bands", "part": [
+                {"name": f"hour_{h}", "part": [
+                    {"name": "hour", "valueInteger": h},
+                    {"name": "n", "valueInteger": 0},
+                ]} for h in range(_AGP_HOURS)
+            ]},
+        ],
+    }), 200
+
+
+def _agp_postgres(filtered_query, tir_low, tir_high):
+    """Two round-trips: per-hour bands + overall summary.
+
+    Both run against the same filtered subquery so any WHERE clauses
+    (patient, code, date prefixes, org scoping) apply uniformly.
+    """
+    from sqlalchemy import select, func, case
+
+    subq = filtered_query.subquery()
+    val = subq.c.value_quantity
+    eff = subq.c.effective_at
+
+    # Per-hour bands: 24 rows max, percentile_cont + count.
+    # SQLAlchemy's func.extract emits EXTRACT(HOUR FROM ...) on PG.
+    hour_col = func.extract("hour", eff).label("hour")
+    bands_q = (
+        select(
+            hour_col,
+            func.count(val).label("n"),
+            func.percentile_cont(0.05).within_group(val.asc()).label("p5"),
+            func.percentile_cont(0.25).within_group(val.asc()).label("p25"),
+            func.percentile_cont(0.50).within_group(val.asc()).label("p50"),
+            func.percentile_cont(0.75).within_group(val.asc()).label("p75"),
+            func.percentile_cont(0.95).within_group(val.asc()).label("p95"),
+            func.avg(val).label("mean"),
+        )
+        .select_from(subq)
+        .group_by(hour_col)
+        .order_by(hour_col)
+    )
+    bands_rows = list(db.session.execute(bands_q))
+
+    # Overall summary in one query: n, mean, sd, in/below/above counts.
+    summary_q = select(
+        func.count(val).label("n"),
+        func.avg(val).label("mean"),
+        func.stddev_pop(val).label("sd"),
+        func.count(case((val < tir_low, 1))).label("below"),
+        func.count(case(((val >= tir_low) & (val <= tir_high), 1))).label("in_range"),
+        func.count(case((val > tir_high, 1))).label("above"),
+    ).select_from(subq)
+    summary = db.session.execute(summary_q).one()
+    n = int(summary.n or 0)
+    if n == 0:
+        return _empty_agp_response()
+
+    mean = float(summary.mean)
+    sd = float(summary.sd or 0.0)
+    cv = (sd / mean * 100) if mean else 0.0
+    tir = 100 * (int(summary.in_range) / n)
+    tbr = 100 * (int(summary.below) / n)
+    tar = 100 * (int(summary.above) / n)
+
+    # Build a 24-slot bands array even for empty hours so the
+    # dashboard's merger can sum per-hour contributions across CDRs
+    # without holes.
+    by_hour = {int(r.hour): r for r in bands_rows}
+    bands = []
+    for h in range(_AGP_HOURS):
+        r = by_hour.get(h)
+        if r is None:
+            bands.append({"hour": h, "n": 0,
+                          "p5": None, "p25": None, "p50": None,
+                          "p75": None, "p95": None, "mean": None})
+            continue
+        bands.append({
+            "hour": h,
+            "n": int(r.n),
+            "p5": float(r.p5) if r.p5 is not None else None,
+            "p25": float(r.p25) if r.p25 is not None else None,
+            "p50": float(r.p50) if r.p50 is not None else None,
+            "p75": float(r.p75) if r.p75 is not None else None,
+            "p95": float(r.p95) if r.p95 is not None else None,
+            "mean": float(r.mean) if r.mean is not None else None,
+        })
+
+    return _agp_parameters(
+        n=n, mean=mean, sd=sd, cv=cv, tir=tir, tbr=tbr, tar=tar,
+        tir_low=tir_low, tir_high=tir_high, bands=bands,
+    )
+
+
+def _agp_python(filtered_query, tir_low, tir_high):
+    """SQLite fallback: same Python logic the dashboard previously
+    used, kept here so unit tests don't need a Postgres fixture."""
+    rows = filtered_query.all()
+    by_hour: dict[int, list[float]] = {}
+    all_vals: list[float] = []
+    for value, eff in rows:
+        if value is None or eff is None:
+            continue
+        h = eff.hour
+        by_hour.setdefault(h, []).append(float(value))
+        all_vals.append(float(value))
+
+    if not all_vals:
+        return _empty_agp_response()
+
+    bands = []
+    for h in range(_AGP_HOURS):
+        vals = sorted(by_hour.get(h, []))
+        if not vals:
+            bands.append({"hour": h, "n": 0,
+                          "p5": None, "p25": None, "p50": None,
+                          "p75": None, "p95": None, "mean": None})
+            continue
+        bands.append({
+            "hour": h,
+            "n": len(vals),
+            "p5": _percentile(vals, 5),
+            "p25": _percentile(vals, 25),
+            "p50": _percentile(vals, 50),
+            "p75": _percentile(vals, 75),
+            "p95": _percentile(vals, 95),
+            "mean": statistics.fmean(vals),
+        })
+
+    n = len(all_vals)
+    mean = statistics.fmean(all_vals)
+    sd = statistics.pstdev(all_vals) if n >= 2 else 0.0
+    cv = (sd / mean * 100) if mean else 0.0
+    tir = 100 * sum(1 for v in all_vals if tir_low <= v <= tir_high) / n
+    tbr = 100 * sum(1 for v in all_vals if v < tir_low) / n
+    tar = 100 * sum(1 for v in all_vals if v > tir_high) / n
+
+    return _agp_parameters(
+        n=n, mean=mean, sd=sd, cv=cv, tir=tir, tbr=tbr, tar=tar,
+        tir_low=tir_low, tir_high=tir_high, bands=bands,
+    )
+
+
+def _agp_parameters(*, n, mean, sd, cv, tir, tbr, tar,
+                    tir_low, tir_high, bands):
+    band_parts = []
+    for b in bands:
+        bp = [
+            {"name": "hour", "valueInteger": b["hour"]},
+            {"name": "n", "valueInteger": b["n"]},
+        ]
+        for k in ("p5", "p25", "p50", "p75", "p95", "mean"):
+            if b.get(k) is not None:
+                bp.append({"name": k, "valueDecimal": b[k]})
+        band_parts.append({"name": f"hour_{b['hour']}", "part": bp})
+    parts = [
+        {"name": "n", "valueInteger": n},
+        {"name": "mean", "valueDecimal": mean},
+        {"name": "sd", "valueDecimal": sd},
+        {"name": "cv", "valueDecimal": cv},
+        {"name": "tir", "valueDecimal": tir},
+        {"name": "tbr", "valueDecimal": tbr},
+        {"name": "tar", "valueDecimal": tar},
+        {"name": "tir_low", "valueDecimal": tir_low},
+        {"name": "tir_high", "valueDecimal": tir_high},
+        {"name": "bands", "part": band_parts},
+    ]
+    return jsonify({"resourceType": "Parameters", "parameter": parts}), 200
+
+
 def _percentile(sorted_values: list[float], p: float) -> float:
     """Linear-interpolation percentile on a pre-sorted list."""
     if not sorted_values:

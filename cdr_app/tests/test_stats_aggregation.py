@@ -105,6 +105,105 @@ def test_stats_filters_null_value_quantity(client, app):
     assert params["n"]["valueInteger"] == 3
 
 
+def _insert_cgm(values_by_hour, code=CODE, patient="p1"):
+    """Insert one Observation per (hour, replicate) — distinct minute
+    stamps so the dedup key stays unique."""
+    Obs = live_model("Observation")
+    base = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    minute = 0
+    for hour, values in values_by_hour.items():
+        for v in values:
+            db.session.add(Obs(
+                guid=f"o-{hour:02d}-{minute}",
+                patient_guid=patient,
+                org_guid="test-org",
+                code_canonical=code,
+                effective_at=base.replace(hour=hour,
+                                          minute=minute % 60,
+                                          second=(minute // 60) % 60),
+                raw_json={},
+                value_quantity=v,
+            ))
+            minute += 1
+    db.session.commit()
+
+
+def test_agp_empty_returns_n_zero(client):
+    resp = client.get(
+        f"/api/v1/fhir/Observation/$agp?patient=p1&code={CODE_QUERY}",
+        headers=ORG_HEADERS,
+    )
+    assert resp.status_code == 200
+    params = {p["name"]: p for p in resp.get_json()["parameter"]}
+    assert params["n"]["valueInteger"] == 0
+
+
+def test_agp_basic_per_hour_bands(client, app):
+    """A spread of values across hours 7-9 should populate just those bands."""
+    with app.app_context():
+        _insert_cgm({
+            7: [4.5, 5.0, 5.5, 6.0, 6.5],
+            8: [7.0, 7.5, 8.0, 8.5, 9.0],
+            9: [9.5, 10.0, 10.5, 11.0, 11.5],
+        })
+    resp = client.get(
+        f"/api/v1/fhir/Observation/$agp?patient=p1&code={CODE_QUERY}",
+        headers=ORG_HEADERS,
+    )
+    assert resp.status_code == 200
+    params = {p["name"]: p for p in resp.get_json()["parameter"]}
+    assert params["n"]["valueInteger"] == 15
+    bands_root = params["bands"]
+    by_hour = {}
+    for h_part in bands_root["part"]:
+        sub = {p["name"]: p for p in h_part["part"]}
+        by_hour[sub["hour"]["valueInteger"]] = sub
+    # Hours 7-9 populated, others not
+    assert by_hour[7]["n"]["valueInteger"] == 5
+    assert by_hour[8]["n"]["valueInteger"] == 5
+    assert by_hour[9]["n"]["valueInteger"] == 5
+    assert by_hour[0]["n"]["valueInteger"] == 0
+    # Median at hour 8 is 8.0
+    assert abs(by_hour[8]["p50"]["valueDecimal"] - 8.0) < 1e-6
+
+
+def test_agp_tir_tbr_tar(client, app):
+    """Verify TIR/TBR/TAR are correctly computed against 3.9-10.0
+    mmol/L thresholds (Swedish defaults)."""
+    with app.app_context():
+        _insert_cgm({
+            10: [3.0, 3.5],                # below (TBR)
+            11: [4.0, 5.0, 6.0, 7.0, 8.0], # in range
+            12: [11.0, 12.0, 13.0],        # above (TAR)
+        })
+    resp = client.get(
+        f"/api/v1/fhir/Observation/$agp?patient=p1&code={CODE_QUERY}",
+        headers=ORG_HEADERS,
+    )
+    params = {p["name"]: p for p in resp.get_json()["parameter"]}
+    assert params["n"]["valueInteger"] == 10
+    assert abs(params["tbr"]["valueDecimal"] - 20.0) < 1e-6
+    assert abs(params["tir"]["valueDecimal"] - 50.0) < 1e-6
+    assert abs(params["tar"]["valueDecimal"] - 30.0) < 1e-6
+
+
+def test_agp_thresholds_overridable(client, app):
+    """Pass tir_low/tir_high to override the Swedish defaults."""
+    with app.app_context():
+        _insert_cgm({
+            10: [3.0, 3.5, 4.0],   # in below-range at tir_low=4.5
+            11: [5.0, 6.0],
+        })
+    resp = client.get(
+        f"/api/v1/fhir/Observation/$agp?patient=p1&code={CODE_QUERY}"
+        f"&tir_low=4.5&tir_high=10",
+        headers=ORG_HEADERS,
+    )
+    params = {p["name"]: p for p in resp.get_json()["parameter"]}
+    assert abs(params["tbr"]["valueDecimal"] - 60.0) < 1e-6  # 3 of 5
+    assert abs(params["tir"]["valueDecimal"] - 40.0) < 1e-6  # 2 of 5
+
+
 def test_postgres_path_compiles_when_dialect_is_postgres(app, monkeypatch):
     """Compile the SQL the Postgres path would emit, verify it uses
     percentile_cont + width_bucket (the whole point of #116) and runs
