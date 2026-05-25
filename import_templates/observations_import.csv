@@ -1,0 +1,11 @@
+patient_guid,effective_datetime,code_system,code,code_display,value_quantity,value_unit,status,category,source_service,note
+015391ad-1e59-5e6d-a974-b19527662c70,2026-05-09T08:30:00Z,https://termbank.pdhc.se/CodeSystem/loinc,4548-4,Hemoglobin A1c [Mass/Vol],53,mmol/mol,final,laboratory,manual.pdhc,
+015391ad-1e59-5e6d-a974-b19527662c70,2026-05-09T08:30:00Z,https://termbank.pdhc.se/CodeSystem/loinc,29463-7,Body weight,77.4,kg,final,vital-signs,manual.pdhc,
+015391ad-1e59-5e6d-a974-b19527662c70,2026-05-09T08:30:00Z,https://termbank.pdhc.se/CodeSystem/loinc,8480-6,Systolic blood pressure,134,mm[Hg],final,vital-signs,manual.pdhc,
+015391ad-1e59-5e6d-a974-b19527662c70,2026-05-09T08:30:00Z,https://termbank.pdhc.se/CodeSystem/loinc,8462-4,Diastolic blood pressure,82,mm[Hg],final,vital-signs,manual.pdhc,
+015391ad-1e59-5e6d-a974-b19527662c70,2026-05-09T08:30:00Z,https://termbank.pdhc.se/CodeSystem/loinc,39156-5,Body mass index,29.1,kg/m2,final,vital-signs,manual.pdhc,
+015391ad-1e59-5e6d-a974-b19527662c70,2026-05-09T08:30:00Z,https://termbank.pdhc.se/CodeSystem/loinc,33914-3,Glomerular filtration rate (eGFR),68,mL/min/{1.73_m2},final,laboratory,manual.pdhc,
+015391ad-1e59-5e6d-a974-b19527662c70,2026-05-09T08:30:00Z,https://termbank.pdhc.se/CodeSystem/loinc,18262-6,LDL cholesterol,2.4,mmol/L,final,laboratory,manual.pdhc,
+015391ad-1e59-5e6d-a974-b19527662c70,2026-05-09T08:30:00Z,https://termbank.pdhc.se/CodeSystem/loinc,1558-6,Fasting plasma glucose,7.1,mmol/L,final,laboratory,manual.pdhc,patient followed dietary advice
+015391ad-1e59-5e6d-a974-b19527662c70,2026-05-09T08:30:00Z,https://termbank.pdhc.se/CodeSystem/loinc,97510-2,Time in range 3.9-10.0 mmol/L,68,%,final,laboratory,manual.pdhc,7-day window
+015391ad-1e59-5e6d-a974-b19527662c70,2026-05-09T08:30:00Z,https://termbank.pdhc.se/CodeSystem/loinc,97507-8,CGM mean glucose,8.2,mmol/L,final,laboratory,manual.pdhc,

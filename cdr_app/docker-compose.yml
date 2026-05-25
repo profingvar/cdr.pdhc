@@ -20,6 +20,7 @@ services:
   db:
     image: postgres:16
     container_name: ${CDR_INSTANCE:-cdr_pdhc}_db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-cdr_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cdr_pass}
@@ -37,6 +38,7 @@ services:
   app:
     build: .
     container_name: ${CDR_INSTANCE:-cdr_pdhc}_app
+    restart: unless-stopped
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-cdr_user}:${POSTGRES_PASSWORD:-cdr_pass}@db:5432/${POSTGRES_DB:-cdr_db}
