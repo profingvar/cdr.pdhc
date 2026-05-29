@@ -199,15 +199,22 @@ class Canonicaliser:
                 continue
             resolved = self.plan.resolve_concept(concept_guid)
             if not resolved:
-                # GUID not found — treat as plan_miss so the writer can
-                # 422 and the producer fixes the coding.
+                # GUID not found — terminal plan_miss. We deliberately
+                # do NOT fall through to the termbank/xlate paths below:
+                # an emitter that supplied a plan.pdhc/Concept coding
+                # is asserting the GUID is authoritative, so a miss is
+                # the emitter's bug, not a translation problem the
+                # canonicaliser can paper over. Returning here also
+                # prevents 503-bouncing through xlate when plan.pdhc
+                # is reachable but the GUID is unknown (caught while
+                # debugging sim → cdr_6 writes 2026-05-29).
                 misses.append(CodeMiss(
                     kind="plan_miss",
                     location=f"{location}.coding[{i}]",
                     foreign_system=PLAN_CONCEPT_SYSTEM,
                     foreign_code=concept_guid,
                 ))
-                continue
+                return None, None, misses
             canonical_coding = {
                 "system": resolved["system"],
                 "code": resolved["canonical_refnumber"],
