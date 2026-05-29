@@ -8,6 +8,11 @@ logger = logging.getLogger(__name__)
 KNOWN_SERVICES = {
     "gateway.pdhc": "GATEWAY_PDHC_SERVICE_KEY",
     "2gate.pdhc": "TWOGATE_PDHC_SERVICE_KEY",
+    # sim.pdhc writes synthetic cohorts to cdr_6 (REFINEMENT_PLAN v0.2,
+    # ticket #178). Existing cdr1..5 instances reject sim.pdhc unless
+    # their .env carries SIM_PDHC_SERVICE_KEY — additive, no behaviour
+    # change for the production CDRs.
+    "sim.pdhc": "SIM_PDHC_SERVICE_KEY",
 }
 
 
