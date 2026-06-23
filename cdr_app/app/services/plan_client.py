@@ -54,7 +54,43 @@ _INITIAL_BACKOFF_SECONDS = 0.25
 _CANONICAL_RE = re.compile(r"^https?://[^/]+/CodeSystem/([^/]+)/(.+)$")
 
 
+# plan.pdhc local CodeSystem canonical URL — used as the ``system``
+# parameter when calling ``ConceptMap/$translate`` to identify the
+# source code system (ADR D2 of the plan.pdhc terminology profile).
+# Stable identifier regardless of which host serves it.
+PLAN_LOCAL_CS_URL = "https://plan.pdhc.se/fhir/CodeSystem/plan-pdhc-local"
+
+
+def _parse_translate_response(body: dict) -> tuple[bool, dict | None]:
+    """Pull (result, first_match_coding) out of a FHIR Parameters body
+    returned by ``ConceptMap/$translate``.
+
+    The match shape per FHIR R5 is repeating ``parameter`` parts named
+    ``match``, each with sub-parts including ``concept`` carrying a
+    ``valueCoding`` dict. Plan.pdhc currently returns 0..1 matches per
+    Concept (Risk §9.5 in the plan.pdhc spec — kept array-shaped for
+    multi-binding future).
+    """
+    result = False
+    first_match: dict | None = None
+    for p in body.get("parameter") or []:
+        name = p.get("name")
+        if name == "result":
+            result = bool(p.get("valueBoolean"))
+        elif name == "match" and first_match is None:
+            sub = {sp.get("name"): sp for sp in p.get("part") or []}
+            concept_part = sub.get("concept", {})
+            coding = concept_part.get("valueCoding")
+            if isinstance(coding, dict):
+                first_match = coding
+    return result, first_match
+
+
 # canonical_lib_name → URI slug used in the termbank canonical URI.
+# Reverse map (slug → name) is derived once at module load and used by
+# resolve_concept() to recover the original lib name from a translate
+# response's canonical_lib_url. Best-effort: a slug not in this table
+# means the caller gets canonical_lib_name=None.
 # This mapping has to match what termbank.pdhc would publish if it
 # were live; keeping it deterministic here lets the CDR store stable
 # URIs even before termbank is deployed.
@@ -66,6 +102,7 @@ _LIB_SLUG = {
     "KVÅ":       "kva",
     "local":     "local",
 }
+_SLUG_TO_LIB_NAME = {slug: name for name, slug in _LIB_SLUG.items()}
 
 
 def parse_canonical_uri(canonical_uri: str) -> tuple[str, str] | None:
@@ -214,65 +251,66 @@ class PlanClient:
     # https://plan.pdhc.se/Concept and code = <guid>).
     # ---------------------------------------------------------------
     def resolve_concept(self, guid: str) -> dict | None:
-        """Look up plan.pdhc /api/v1/concepts/<guid> and compose a
-        termbank-style canonical URI from the Concept's
-        canonical_lib + canonical_refnumber. Returns None if the
-        Concept doesn't exist or its canonical_lib slug is unknown.
+        """Look up plan.pdhc Concept by GUID and return its canonical
+        binding via the FHIR R5 ConceptMap/$translate operation.
+
+        Pre-2026-06 this hit ``GET /api/v1/concepts/<guid>`` and composed
+        the canonical URI client-side from canonical_lib + refnumber.
+        plan.pdhc now publishes the same mapping as a conformant
+        ConceptMap (ADR D2 of its terminology profile, ticket #258),
+        so we use the FHIR-canonical operation directly.
 
         Result keys: canonical_uri, system, canonical_refnumber,
-        canonical_lib_name, display, guid."""
+        canonical_lib_name, display, guid.
+
+        Returns None if the concept doesn't exist, has no canonical
+        binding, or its target system slug isn't recognized by
+        ``_LIB_SLUG``.
+        """
         key = ("resolve_concept", guid)
         cached = self._get_cached(key)
         if cached is not self._MISS:
             return cached
 
-        url = f"{self.base_url}/api/v1/concepts/{guid}"
-        resp = self._get_with_retry(url, operation=f"resolve_concept[{guid[:8]}]")
+        url = f"{self.base_url}/api/v1/ConceptMap/$translate"
+        resp = self._get_with_retry(
+            url,
+            params={"system": PLAN_LOCAL_CS_URL, "code": guid},
+            operation=f"resolve_concept[{guid[:8]}]",
+        )
 
         if resp.status_code != 200:
-            log.warning("plan.pdhc /concepts/%s returned %s", guid, resp.status_code)
+            log.warning(
+                "plan.pdhc /ConceptMap/$translate for %s returned %s",
+                guid, resp.status_code,
+            )
             return None
 
-        body = resp.json()
-        canon_lib_guid = body.get("canonical_lib")
-        canon_ref = body.get("canonical_refnumber")
-        if not canon_lib_guid or not canon_ref:
+        result_bool, coding = _parse_translate_response(resp.json())
+        if not result_bool or coding is None:
             return None
 
-        lib_name = self._lib_name(canon_lib_guid)
-        if not lib_name:
-            return None
-        slug = _LIB_SLUG.get(lib_name)
-        if not slug:
-            log.warning("unknown canonical_lib_name '%s' for concept %s", lib_name, guid)
+        system = coding.get("system")
+        canon_ref = coding.get("code")
+        if not system or not canon_ref:
             return None
 
-        system = f"https://termbank.pdhc.se/CodeSystem/{slug}"
         canonical_uri = f"{system}/{canon_ref}"
+
+        # Derive canonical_lib_name by reverse-mapping the slug in the
+        # canonical_lib_url. Best-effort: if the slug isn't in
+        # _LIB_SLUG we still return the result with name=None — callers
+        # currently don't read canonical_lib_name from this dict.
+        slug = system.rsplit("/", 1)[-1] if "/" in system else None
+        lib_name = _SLUG_TO_LIB_NAME.get(slug) if slug else None
+
         result = {
             "canonical_uri": canonical_uri,
             "system": system,
             "canonical_refnumber": canon_ref,
             "canonical_lib_name": lib_name,
-            "display": body.get("concept_display_text") or body.get("concept_name"),
+            "display": coding.get("display"),
             "guid": guid,
         }
         self._set_cached(key, result)
         return result
-
-    def _lib_name(self, lib_guid: str) -> str | None:
-        """canonical_lib_name lookup by GUID, cached. Libs change very
-        rarely so cache TTL is the standard one — entries refresh on
-        their own; clear_cache() flushes."""
-        key = ("lib_name", lib_guid)
-        cached = self._get_cached(key)
-        if cached is not self._MISS:
-            return cached
-        url = f"{self.base_url}/api/v1/canonical-libs/{lib_guid}"
-        resp = self._get_with_retry(url, operation=f"lib_name[{lib_guid[:8]}]")
-        if resp.status_code != 200:
-            return None
-        name = resp.json().get("canonical_lib_name")
-        if name:
-            self._set_cached(key, name, ttl=self.cache_ttl * 60)
-        return name
