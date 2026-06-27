@@ -83,3 +83,77 @@ def test_ingest_batch(client, app):
     data = resp.get_json()
     assert data["total"] == 2
     assert data["accepted"] >= 1
+
+
+def test_lookup_by_source_id_hit(client, app):
+    """SSOT phase 2 (#281): gateway can look up its own ingest_raw by
+    the source_system_id it provided at insert time."""
+    body = dict(SAMPLE_INGEST_BODY)
+    body["patient_guid"] = "pat-lookup-hit"
+    body["source_system_id"] = "gateway-obs-guid-aaa"
+    headers = {
+        "X-Service-Key": "test-gateway-key",
+        "X-Source-Service": "gateway.pdhc",
+    }
+    resp = client.post("/api/v1/ingest", json=body, headers=headers)
+    assert resp.status_code == 202
+
+    resp = client.get(
+        "/api/v1/ingest/by-source-id/gateway-obs-guid-aaa",
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["source_system_id"] == "gateway-obs-guid-aaa"
+    assert data["source_service"] == "gateway.pdhc"
+    assert data["patient_guid"] == "pat-lookup-hit"
+    assert data["status"] == "stored"
+    assert data["guid"]  # ingest_raw.guid
+    assert data["fhir_resource_guid"]  # FHIR layer also stored
+
+
+def test_lookup_by_source_id_miss(client):
+    resp = client.get(
+        "/api/v1/ingest/by-source-id/never-seen-id-xyz",
+        headers={
+            "X-Service-Key": "test-gateway-key",
+            "X-Source-Service": "gateway.pdhc",
+        },
+    )
+    assert resp.status_code == 404
+    assert resp.get_json()["error"] == "not found"
+
+
+def test_lookup_by_source_id_cross_service_isolation(client, app):
+    """A source_system_id stored by one source_service must not be visible
+    to another. Same id from sim.pdhc and gateway.pdhc are distinct rows
+    in distinct namespaces."""
+    # twogate.pdhc inserts a row (proxy for "another service")
+    body = dict(SAMPLE_INGEST_BODY)
+    body["patient_guid"] = "pat-cross-1"
+    body["source_system_id"] = "shared-id-001"
+    resp = client.post(
+        "/api/v1/ingest",
+        json=body,
+        headers={
+            "X-Service-Key": "test-twogate-key",
+            "X-Source-Service": "2gate.pdhc",
+        },
+    )
+    assert resp.status_code == 202
+
+    # gateway.pdhc looking up the same id should miss — different
+    # source_service namespace.
+    resp = client.get(
+        "/api/v1/ingest/by-source-id/shared-id-001",
+        headers={
+            "X-Service-Key": "test-gateway-key",
+            "X-Source-Service": "gateway.pdhc",
+        },
+    )
+    assert resp.status_code == 404
+
+
+def test_lookup_by_source_id_requires_auth(client):
+    resp = client.get("/api/v1/ingest/by-source-id/anything")
+    assert resp.status_code == 401
