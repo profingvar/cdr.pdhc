@@ -99,6 +99,7 @@ def _public_path(path: str) -> bool:
         or path == "/healthz"
         or path.startswith("/api/v1/health")
         or path.startswith("/api/v1/ingest")
+        or path.startswith("/api/v1/observations")
         or path.startswith("/static/")
     )
 
