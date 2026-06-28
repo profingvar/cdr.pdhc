@@ -49,7 +49,16 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 
 def _common_live_columns() -> list:
-    """Columns shared by every live FHIR per-type table."""
+    """Columns shared by every live FHIR per-type table.
+
+    Time fields (#294 RFC E1):
+    - ``effective_at`` — clinical measurement time (from the FHIR
+      resource itself).
+    - ``received_at``  — when the platform first saw this payload
+      (mirrors IngestRaw.received_at).
+    - ``created_at``   — when THIS row was written.
+    - ``updated_at``   — last write/version on this row.
+    """
     return [
         db.Column("guid", db.String(36), primary_key=True, default=_uuid),
         db.Column("patient_guid", db.String(36), nullable=True),  # null on Patient
@@ -64,6 +73,7 @@ def _common_live_columns() -> list:
         db.Column("sync_group_id", db.String(36), nullable=True),
         db.Column("mapping_version", db.String(64), nullable=True),
         db.Column("etag", db.String(64), nullable=True),
+        db.Column("received_at", db.DateTime(timezone=True), default=_now, nullable=False),
         db.Column("created_at", db.DateTime(timezone=True), default=_now, nullable=False),
         db.Column("updated_at", db.DateTime(timezone=True), default=_now, onupdate=_now, nullable=False),
     ]

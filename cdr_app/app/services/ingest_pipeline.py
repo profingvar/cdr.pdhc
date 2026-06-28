@@ -64,6 +64,7 @@ class IngestPipeline:
                 loinc_code=loinc_code,
                 effective_at=effective_at,
                 source_service=source_service,
+                received_at=raw.received_at,
             )
             db.session.add(fhir_row)
             db.session.flush()
@@ -87,6 +88,7 @@ class IngestPipeline:
                         patient_guid=patient_guid,
                         source_service=source_service,
                         ingest_raw_guid=raw.guid,
+                        received_at=raw.received_at,
                     )
                     if live_row is not None:
                         db.session.add(live_row)
@@ -102,6 +104,7 @@ class IngestPipeline:
                 composition_json=openehr_comp,
                 effective_at=fhir_row.effective_at if fhir_row else None,
                 source_service=source_service,
+                received_at=raw.received_at,
             )
             db.session.add(openehr_row)
             db.session.flush()
@@ -117,6 +120,7 @@ class IngestPipeline:
                     composition_json=generated,
                     effective_at=fhir_row.effective_at,
                     source_service=source_service,
+                    received_at=raw.received_at,
                 )
                 db.session.add(openehr_row)
                 db.session.flush()
@@ -133,6 +137,7 @@ class IngestPipeline:
                     loinc_code=_extract_loinc(generated_fhir),
                     effective_at=_parse_effective(generated_fhir.get("effectiveDateTime")),
                     source_service=source_service,
+                    received_at=raw.received_at,
                 )
                 db.session.add(fhir_row)
                 db.session.flush()
@@ -141,7 +146,8 @@ class IngestPipeline:
         concept_guid = None
         if canonical:
             concept_guid = canonical.get("concept_guid")
-            _store_canonical(raw.guid, patient_guid, canonical, source_service)
+            _store_canonical(raw.guid, patient_guid, canonical, source_service,
+                             received_at=raw.received_at)
 
         # 5. Store context
         if context:
@@ -256,7 +262,7 @@ def _primary_canonical_uri(fhir_resource):
 
 
 def build_live_observation_row(fhir_resource, *, patient_guid, source_service,
-                                ingest_raw_guid=None):
+                                ingest_raw_guid=None, received_at=None):
     """Build a Live Observation ORM row from a FHIR R5 Observation dict.
 
     Mirrors the column layout of `public.observation` (per migration 0001).
@@ -305,6 +311,9 @@ def build_live_observation_row(fhir_resource, *, patient_guid, source_service,
         source=source_service,
         meta_tag=(fhir_resource.get("meta") or {}).get("tag"),
         version_id=1,
+        # #294 RFC E1: received_at = ingest boundary (IngestRaw.received_at).
+        # Fall back to `now` for backfill callers without an IngestRaw row.
+        received_at=received_at or now,
         created_at=now,
         updated_at=now,
         value_quantity=value_quantity,
@@ -324,7 +333,8 @@ def _parse_effective(dt_str):
         return None
 
 
-def _store_canonical(raw_guid, patient_guid, canonical, source_service):
+def _store_canonical(raw_guid, patient_guid, canonical, source_service,
+                     received_at=None):
     table = canonical.get("table", "health_observations")
     effective_at = _parse_effective(canonical.get("effective_at"))
 
@@ -340,6 +350,7 @@ def _store_canonical(raw_guid, patient_guid, canonical, source_service):
             source_service=source_service,
             concept_guid=canonical.get("concept_guid"),
             effective_at=effective_at,
+            received_at=received_at or datetime.now(timezone.utc),
         ))
     elif table == "activities":
         db.session.add(Activity(
@@ -352,4 +363,5 @@ def _store_canonical(raw_guid, patient_guid, canonical, source_service):
             source_code=canonical.get("source_code"),
             source_service=source_service,
             effective_at=effective_at,
+            received_at=received_at or datetime.now(timezone.utc),
         ))

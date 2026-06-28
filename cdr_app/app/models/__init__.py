@@ -55,6 +55,12 @@ class FhirResource(db.Model):
     status = db.Column(db.String(32), default="final")
     effective_at = db.Column(db.DateTime(timezone=True), nullable=True)
     source_service = db.Column(db.String(64), nullable=True)
+    # #294 RFC E1: three time concepts — `effective_at` is clinical
+    # measurement time; `received_at` is when the platform first saw
+    # the payload (= IngestRaw.received_at); `created_at` is when
+    # THIS row was written. Default mirrors `created_at` for rows that
+    # arrive without an explicit ingest-boundary timestamp.
+    received_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False)
 
     __table_args__ = (
@@ -74,6 +80,8 @@ class OpenEhrComposition(db.Model):
     composition_json = db.Column(db.JSON, nullable=False)
     effective_at = db.Column(db.DateTime(timezone=True), nullable=True)
     source_service = db.Column(db.String(64), nullable=True)
+    # #294 RFC E1: see FhirResource.received_at docstring.
+    received_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False)
 
     __table_args__ = (
@@ -99,6 +107,8 @@ class HealthObservation(db.Model):
     source_service = db.Column(db.String(64), nullable=True)
     concept_guid = db.Column(db.String(36), nullable=True, index=True)
     effective_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    # #294 RFC E1: see FhirResource.received_at docstring.
+    received_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False)
 
 
@@ -115,6 +125,8 @@ class Activity(db.Model):
     source_code = db.Column(db.String(32), nullable=True)
     source_service = db.Column(db.String(64), nullable=True)
     effective_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    # #294 RFC E1: see FhirResource.received_at docstring.
+    received_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False)
 
 
