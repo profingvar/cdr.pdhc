@@ -13,7 +13,7 @@ The provenance is reconstructed from two sources, in order:
    extensions (gateway's `fhir_observation_builder` writes them
    there).
 2. The `ClinicalContext` row keyed by `ingest_raw_guid`, which
-   carries `careplan_guid`, `plandef_guid`, `transaction_guid` as
+   carries `care_plan_guid`, `plan_definition_guid`, `transaction_guid` as
    structured columns.
 
 Missing data degrades gracefully — the bundle simply omits the entry
@@ -100,35 +100,33 @@ def observation_provenance(guid):
 
     observation = fhir_row.resource_json or {}
 
-    # Primary source: the Observation itself (gateway's builder wrote
-    # the back-refs here).
-    sr_guid = _basedon_guid(observation, "ServiceRequest")
-    plandef_guid = _basedon_guid(observation, "PlanDefinition")
-    provider_org_guid = _performer_guid(observation)
-    contract_guid = _extension_ref_guid(observation, _EXT_CONTRACT)
-    requesting_org_guid = _extension_ref_guid(observation, _EXT_REQUESTING_ORG)
-
-    # Fallback to ClinicalContext for fields the Observation may not
-    # carry. Since #302 the model carries the full canonical 12-field
-    # set as structured columns; legacy column names careplan_guid /
-    # plandef_guid no longer exist.
+    # #307 phase 7: read context guids from the canonical
+    # ClinicalContext columns first (#302 widened the schema and
+    # backfilled them). Fall back to FhirResource.resource_json for
+    # rows that pre-date the backfill or whose ClinicalContext row is
+    # missing fields.
     context_row = (
         ClinicalContext.query
         .filter_by(ingest_raw_guid=fhir_row.ingest_raw_guid)
         .first()
     )
     if context_row is not None:
-        plandef_guid = plandef_guid or context_row.plan_definition_guid
-        sr_guid = sr_guid or context_row.service_request_guid
-        contract_guid = contract_guid or context_row.contract_guid
-        provider_org_guid = (provider_org_guid
-                             or context_row.provider_org_guid)
-        requesting_org_guid = (requesting_org_guid
-                               or context_row.requesting_org_guid)
-        # careplan_guid is exposed only if it differs from plandef
-        careplan_guid = context_row.care_plan_guid
+        sr_guid             = context_row.service_request_guid
+        plan_definition_guid        = context_row.plan_definition_guid
+        provider_org_guid   = context_row.provider_org_guid
+        contract_guid       = context_row.contract_guid
+        requesting_org_guid = context_row.requesting_org_guid
+        care_plan_guid       = context_row.care_plan_guid
     else:
-        careplan_guid = None
+        sr_guid = plan_definition_guid = provider_org_guid = None
+        contract_guid = requesting_org_guid = care_plan_guid = None
+
+    # Fill remaining gaps from the FHIR Observation's own back-refs.
+    sr_guid             = sr_guid             or _basedon_guid(observation, "ServiceRequest")
+    plan_definition_guid        = plan_definition_guid        or _basedon_guid(observation, "PlanDefinition")
+    provider_org_guid   = provider_org_guid   or _performer_guid(observation)
+    contract_guid       = contract_guid       or _extension_ref_guid(observation, _EXT_CONTRACT)
+    requesting_org_guid = requesting_org_guid or _extension_ref_guid(observation, _EXT_REQUESTING_ORG)
 
     entries = []
     # 1. The Observation itself — `fullUrl` is the cdr1 by-GUID path.
@@ -142,15 +140,15 @@ def observation_provenance(guid):
             "ServiceRequest", sr_guid,
             f"https://request.pdhc.se/api/v1/service-requests/{sr_guid}",
         ))
-    if plandef_guid:
+    if plan_definition_guid:
         entries.append(_stub_resource(
-            "PlanDefinition", plandef_guid,
-            f"https://plan.pdhc.se/api/v1/plandefinitions/{plandef_guid}",
+            "PlanDefinition", plan_definition_guid,
+            f"https://plan.pdhc.se/api/v1/plandefinitions/{plan_definition_guid}",
         ))
-    if careplan_guid and careplan_guid != plandef_guid:
+    if care_plan_guid and care_plan_guid != plan_definition_guid:
         entries.append(_stub_resource(
-            "CarePlan", careplan_guid,
-            f"https://plan.pdhc.se/api/v1/careplans/{careplan_guid}",
+            "CarePlan", care_plan_guid,
+            f"https://plan.pdhc.se/api/v1/careplans/{care_plan_guid}",
         ))
     if contract_guid:
         entries.append(_stub_resource(
