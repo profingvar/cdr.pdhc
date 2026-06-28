@@ -107,8 +107,8 @@ def _seed(app, *, observation, with_context=True, plandef_guid=None,
                 ingest_raw_guid=raw.guid,
                 patient_guid="pat-prov-1",
                 transaction_guid="tx-prov-1",
-                careplan_guid=careplan_guid,
-                plandef_guid=plandef_guid,
+                care_plan_guid=careplan_guid,
+                plan_definition_guid=plandef_guid,
                 source_service="gateway.pdhc",
             ))
 

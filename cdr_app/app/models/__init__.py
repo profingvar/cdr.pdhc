@@ -135,16 +135,34 @@ class Activity(db.Model):
 # ---------------------------------------------------------------------------
 
 class ClinicalContext(db.Model):
+    """Per-observation clinical context — the canonical 12-field record.
+
+    Matches plans/pdhc_clinical_context_harmonisation_plan.md §3
+    field-for-field. #302 widened this from 6 fields to the full 12 in
+    2026-06-28, renaming the legacy aliases (careplan_guid →
+    care_plan_guid; plandef_guid → plan_definition_guid).
+    """
     __tablename__ = "clinical_context"
 
     guid = db.Column(db.String(36), primary_key=True, default=_uuid)
     ingest_raw_guid = db.Column(db.String(36), db.ForeignKey("ingest_raw.guid"), nullable=False)
+
+    # --- canonical 12-field clinical context (plan §3) -----------------------
     patient_guid = db.Column(db.String(36), nullable=False, index=True)
+    service_request_guid = db.Column(db.String(36), nullable=True, index=True)
     transaction_guid = db.Column(db.String(36), nullable=True)
-    careplan_guid = db.Column(db.String(36), nullable=True)
-    plandef_guid = db.Column(db.String(36), nullable=True)
-    resolved_context_json = db.Column(db.JSON, nullable=True)
+    concept_guid = db.Column(db.String(36), nullable=True, index=True)
+    plan_definition_guid = db.Column(db.String(36), nullable=True)
+    care_plan_guid = db.Column(db.String(36), nullable=True)
+    contract_guid = db.Column(db.String(36), nullable=True)
+    requesting_org_guid = db.Column(db.String(36), nullable=True)
+    provider_org_guid = db.Column(db.String(36), nullable=True, index=True)
+    requester_user_guid = db.Column(db.String(36), nullable=True)
+    received_at = db.Column(db.DateTime(timezone=True), nullable=True)
     source_service = db.Column(db.String(64), nullable=True)
+
+    # --- bag-of-fields for unmapped extras + ops -----------------------------
+    resolved_context_json = db.Column(db.JSON, nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False)
 
 

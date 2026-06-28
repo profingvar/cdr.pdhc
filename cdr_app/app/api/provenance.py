@@ -109,18 +109,24 @@ def observation_provenance(guid):
     requesting_org_guid = _extension_ref_guid(observation, _EXT_REQUESTING_ORG)
 
     # Fallback to ClinicalContext for fields the Observation may not
-    # carry. Today the model stores careplan_guid + plandef_guid +
-    # transaction_guid as structured columns; service_request /
-    # contract / organisation guids only travel via the FHIR resource.
+    # carry. Since #302 the model carries the full canonical 12-field
+    # set as structured columns; legacy column names careplan_guid /
+    # plandef_guid no longer exist.
     context_row = (
         ClinicalContext.query
         .filter_by(ingest_raw_guid=fhir_row.ingest_raw_guid)
         .first()
     )
     if context_row is not None:
-        plandef_guid = plandef_guid or context_row.plandef_guid
+        plandef_guid = plandef_guid or context_row.plan_definition_guid
+        sr_guid = sr_guid or context_row.service_request_guid
+        contract_guid = contract_guid or context_row.contract_guid
+        provider_org_guid = (provider_org_guid
+                             or context_row.provider_org_guid)
+        requesting_org_guid = (requesting_org_guid
+                               or context_row.requesting_org_guid)
         # careplan_guid is exposed only if it differs from plandef
-        careplan_guid = context_row.careplan_guid
+        careplan_guid = context_row.care_plan_guid
     else:
         careplan_guid = None
 

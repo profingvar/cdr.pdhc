@@ -311,3 +311,109 @@ def register_cli(app):
         prefix = "Dry-run: would insert" if dry_run else "Inserted"
         click.echo(f"{prefix} {inserted} Live Observation rows. "
                    f"Skipped {skipped} (already present or no FHIR id).")
+
+    @app.cli.command("backfill-clinical-context")
+    @click.option("--dry-run", is_flag=True)
+    @click.option("--chunk", type=int, default=500)
+    def backfill_clinical_context(dry_run, chunk):
+        """#302: fill the new ClinicalContext columns from
+        FhirResource.resource_json for rows the migration's batch
+        SQL didn't catch (e.g. late arrivals after the schema bump).
+        Idempotent — only updates NULL columns.
+        """
+        from app.models import FhirResource, ClinicalContext
+
+        rows = (db.session.query(ClinicalContext, FhirResource)
+                .join(FhirResource,
+                      ClinicalContext.ingest_raw_guid == FhirResource.ingest_raw_guid)
+                .filter(FhirResource.resource_type == "Observation")
+                .filter((ClinicalContext.service_request_guid.is_(None))
+                        | (ClinicalContext.plan_definition_guid.is_(None))
+                        | (ClinicalContext.provider_org_guid.is_(None))
+                        | (ClinicalContext.contract_guid.is_(None))
+                        | (ClinicalContext.requesting_org_guid.is_(None))
+                        | (ClinicalContext.concept_guid.is_(None)))
+                .all())
+        click.echo(f"Candidate rows: {len(rows)}")
+
+        def _basedon(fhir, kind):
+            for entry in fhir.get("basedOn") or []:
+                # Prefer identifier.value (always the bare guid).
+                if entry.get("type") in (None, kind):
+                    v = (entry.get("identifier") or {}).get("value")
+                    bare = _bare_guid(v)
+                    if bare:
+                        return bare
+                ref = entry.get("reference") or ""
+                if ref.startswith(f"{kind}/") or (
+                        entry.get("type") == kind and "/" in ref):
+                    bare = _bare_guid(ref)
+                    if bare:
+                        return bare
+            return None
+
+        def _performer(fhir):
+            for p in fhir.get("performer") or []:
+                v = (p.get("identifier") or {}).get("value")
+                if v:
+                    return v
+            return None
+
+        import re
+        _guid_re = re.compile(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+            r"[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE,
+        )
+
+        def _bare_guid(value):
+            """Strip URL prefixes so a "https://…/Contract/<guid>" or
+            a "Contract/<guid>" reduces to just <guid>. Returns None
+            if no bare 36-char guid suffix found."""
+            if value is None:
+                return None
+            tail = str(value).rsplit("/", 1)[-1]
+            return tail if _guid_re.match(tail) else None
+
+        def _ext(fhir, key):
+            # Extension keys can be slash-suffixed (.../<key>) or
+            # colon-suffixed (urn:…:<key>) — accept both.
+            for ext in fhir.get("extension") or []:
+                url = ext.get("url") or ""
+                if (url.endswith("/" + key) or url.endswith(":" + key)
+                        or url == key):
+                    vr = ext.get("valueReference") or {}
+                    candidate = None
+                    if isinstance(vr, dict):
+                        candidate = (vr.get("reference")
+                                     or (vr.get("identifier") or {}).get("value"))
+                    candidate = (candidate
+                                 or ext.get("valueString")
+                                 or ext.get("valueUrl"))
+                    if candidate is None and not isinstance(vr, dict):
+                        candidate = vr
+                    return _bare_guid(candidate)
+            return None
+
+        filled = 0
+        for i, (cc, fr) in enumerate(rows, 1):
+            fhir = fr.resource_json or {}
+            cc.service_request_guid = (cc.service_request_guid
+                                       or _basedon(fhir, "ServiceRequest"))
+            cc.plan_definition_guid = (cc.plan_definition_guid
+                                       or _basedon(fhir, "PlanDefinition"))
+            cc.provider_org_guid    = cc.provider_org_guid    or _performer(fhir)
+            cc.contract_guid        = cc.contract_guid        or _ext(fhir, "contract")
+            cc.requesting_org_guid  = cc.requesting_org_guid  or _ext(fhir, "requesting-org")
+            # The platform's FHIR Observation carries the concept via the
+            # `transaction` extension (the concept-resolved transaction).
+            cc.concept_guid         = (cc.concept_guid
+                                       or _ext(fhir, "concept")
+                                       or _ext(fhir, "transaction"))
+            filled += 1
+            if not dry_run and i % chunk == 0:
+                db.session.commit()
+                click.echo(f"  committed {i}")
+        if not dry_run:
+            db.session.commit()
+        prefix = "Dry-run: would update" if dry_run else "Updated"
+        click.echo(f"{prefix} {filled} ClinicalContext rows.")

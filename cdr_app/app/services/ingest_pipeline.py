@@ -149,16 +149,27 @@ class IngestPipeline:
             _store_canonical(raw.guid, patient_guid, canonical, source_service,
                              received_at=raw.received_at)
 
-        # 5. Store context
+        # 5. Store context — canonical 12-field set (#302). Accept
+        # legacy alias keys (careplan_guid, plandef_guid) from
+        # producers during the deprecation window.
         if context:
             db.session.add(ClinicalContext(
                 ingest_raw_guid=raw.guid,
                 patient_guid=patient_guid,
+                service_request_guid=context.get("service_request_guid"),
                 transaction_guid=context.get("transaction_guid"),
-                careplan_guid=context.get("careplan_guid"),
-                plandef_guid=context.get("plandef_guid"),
+                concept_guid=context.get("concept_guid") or concept_guid,
+                plan_definition_guid=(context.get("plan_definition_guid")
+                                      or context.get("plandef_guid")),
+                care_plan_guid=(context.get("care_plan_guid")
+                                or context.get("careplan_guid")),
+                contract_guid=context.get("contract_guid"),
+                requesting_org_guid=context.get("requesting_org_guid"),
+                provider_org_guid=context.get("provider_org_guid"),
+                requester_user_guid=context.get("requester_user_guid"),
+                received_at=raw.received_at,
+                source_service=context.get("source_service") or source_service,
                 resolved_context_json=context.get("resolved_context_json"),
-                source_service=source_service,
             ))
 
         # 6. Dedupe registry
