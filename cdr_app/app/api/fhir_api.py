@@ -66,28 +66,6 @@ def capability_statement():
                     ],
                 }
                 for rt in _RESOURCE_TYPES
-            ] + [
-                {
-                    "type": "CodeSystem",
-                    "operation": [{
-                        "name": "lookup",
-                        "definition": "http://hl7.org/fhir/OperationDefinition/CodeSystem-lookup",
-                    }],
-                },
-                {
-                    "type": "ConceptMap",
-                    "operation": [{
-                        "name": "translate",
-                        "definition": "http://hl7.org/fhir/OperationDefinition/ConceptMap-translate",
-                    }],
-                },
-                {
-                    "type": "ValueSet",
-                    "operation": [{
-                        "name": "validate-code",
-                        "definition": "http://hl7.org/fhir/OperationDefinition/ValueSet-validate-code",
-                    }],
-                },
             ],
             "operation": [
                 {

@@ -20,13 +20,9 @@ _revinclude, plus chained search ``patient.identifier=…``.
 from __future__ import annotations
 
 import logging
-import math
-import os
-import statistics
 from datetime import datetime, timezone
 from typing import Any
 
-import requests
 from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy import and_, or_
 
@@ -521,111 +517,6 @@ def patient_everything(guid: str):
 # storage; aggregation runs in the analyse layer over raw Observations
 # fetched via GET /api/v1/fhir/Observation.
 # ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Terminology shims (§1.3.j)
-# ---------------------------------------------------------------------------
-
-@bp.post("/CodeSystem/$lookup")
-@bp.post("/CodeSystem/%24lookup")
-def codesystem_lookup():
-    """Proxy to termbank.pdhc's ``GET /CodeSystem/<system>/<code>``.
-
-    Body or query params: ``system`` (canonical_lib_name like 'loinc') and
-    ``code``. We forward to termbank and return the FHIR Parameters
-    response verbatim.
-    """
-    body = request.get_json(silent=True) or {}
-    params = {p["name"]: p for p in body.get("parameter") or []}
-    system = (params.get("system", {}).get("valueString")
-              or request.args.get("system"))
-    code = (params.get("code", {}).get("valueString")
-            or request.args.get("code"))
-    if not system or not code:
-        return jsonify(_operation_outcome(
-            "error", "required", "system and code are required",
-        )), 400
-
-    base = current_app.config.get("TERMBANK_BASE_URL") \
-        or os.environ.get("TERMBANK_BASE_URL", "http://127.0.0.1:9012")
-    url = f"{base.rstrip('/')}/CodeSystem/{system}/{code}"
-    try:
-        resp = requests.get(url, timeout=5.0)
-    except requests.RequestException as e:
-        return jsonify(_operation_outcome(
-            "error", "transient", f"termbank unreachable: {e}",
-        )), 503
-    if resp.status_code == 200:
-        return jsonify(resp.json()), 200
-    if resp.status_code == 404:
-        return jsonify(_operation_outcome(
-            "error", "not-found", f"{system}|{code} not in termbank",
-        )), 404
-    return jsonify(_operation_outcome(
-        "error", "exception", f"termbank returned {resp.status_code}",
-    )), 502
-
-
-@bp.post("/ConceptMap/$translate")
-@bp.post("/ConceptMap/%24translate")
-def conceptmap_translate():
-    """Proxy to xlate.pdhc's ``POST /translate``."""
-    body = request.get_json(silent=True) or {}
-    params = {p["name"]: p for p in body.get("parameter") or []}
-    system = (params.get("system", {}).get("valueString")
-              or request.args.get("system"))
-    code = (params.get("code", {}).get("valueString")
-            or request.args.get("code"))
-    if not system or not code:
-        return jsonify(_operation_outcome(
-            "error", "required", "system and code are required",
-        )), 400
-
-    base = current_app.config.get("XLATE_BASE_URL") \
-        or os.environ.get("XLATE_BASE_URL", "http://127.0.0.1:9017")
-    url = f"{base.rstrip('/')}/translate"
-    try:
-        resp = requests.post(url, json={"system": system, "code": code}, timeout=5.0)
-    except requests.RequestException as e:
-        return jsonify(_operation_outcome(
-            "error", "transient", f"xlate unreachable: {e}",
-        )), 503
-    if resp.status_code in (200, 422):
-        return jsonify(resp.json()), resp.status_code
-    return jsonify(_operation_outcome(
-        "error", "exception", f"xlate returned {resp.status_code}",
-    )), 502
-
-
-@bp.post("/ValueSet/$validate-code")
-@bp.post("/ValueSet/%24validate-code")
-def valueset_validate_code():
-    """Proxy to plan.pdhc's ``GET /api/v1/ValueSet/$validate-code``."""
-    body = request.get_json(silent=True) or {}
-    params = {p["name"]: p for p in body.get("parameter") or []}
-    system = (params.get("system", {}).get("valueString")
-              or request.args.get("system"))
-    code = (params.get("code", {}).get("valueString")
-            or request.args.get("code"))
-    if not system or not code:
-        return jsonify(_operation_outcome(
-            "error", "required", "system and code are required",
-        )), 400
-
-    base = current_app.config.get("PLAN_BASE_URL") \
-        or os.environ.get("PLAN_BASE_URL", "http://127.0.0.1:9030")
-    url = f"{base.rstrip('/')}/api/v1/ValueSet/$validate-code"
-    try:
-        resp = requests.get(url, params={"system": system, "code": code}, timeout=5.0)
-    except requests.RequestException as e:
-        return jsonify(_operation_outcome(
-            "error", "transient", f"plan unreachable: {e}",
-        )), 503
-    if resp.status_code == 200:
-        return jsonify(resp.json()), 200
-    return jsonify(_operation_outcome(
-        "error", "exception", f"plan returned {resp.status_code}",
-    )), 502
 
 
 # ---------------------------------------------------------------------------
