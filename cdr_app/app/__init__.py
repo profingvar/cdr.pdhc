@@ -73,7 +73,7 @@ def create_app(config_override=None):
 
     from .api import (
         health_bp, ingest_bp, fhir_bp, fhir_write_bp, fhir_read_bp,
-        openehr_bp, canonical_bp, cambio_bp, stats_bp,
+        openehr_bp, canonical_bp, cambio_bp, stats_bp, provenance_bp,
     )
     from .api.observations_search import bp as observations_search_bp
     app.register_blueprint(health_bp)
@@ -86,6 +86,7 @@ def create_app(config_override=None):
     app.register_blueprint(cambio_bp, url_prefix="/api/v1/cambio")
     app.register_blueprint(stats_bp, url_prefix="/api/v1")
     app.register_blueprint(observations_search_bp, url_prefix="/api/v1")
+    app.register_blueprint(provenance_bp, url_prefix="/api/v1")
 
     # Start Cambio delivery scheduler if enabled
     if app.config["CAMBIO_DELIVERY_ENABLED"] and not app.config.get("TESTING"):
