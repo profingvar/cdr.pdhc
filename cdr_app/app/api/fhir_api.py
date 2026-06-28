@@ -1,8 +1,13 @@
 """FHIR CapabilityStatement for cdr.pdhc.
 
-The actual resource read / search / vread / $everything / $stats / terminology
+The actual resource read / search / vread / $everything / terminology
 endpoints live in ``fhir_read.py`` and the create / update / Bundle endpoints
 live in ``fhir_write.py``. This module is now just the metadata surface.
+
+$stats / $agp aggregations were moved to dashboard.pdhc's analyse
+layer in phase 3 of the CDR1/Analyse split (ticket #289). cdr1 is
+pure storage; analyse fetches raw Observations via the search endpoint
+and computes aggregates locally.
 """
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify
@@ -35,8 +40,10 @@ def capability_statement():
             "documentation": (
                 "Common Clinical Data Repository. Per-type FHIR R5 tables, "
                 "transaction Bundle endpoint, $everything per Patient, "
-                "$stats per Observation code, terminology operations proxied "
-                "to termbank.pdhc / xlate.pdhc / plan.pdhc."
+                "per-point Observation provenance, terminology operations "
+                "proxied to termbank.pdhc / xlate.pdhc / plan.pdhc. "
+                "Group aggregations ($stats, $agp) are served by the "
+                "dashboard.pdhc analyse layer over raw search results."
             ),
             "resource": [
                 {
@@ -86,10 +93,6 @@ def capability_statement():
                 {
                     "name": "everything",
                     "definition": "http://hl7.org/fhir/OperationDefinition/Patient-everything",
-                },
-                {
-                    "name": "stats",
-                    "definition": "http://hl7.org/fhir/OperationDefinition/Observation-stats",
                 },
                 {
                     "name": "provenance",

@@ -1,11 +1,14 @@
-"""Phase 1.3 — read / search / vread / $everything / $stats / terminology shims.
+"""Phase 1.3 — read / search / vread / $everything / terminology shims.
 
 Covers the §1.5 unit-test list items related to the query surface:
 
   - everything, chained_search, include, terminology_shims
   - history_on_update + vread (the history side; write side covered in
     test_fhir_write.py)
-  - stats_math (against a fixed fixture)
+
+$stats / $agp aggregations were moved to dashboard.pdhc analyse layer
+in phase 3 of the CDR1/Analyse split (ticket #289). Their coverage is
+in dashboard.pdhc/app/tests/test_aggregations.py.
 
 Org-scoping by ``X-Org-Guids`` header is exercised so we know the
 Rule-24 filter is wired.
@@ -390,54 +393,6 @@ def test_everything_type_filter(client, fake_canon):
     )
     types = {e["resource"]["resourceType"] for e in resp.get_json()["entry"]}
     assert types == {"Patient", "Observation"}
-
-
-# ---------------------------------------------------------------------------
-# $stats
-# ---------------------------------------------------------------------------
-
-def test_stats_math_against_fixture(client, fake_canon):
-    """1000-value fixture with a known mean & sd. Compares against a
-    reference computed from the same data — not a hard-coded constant.
-
-    Each row has a unique (effective_at, value) tuple so the
-    Observation dedup key (patient_guid, code_canonical, effective_at,
-    value) doesn't collapse rows. Otherwise the count under-reports."""
-    import statistics as st
-    values = [6.0 + i * 0.001 for i in range(1000)]  # 1000 distinct values
-    for i, v in enumerate(values):
-        # Distinct minute-stamp per row → unique effective_at.
-        eff = f"2026-04-{(i // 1440) + 1:02d}T{(i // 60) % 24:02d}:{i % 60:02d}:00Z"
-        _post(client, "/api/v1/fhir/Observation", _hba1c(value=v, eff=eff))
-    resp = client.get(
-        "/api/v1/fhir/Observation/$stats?"
-        "code=https://termbank.pdhc.se/CodeSystem/loinc|4548-4&buckets=20",
-        headers=ORG_HEADERS,
-    )
-    assert resp.status_code == 200
-    body = resp.get_json()
-    params = {p["name"]: p for p in body["parameter"]}
-    assert params["n"]["valueInteger"] == 1000
-
-    expected_mean = st.fmean(values)
-    expected_sd = st.pstdev(values)
-    assert abs(params["mean"]["valueDecimal"] - expected_mean) < 1e-6
-    assert abs(params["sd"]["valueDecimal"] - expected_sd) < 1e-6
-
-    histogram = params["histogram"]["part"]
-    assert len(histogram) == 20
-    total = sum(int(h["valueString"].split(":")[-1]) for h in histogram)
-    assert total == 1000
-
-
-def test_stats_empty(client, fake_canon):
-    resp = client.get(
-        "/api/v1/fhir/Observation/$stats?code=4548-4",
-        headers=ORG_HEADERS,
-    )
-    assert resp.status_code == 200
-    params = {p["name"]: p for p in resp.get_json()["parameter"]}
-    assert params["n"]["valueInteger"] == 0
 
 
 # ---------------------------------------------------------------------------
