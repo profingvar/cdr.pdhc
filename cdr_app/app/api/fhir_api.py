@@ -91,6 +91,18 @@ def capability_statement():
                     "name": "stats",
                     "definition": "http://hl7.org/fhir/OperationDefinition/Observation-stats",
                 },
+                {
+                    "name": "provenance",
+                    "definition": "https://cdr.pdhc.se/OperationDefinition/Observation-provenance",
+                    "documentation": (
+                        "GET /api/v1/observations/<guid>/provenance — "
+                        "returns a Bundle (type=collection) with the "
+                        "Observation plus its linked ServiceRequest, "
+                        "PlanDefinition, Contract, requesting + "
+                        "provider Organization. Missing context "
+                        "degrades gracefully. Service-key auth."
+                    ),
+                },
             ],
         }],
     }), 200
