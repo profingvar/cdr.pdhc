@@ -1004,3 +1004,19 @@ FLASK_DEBUG=1
 | 9047 | PostgreSQL (with pgvector) |
 | 9048 | Reserved |
 | 9049 | Reserved |
+
+
+## Read-side lockdown (#293)
+
+When deployed as cdr2-5 or cdr_6 (i.e. *not* cdr1), set
+`CDR_READ_LOCKDOWN=true` in the service's `.env`. With the flag
+enabled, only `X-Source-Service: dashboard.pdhc` is permitted on
+read endpoints — gateway.pdhc and sim.pdhc are 403'd.
+
+Ingest endpoints (`POST /api/v1/ingest*`) stay public and continue
+to accept the normal write sources. The lockdown is enforced at the
+global request-loader layer in `cdr_app/app/auth.py`.
+
+cdr1 (cdr.pdhc.se) deliberately ships with `CDR_READ_LOCKDOWN=false`
+because gateway writes to cdr1 directly per the SSOT cutover.
+

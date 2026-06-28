@@ -117,8 +117,29 @@ KNOWN_FHIR_SERVICES = {
 }
 
 
+def _is_read_path(path: str) -> bool:
+    """Read-side paths gated by CDR_READ_LOCKDOWN (#293).
+
+    Ingest paths (/api/v1/ingest*) are NOT read paths — they're
+    already in _public_path() above. The provenance + by-source-id
+    sub-paths under /api/v1/observations are also public, so this
+    function never sees them.
+    """
+    return (path.startswith("/api/v1/fhir/")
+            or path.startswith("/api/v1/canonical/")
+            or path.startswith("/api/v1/openehr/")
+            or path.startswith("/api/v1/stats")
+            or path.startswith("/api/v1/cambio/"))
+
+
 def _service_key_outcome(app):
-    """None = no headers (fall through), True = valid, False = bad."""
+    """None = no headers (fall through), True = valid, False = bad.
+
+    When CDR_READ_LOCKDOWN is true AND the request targets a read
+    path, only X-Source-Service: dashboard.pdhc is accepted. The
+    flag is per-CDR-deploy (cdr1 ships false because gateway writes
+    to cdr1 directly per SSOT; cdr2-5 + cdr_6 ship true). See #293.
+    """
     source = request.headers.get("X-Source-Service", "").strip()
     key = request.headers.get("X-Service-Key", "").strip()
     if not source and not key:
@@ -130,6 +151,10 @@ def _service_key_outcome(app):
         return False
     expected = app.config.get(cfg_var, "")
     if not expected or key != expected:
+        return False
+    if (app.config.get("CDR_READ_LOCKDOWN")
+            and _is_read_path(request.path)
+            and source != "dashboard.pdhc"):
         return False
     g.source_service = source
     return True

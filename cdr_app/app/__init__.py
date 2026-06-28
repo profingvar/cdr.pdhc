@@ -45,6 +45,15 @@ def create_app(config_override=None):
     app.config["SIM_PDHC_SERVICE_KEY"] = os.environ.get("SIM_PDHC_SERVICE_KEY", "")
     app.config["DASHBOARD_PDHC_SERVICE_KEY"] = os.environ.get("DASHBOARD_PDHC_SERVICE_KEY", "")
 
+    # Read-side lockdown (#293). When true, only X-Source-Service:
+    # dashboard.pdhc is permitted on read endpoints. Ingest paths are
+    # public and unaffected. cdr1 (cdr.pdhc.se) deliberately ships
+    # false because gateway writes to cdr1 directly per SSOT; cdr2-5
+    # + cdr_6 ship true so analyse is the sole reader of those.
+    app.config["CDR_READ_LOCKDOWN"] = (
+        os.environ.get("CDR_READ_LOCKDOWN", "").lower() in ("1", "true", "yes")
+    )
+
     # Canonicalisation: when sim emits FHIR resources whose
     # coding[0].system = https://plan.pdhc.se/Concept, the canonicaliser
     # short-circuits the xlate hop and trusts plan.pdhc as the authority.
