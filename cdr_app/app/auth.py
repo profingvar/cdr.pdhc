@@ -99,6 +99,10 @@ def _public_path(path: str) -> bool:
         or path == "/healthz"
         or path.startswith("/api/v1/health")
         or path.startswith("/api/v1/ingest")
+        # /api/v1/observations/<guid>/provenance (per-point lookup,
+        # ticket #288). The route handler enforces @require_service_key
+        # itself. The bare /api/v1/observations search endpoint moved
+        # to dashboard.pdhc in #291.
         or path.startswith("/api/v1/observations")
         or path.startswith("/static/")
     )
