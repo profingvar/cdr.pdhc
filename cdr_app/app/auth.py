@@ -207,3 +207,82 @@ def register_cli(app):
             db.session.add(User(username=username, password_hash=_hash(password), is_su=True, is_admin=True))
         db.session.commit()
         click.echo(f"SU {username} ready")
+
+    @app.cli.command("backfill-live-observations")
+    @click.option("--dry-run", is_flag=True,
+                  help="Show what would be done without committing.")
+    @click.option("--chunk", type=int, default=500,
+                  help="Commit every N rows.")
+    @click.option("--limit", type=int, default=None,
+                  help="Cap the number of rows processed.")
+    def backfill_live_observations(dry_run, chunk, limit):
+        """SSOT phase 5 follow-up (#295): populate the Live observation
+        table from existing fhir_resources rows that have no Live twin.
+
+        The ingest pipeline now creates the Live row on every new
+        write (see ingest_pipeline.py step 3.5). This CLI catches the
+        7060 historical rows that were forwarded before that change.
+        """
+        from app.models import FhirResource
+        from app.models.resources import live_model
+        from app.services.ingest_pipeline import build_live_observation_row
+
+        LiveObs = live_model("Observation")
+        if LiveObs is None:
+            click.echo("Observation Live model not registered. Aborting.")
+            return
+
+        existing_guids = {row[0] for row in
+                          db.session.query(LiveObs.guid).all()}
+        click.echo(f"Live observation rows already present: {len(existing_guids)}")
+
+        q = (FhirResource.query
+             .filter(FhirResource.resource_type == "Observation")
+             .order_by(FhirResource.created_at.asc()))
+        if limit is not None:
+            q = q.limit(limit)
+
+        # Materialise the row set up front. yield_per() opens a named
+        # cursor that goes invalid the moment we commit a chunk, which
+        # made the first deploy bail after 500 rows. 7061 rows fits
+        # comfortably in memory; if this ever scales, switch to offset
+        # pagination.
+        candidates = q.all()
+        click.echo(f"Candidate Observation rows in fhir_resources: {len(candidates)}")
+
+        inserted = 0
+        skipped = 0
+        batch = 0
+        for fr in candidates:
+            fhir = fr.resource_json or {}
+            fhir_id = fhir.get("id")
+            if not fhir_id or fhir_id in existing_guids:
+                skipped += 1
+                continue
+            existing_guids.add(fhir_id)
+            if dry_run:
+                inserted += 1
+                continue
+            row = build_live_observation_row(
+                fhir,
+                patient_guid=fr.patient_guid,
+                source_service=fr.source_service,
+                ingest_raw_guid=fr.ingest_raw_guid,
+            )
+            if row is None:
+                skipped += 1
+                continue
+            db.session.add(row)
+            inserted += 1
+            batch += 1
+            if batch >= chunk:
+                db.session.commit()
+                click.echo(f"  committed {inserted} so far, {skipped} skipped …")
+                batch = 0
+
+        if not dry_run and batch:
+            db.session.commit()
+
+        prefix = "Dry-run: would insert" if dry_run else "Inserted"
+        click.echo(f"{prefix} {inserted} Live Observation rows. "
+                   f"Skipped {skipped} (already present or no FHIR id).")

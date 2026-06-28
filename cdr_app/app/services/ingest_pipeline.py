@@ -68,6 +68,30 @@ class IngestPipeline:
             db.session.add(fhir_row)
             db.session.flush()
 
+            # 3.5 Live observation row — #295. Mirrors the per-type FHIR
+            # search index used by GET /api/v1/fhir/Observation. Without
+            # this, the ingest path (gateway → cdr1) leaves the Live table
+            # empty, and the federated analyse search (dashboard.pdhc
+            # since #291) returns 0 entries. Idempotent: if a row with
+            # the same guid already exists, skip.
+            if (fhir_resource.get("resourceType") == "Observation"
+                    and fhir_resource.get("id")):
+                from app.models.resources import live_model
+                LiveObs = live_model("Observation")
+                existing_live = (LiveObs.query
+                                 .filter_by(guid=fhir_resource["id"])
+                                 .first()) if LiveObs is not None else None
+                if existing_live is None:
+                    live_row = build_live_observation_row(
+                        fhir_resource,
+                        patient_guid=patient_guid,
+                        source_service=source_service,
+                        ingest_raw_guid=raw.guid,
+                    )
+                    if live_row is not None:
+                        db.session.add(live_row)
+                        db.session.flush()
+
         # Store or generate openEHR composition
         if openehr_comp:
             openehr_row = OpenEhrComposition(
@@ -201,6 +225,94 @@ def _extract_loinc(fhir_resource):
         if coding.get("system") == "http://loinc.org":
             return coding.get("code")
     return None
+
+
+# ---------------------------------------------------------------------------
+# #295 — populate the Live observation table during ingest
+# ---------------------------------------------------------------------------
+
+# Code systems whose codings count as a canonical reference. LOINC is the
+# external standard; the urn:pdhc:concept + plan.pdhc URLs are the
+# platform-canonical references gateway emits via
+# gateway.pdhc/app/services/fhir_observation_builder.py.
+_CANONICAL_CODE_SYSTEMS = (
+    "http://loinc.org",
+    "urn:pdhc:concept",
+    "https://plan.pdhc.se/api/v1/concepts",
+)
+
+
+def _primary_canonical_uri(fhir_resource):
+    """Return `<system>/<code>` for the first canonical-system coding, else None.
+
+    Mirrors the shape resource_writer._primary_code_canonical produces so
+    cdr_app/app/api/fhir_read.py:_filter_by_code can equality-match it.
+    """
+    for coding in ((fhir_resource.get("code") or {}).get("coding") or []):
+        sys = coding.get("system")
+        if sys in _CANONICAL_CODE_SYSTEMS and coding.get("code"):
+            return f"{sys.rstrip('/')}/{coding['code']}"
+    return None
+
+
+def build_live_observation_row(fhir_resource, *, patient_guid, source_service,
+                                ingest_raw_guid=None):
+    """Build a Live Observation ORM row from a FHIR R5 Observation dict.
+
+    Mirrors the column layout of `public.observation` (per migration 0001).
+    Used by both the live ingest path (IngestPipeline.process step 3.5) and
+    the one-shot `flask backfill-live-observations` CLI (#295).
+    """
+    from datetime import datetime, timezone
+    from app.models.resources import live_model
+    LiveObservation = live_model("Observation")
+    if LiveObservation is None:
+        return None
+
+    now = datetime.now(timezone.utc)
+
+    # guid: prefer the FHIR resource's own id (gateway always sets one);
+    # fall back to ingest_raw_guid so a Live row always lands somewhere.
+    guid = fhir_resource.get("id") or ingest_raw_guid
+
+    code_canonical = _primary_canonical_uri(fhir_resource)
+    effective_at = _parse_effective(fhir_resource.get("effectiveDateTime"))
+
+    # Provider org from FHIR Observation.performer[0] (gateway always populates this).
+    org_guid = None
+    for performer in (fhir_resource.get("performer") or []):
+        ident = (performer.get("identifier") or {}).get("value")
+        if ident:
+            org_guid = ident
+            break
+    org_guid = org_guid or "00000000-0000-0000-0000-000000000000"
+
+    # Value extraction — pick the first present *value* field.
+    vq = fhir_resource.get("valueQuantity") or {}
+    value_quantity = vq.get("value")
+    value_unit = vq.get("unit") or vq.get("code")
+    value_string = fhir_resource.get("valueString")
+    value_code = ((fhir_resource.get("valueCodeableConcept") or {})
+                  .get("coding") or [{}])[0].get("code")
+
+    return LiveObservation(
+        guid=guid,
+        patient_guid=patient_guid,
+        org_guid=org_guid,
+        code_canonical=code_canonical,
+        effective_at=effective_at,
+        raw_json=fhir_resource,
+        source=source_service,
+        meta_tag=(fhir_resource.get("meta") or {}).get("tag"),
+        version_id=1,
+        created_at=now,
+        updated_at=now,
+        value_quantity=value_quantity,
+        value_unit=value_unit,
+        value_string=value_string,
+        value_code=value_code,
+        status=fhir_resource.get("status"),
+    )
 
 
 def _parse_effective(dt_str):
