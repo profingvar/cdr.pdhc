@@ -1020,3 +1020,34 @@ global request-loader layer in `cdr_app/app/auth.py`.
 cdr1 (cdr.pdhc.se) deliberately ships with `CDR_READ_LOCKDOWN=false`
 because gateway writes to cdr1 directly per the SSOT cutover.
 
+
+
+## org_guid vs provider_org_guid distinction (per #294 RFC C1, 2026-06-28)
+
+cdr.pdhc per-type Live tables (`observation`, `patient`, `encounter`, etc.)
+carry **two** organisation-context columns with different semantics. The
+shared word "org" is unfortunate but the meanings are deliberately distinct
+and both are load-bearing:
+
+- **`org_guid`** — the **data-owner / Rule 24 scope guard**. Determines
+  which orgs may READ this row. Set at ingest time from the request
+  context (typically the requesting org behind the originating
+  ServiceRequest). Used by every read endpoint's `_org_filter()` to
+  enforce Rule 24 ("non-admin users only see data for their own
+  organization_ids").
+- **`provider_org_guid`** — the **clinical fact**. Which org actually
+  performed the measurement / observation. Added by #294 phase 3
+  (#302), populated from the FHIR Observation.performer[0].identifier
+  the upstream builder writes.
+
+These can be the same org in many cases, but the distinction matters for
+audit ("the data is owned by the requesting org but was measured by
+the provider org") and is required by the harmonisation plan.
+
+Future code that needs the **clinical** provider must read
+`provider_org_guid`. Code enforcing **read access** keeps reading
+`org_guid`.
+
+See `~/T7_sidewinder/plans/pdhc_clinical_context_harmonisation_plan.md`
+§3 + `clinical_context_audit_2026-06-28.md` §4 decision C.
+
