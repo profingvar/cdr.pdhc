@@ -12,6 +12,9 @@ Verifies:
 import pytest
 
 from app.services.ingest_pipeline import (
+    _extract_loinc,
+    _extract_primary_code_hint,
+    _loinc_column_writable,
     _primary_canonical_uri,
     build_live_observation_row,
 )
@@ -57,6 +60,64 @@ class TestPrimaryCanonicalUri:
             {'system': 'http://loinc.org', 'code': 'later'},
         ]}}
         assert _primary_canonical_uri(f) == 'urn:pdhc:concept/first-canonical'
+
+
+class TestExtractPrimaryCodeHint:
+    """2026-07-02 fix — `_extract_loinc` (now aliased to
+    `_extract_primary_code_hint`) previously read ONLY
+    `http://loinc.org` codings. Gateway.pdhc forwards every Observation
+    with `urn:pdhc:concept` codings, so pre-fix every forwarded row
+    had a NULL loinc_code and the ingest pipeline's has_concept_ref
+    gate never fired for real production traffic."""
+
+    def test_loinc_still_recognised(self):
+        assert _extract_primary_code_hint(
+            _obs(sys='http://loinc.org', code='4548-4')
+        ) == '4548-4'
+
+    def test_pdhc_concept_recognised(self):
+        assert _extract_primary_code_hint(
+            _obs(sys='urn:pdhc:concept', code='concept-guid-x')
+        ) == 'concept-guid-x'
+
+    def test_plan_pdhc_url_recognised(self):
+        assert _extract_primary_code_hint(_obs(
+            sys='https://plan.pdhc.se/api/v1/concepts',
+            code='concept-guid-y',
+        )) == 'concept-guid-y'
+
+    def test_loinc_preferred_over_pdhc_when_both_present(self):
+        """LOINC is the external standard; when both are present,
+        the LOINC code wins so downstream terminology mapping stays
+        the same as pre-fix."""
+        f = {'code': {'coding': [
+            {'system': 'urn:pdhc:concept', 'code': 'pdhc-code'},
+            {'system': 'http://loinc.org', 'code': 'loinc-code'},
+        ]}}
+        assert _extract_primary_code_hint(f) == 'loinc-code'
+
+    def test_unknown_system_returns_none(self):
+        assert _extract_primary_code_hint(
+            _obs(sys='urn:other', code='x')
+        ) is None
+
+    def test_legacy_name_still_exported(self):
+        """`_extract_loinc` is used in the openEHR→FHIR ingest branch
+        and in existing tests; keep the alias so nothing breaks."""
+        assert _extract_loinc is _extract_primary_code_hint
+
+    def test_loinc_column_writable_gate(self):
+        """The `FhirResource.loinc_code` column is String(16). Short
+        LOINC codes fit; PDHC concept GUIDs (36 chars) do not."""
+        assert _loinc_column_writable('4548-4') is True
+        assert _loinc_column_writable('0'*16) is True
+        assert _loinc_column_writable('0'*17) is False
+        # 36-char UUID form doesn't fit.
+        assert _loinc_column_writable(
+            '00000000-0000-4000-8000-000000000001'
+        ) is False
+        assert _loinc_column_writable(None) is False
+        assert _loinc_column_writable('') is False
 
 
 class TestBuildLiveObservationRow:

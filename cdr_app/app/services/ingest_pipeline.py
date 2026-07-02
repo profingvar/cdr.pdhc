@@ -54,7 +54,11 @@ class IngestPipeline:
 
         # Store FHIR resource
         if fhir_resource:
-            loinc_code = _extract_loinc(fhir_resource)
+            primary_code = _extract_primary_code_hint(fhir_resource)
+            # `loinc_code` column is String(16). LOINC codes fit; PDHC
+            # concept GUIDs (36 chars) do not. Only persist a value
+            # here when it fits — otherwise the flush blows up.
+            loinc_code = primary_code if _loinc_column_writable(primary_code) else None
             effective_at = _parse_effective(fhir_resource.get("effectiveDateTime"))
             fhir_row = FhirResource(
                 ingest_raw_guid=raw.guid,
@@ -129,12 +133,17 @@ class IngestPipeline:
         if not fhir_resource and openehr_comp:
             generated_fhir = FhirOpenEhrTransformer.openehr_to_fhir(openehr_comp, patient_guid)
             if generated_fhir:
+                gen_primary_code = _extract_primary_code_hint(generated_fhir)
+                gen_loinc_code = (
+                    gen_primary_code if _loinc_column_writable(gen_primary_code)
+                    else None
+                )
                 fhir_row = FhirResource(
                     ingest_raw_guid=raw.guid,
                     patient_guid=patient_guid,
                     resource_type="Observation",
                     resource_json=generated_fhir,
-                    loinc_code=_extract_loinc(generated_fhir),
+                    loinc_code=gen_loinc_code,
                     effective_at=_parse_effective(generated_fhir.get("effectiveDateTime")),
                     source_service=source_service,
                     received_at=raw.received_at,
@@ -179,8 +188,24 @@ class IngestPipeline:
             patient_guid=patient_guid,
         ))
 
-        # 7. Enqueue Cambio delivery (if concept-mapped)
-        has_concept_ref = bool(concept_guid or (fhir_row and fhir_row.loinc_code))
+        # 7. Enqueue Cambio delivery (if concept-mapped).
+        # A concept ref is present when:
+        #   - the ingest body's `canonical.concept_guid` field is set, OR
+        #   - the FHIR resource carries a LOINC coding (fits the
+        #     `loinc_code` column), OR
+        #   - the FHIR resource carries a PDHC-scoped concept coding
+        #     (urn:pdhc:concept / plan.pdhc concept URL — matched via
+        #     _primary_canonical_uri, which is what
+        #     LiveObservation.code_canonical is also keyed on).
+        # Pre-fix, the third branch was missing: gateway.pdhc forwards
+        # every Observation with `urn:pdhc:concept` codings and no
+        # `canonical.concept_guid` in the wrapping payload, so Cambio
+        # delivery was never enqueued for real production traffic.
+        has_concept_ref = bool(
+            concept_guid
+            or (fhir_row and fhir_row.loinc_code)
+            or (fhir_row and _primary_canonical_uri(fhir_row.resource_json))
+        )
         if has_concept_ref:
             if fhir_row:
                 db.session.add(CambioDeliveryLog(
@@ -237,11 +262,57 @@ class IngestPipeline:
         }
 
 
-def _extract_loinc(fhir_resource):
-    for coding in ((fhir_resource.get("code") or {}).get("coding") or []):
+def _extract_primary_code_hint(fhir_resource):
+    """Return the primary code from any canonical coding system.
+
+    Prefers LOINC (external standard). Falls back to PDHC-scoped
+    concept codings (`urn:pdhc:concept` or the legacy plan.pdhc
+    concept URL) — gateway.pdhc emits these on every forwarded
+    Observation. Prior to this change (pre-#296 followup 2026-07-02)
+    the function only read `http://loinc.org`, so every forwarded
+    row had a NULL `loinc_code` and the `has_concept_ref` gate
+    below wouldn't fire for PDHC-scoped observations.
+
+    Returns the raw `code` field. When the source is a PDHC concept
+    that's a 36-char GUID; when it's LOINC it's a short LOINC code.
+    Callers writing into the `FhirResource.loinc_code` String(16)
+    column must filter to values that fit — see the ingest site.
+
+    Kept exported under the old name `_extract_loinc` too because
+    tests and downstream call sites (`_extract_loinc(generated_fhir)`
+    from the openEHR→FHIR path) reference it verbatim.
+    """
+    codings = ((fhir_resource.get("code") or {}).get("coding") or [])
+    # LOINC first — it's the external-standard preference.
+    for coding in codings:
         if coding.get("system") == "http://loinc.org":
             return coding.get("code")
+    # PDHC-scoped fallback covers everything gateway.pdhc forwards.
+    for coding in codings:
+        if coding.get("system") in (
+            "urn:pdhc:concept",
+            "https://plan.pdhc.se/api/v1/concepts",
+        ):
+            return coding.get("code")
     return None
+
+
+# Legacy name preserved for back-compat with existing tests and the
+# openEHR-generated-FHIR ingest branch. New callers should use the
+# explicit `_extract_primary_code_hint` name.
+_extract_loinc = _extract_primary_code_hint
+
+
+# `loinc_code` column is `db.String(16)` (see models.__init__.FhirResource).
+# LOINC codes fit; a PDHC concept GUID (36 chars) does not. Callers that
+# write into that column must filter with this helper first — otherwise
+# the flush raises a DataError.
+_LOINC_CODE_COLUMN_MAX = 16
+
+
+def _loinc_column_writable(code):
+    """True if `code` fits `FhirResource.loinc_code` String(16)."""
+    return bool(code) and len(code) <= _LOINC_CODE_COLUMN_MAX
 
 
 # ---------------------------------------------------------------------------
