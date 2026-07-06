@@ -32,13 +32,32 @@ _DEV_BLOB = {
 }
 
 
+def _phases(blob: dict) -> list:
+    """Reform-canonical phases (M0 #416): prefer session_phases (Option C),
+    fall back to the dual-emitted legacy effective_phases for pre-reform
+    tokens."""
+    return blob.get("session_phases") or blob.get("effective_phases") or []
+
+
+def scope_org_guids(blob: dict) -> list:
+    """Zone-1 read scope (M0 #416): affiliations[].care_unit_guid — the exact
+    equivalent of the legacy flat organization_ids semantics — with a dual-read
+    fallback to organization_ids for tokens issued before the reform blob went
+    live. Public so fhir_read._org_filter uses the same derivation. Zone-2
+    (parent care organisation) is deliberately NOT folded in here."""
+    affs = blob.get("affiliations") or []
+    if affs:
+        return [a["care_unit_guid"] for a in affs if a.get("care_unit_guid")]
+    return list(blob.get("organization_ids") or [])
+
+
 def _blob_to_user(blob: dict) -> SimpleNamespace:
     return SimpleNamespace(
         guid=blob.get("user_guid"),
         username=blob.get("email") or blob.get("user_guid"),
         is_admin=bool(blob.get("is_su_admin")),
         is_su=bool(blob.get("is_su_admin")),
-        org_ids=list(blob.get("organization_ids") or []),
+        org_ids=scope_org_guids(blob),
         blob=blob,
     )
 
@@ -50,7 +69,7 @@ def has_analysis_access(blob: Optional[dict]) -> bool:
         return True
     return (
         blob.get("user_type") == "professional"
-        and "analysis" in (blob.get("effective_phases") or [])
+        and "analysis" in _phases(blob)
     )
 
 

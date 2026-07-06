@@ -27,6 +27,7 @@ from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy import and_, or_
 
 from app import db
+from app.auth import scope_org_guids
 from app.models.resources import (
     ChangeFeed,
     history_model,
@@ -71,8 +72,10 @@ def _org_filter(query, Live, *, request_args=None):
     blob = getattr(g, "access_blob", None) or {}
     if blob.get("is_su_admin"):
         return query
-    org_ids = blob.get("organization_ids")
-    if isinstance(org_ids, list) and org_ids:
+    # M0 #416: Zone-1 scope from affiliations[] (dual-read fallback to
+    # organization_ids), shared with auth._blob_to_user.
+    org_ids = scope_org_guids(blob)
+    if org_ids:
         return query.filter(Live.org_guid.in_(org_ids))
 
     # Legacy header path
@@ -541,7 +544,7 @@ def events():
 
     blob = getattr(g, "access_blob", None) or {}
     if not blob.get("is_su_admin") and request.headers.get("X-Is-Admin") != "1":
-        org_ids = blob.get("organization_ids") or []
+        org_ids = scope_org_guids(blob)  # M0 #416: Zone-1 affiliations scope
         if not org_ids:
             org_ids = [
                 s.strip() for s in request.headers.get("X-Org-Guids", "").split(",")
