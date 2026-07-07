@@ -79,7 +79,14 @@ def clean_tables(app):
 ORG = "org-aaaa"
 ADMIN_HEADERS = {"X-Is-Admin": "1"}
 ORG_HEADERS = {"X-Org-Guids": ORG}
-WRITE_HEADERS = {"X-Org-Guid": ORG, "X-Source-Service": "test"}
+# Writes authenticate as a known FHIR service (sim.pdhc) with its service key;
+# X-Org-Guid tags the stored row's org. (#436: was source "test" with no key,
+# which _service_key_outcome rejected → 403.)
+WRITE_HEADERS = {
+    "X-Org-Guid": ORG,
+    "X-Source-Service": "sim.pdhc",
+    "X-Service-Key": "test-sim-key",
+}
 
 PATIENT_GUID = "pat-1111-2222-3333-4444"
 
