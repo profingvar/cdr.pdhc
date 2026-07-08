@@ -284,6 +284,12 @@ class CambioDeliveryLog(db.Model):
     last_attempt_at = db.Column(db.DateTime(timezone=True), nullable=True)
     last_error = db.Column(db.Text, nullable=True)
     delivered_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    # X2 (#423): the operator SSO session id captured from the inbound ingest
+    # request (X-Operator-Session-Id, forwarded by gateway), replayed by the
+    # cambio_worker as X-Operator-Session-Id on the cdr1 -> Cambio hop so the
+    # chain-of-custody survives the async queue gap. Nullable = no operator
+    # correlation (machine ingest).
+    operator_session_id = db.Column(db.String(128), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False)
 
     __table_args__ = (

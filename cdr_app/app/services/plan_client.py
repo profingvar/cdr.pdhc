@@ -167,7 +167,9 @@ class PlanClient:
         last_status: int | None = None
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                resp = requests.get(url, params=params, timeout=self.timeout)
+                from app.services.session_headers import outbound_session_headers
+                resp = requests.get(url, params=params,
+                                    headers=outbound_session_headers(), timeout=self.timeout)
             except requests.RequestException as e:
                 log.warning("plan.pdhc unreachable on %s (attempt %d): %s",
                             operation, attempt + 1, e)

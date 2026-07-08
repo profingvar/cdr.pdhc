@@ -73,8 +73,10 @@ class XlateClient:
 
         url = f"{self.base_url}/translate"
         try:
+            from app.services.session_headers import outbound_session_headers
             resp = requests.post(
-                url, json={"system": system, "code": code}, timeout=self.timeout
+                url, json={"system": system, "code": code},
+                headers=outbound_session_headers(), timeout=self.timeout
             )
         except requests.RequestException as e:
             log.warning("xlate.pdhc unreachable: %s", e)

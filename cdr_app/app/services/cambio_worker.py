@@ -68,7 +68,8 @@ def _deliver_one(log):
             return
 
         cambio_id = CambioClient.deliver_fhir_observation(
-            fhir_row.resource_json, cambio_patient_id
+            fhir_row.resource_json, cambio_patient_id,
+            operator_session_id=log.operator_session_id,
         )
         log.cambio_resource_id = cambio_id
         log.status = "delivered"
@@ -88,7 +89,8 @@ def _deliver_one(log):
             return
 
         cambio_uid = CambioClient.deliver_openehr_composition(
-            comp_row.composition_json, ehr_id
+            comp_row.composition_json, ehr_id,
+            operator_session_id=log.operator_session_id,
         )
         log.cambio_resource_id = cambio_uid
         log.status = "delivered"

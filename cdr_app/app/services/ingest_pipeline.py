@@ -19,6 +19,15 @@ class IngestPipeline:
         patient_guid = body["patient_guid"]
         source_type = body.get("source_type", "fhir")
 
+        # X2 (#423): capture the operator session forwarded on the ingest
+        # request (X-Operator-Session-Id, set by gateway) so the async
+        # cambio_worker can replay it on the cdr1 -> Cambio hop.
+        op_sid = None
+        if headers:
+            op_sid = (headers.get("X-Operator-Session-Id") or None)
+            if op_sid:
+                op_sid = str(op_sid)[:128]
+
         # 1. Deduplicate
         payload_hash = IngestRaw.compute_hash(body)
         existing = DedupeRegistry.query.filter_by(
@@ -213,6 +222,7 @@ class IngestPipeline:
                     fhir_resource_guid=fhir_row.guid,
                     patient_guid=patient_guid,
                     delivery_type="fhir",
+                    operator_session_id=op_sid,
                     status="pending",
                 ))
             if openehr_row:
@@ -221,6 +231,7 @@ class IngestPipeline:
                     openehr_comp_guid=openehr_row.guid,
                     patient_guid=patient_guid,
                     delivery_type="openehr",
+                    operator_session_id=op_sid,
                     status="pending",
                 ))
         else:
@@ -231,6 +242,7 @@ class IngestPipeline:
                     fhir_resource_guid=fhir_row.guid,
                     patient_guid=patient_guid,
                     delivery_type="fhir",
+                    operator_session_id=op_sid,
                     status="skipped",
                 ))
 

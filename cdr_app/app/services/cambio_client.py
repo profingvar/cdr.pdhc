@@ -56,7 +56,8 @@ class CambioClient:
         return cls._token
 
     @classmethod
-    def _headers(cls, extra=None):
+    def _headers(cls, extra=None, operator_session_id=None):
+        from app.services.session_headers import outbound_session_headers
         token = cls._get_token()
         h = {
             "Authorization": f"Bearer {token}",
@@ -65,6 +66,10 @@ class CambioClient:
         }
         if extra:
             h.update(extra)
+        # X2 (#423): replay the operator session on the cdr1 -> Cambio hop.
+        # Pass operator_session_id explicitly from the worker (no request
+        # context); it resolves from the live request otherwise.
+        h.update(outbound_session_headers(operator_session_id))
         return h
 
     @classmethod
@@ -191,7 +196,7 @@ class CambioClient:
     # ------------------------------------------------------------------
 
     @classmethod
-    def deliver_fhir_observation(cls, fhir_json, cambio_patient_id):
+    def deliver_fhir_observation(cls, fhir_json, cambio_patient_id, operator_session_id=None):
         """POST a FHIR Observation to the Cambio FHIR Gateway. Returns cambio resource id."""
         base = cls._base_url()
         obs = dict(fhir_json)
@@ -200,7 +205,7 @@ class CambioClient:
         resp = requests.post(
             f"{base}/service.fhir-gateway/fhir/Observation",
             json=obs,
-            headers=cls._headers(cls._org_headers()),
+            headers=cls._headers(cls._org_headers(), operator_session_id=operator_session_id),
             timeout=15,
         )
         resp.raise_for_status()
@@ -212,10 +217,10 @@ class CambioClient:
     # ------------------------------------------------------------------
 
     @classmethod
-    def deliver_openehr_composition(cls, composition_json, ehr_id):
+    def deliver_openehr_composition(cls, composition_json, ehr_id, operator_session_id=None):
         """POST an openEHR composition to the Cambio xCDR. Returns composition uid."""
         base = cls._base_url()
-        headers = cls._headers(cls._org_headers())
+        headers = cls._headers(cls._org_headers(), operator_session_id=operator_session_id)
         headers["Content-Type"] = "application/json"
 
         comp = composition_json.get("composition", composition_json)
