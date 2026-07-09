@@ -1,0 +1,13 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.bak*
+*.pid
+gunicorn.pid
+logs/
+*.log
+.git/
+.pytest_cache/
+tests/
