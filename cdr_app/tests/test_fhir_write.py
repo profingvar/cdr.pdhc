@@ -139,14 +139,31 @@ def _foreign_hba1c_body() -> dict:
     return body
 
 
+# Writes authenticate as a known FHIR service (sim.pdhc) with its service
+# key (pinned in conftest); unknown sources are rejected 403 (#436).
+WRITE_HEADERS = {
+    "X-Org-Guid": "org-xyz",
+    "X-Source-Service": "sim.pdhc",
+    "X-Service-Key": "test-sim-key",
+}
+
+
+# Keys pinned in conftest per KNOWN_FHIR_SERVICES source.
+_SERVICE_KEYS = {
+    "sim.pdhc": "test-sim-key",
+    "gateway.pdhc": "test-gateway-key",
+}
+
+
 def _post_observation(client, body, *, request_id="req-001",
-                      org="org-xyz", source="test-suite"):
+                      org="org-xyz", source="sim.pdhc"):
     return client.post(
         "/api/v1/fhir/Observation",
         json=body,
         headers={
             "X-Org-Guid": org,
             "X-Source-Service": source,
+            "X-Service-Key": _SERVICE_KEYS[source],
             "X-Request-Id": request_id,
         },
     )
@@ -271,14 +288,16 @@ def test_plan_miss_dedup_increments_seen_count(client, fake_canon, app):
 
 
 def test_provenance_stamped(client, fake_canon):
+    # gateway.pdhc is deliberately NOT in KNOWN_FHIR_SERVICES (it writes
+    # via /api/v1/ingest, never the FHIR API), so provenance stamping is
+    # asserted with sim.pdhc — the source flows into meta.source verbatim.
     resp = _post_observation(client, _hba1c_body(),
                               request_id="trace-42",
-                              org="org-rumi",
-                              source="gateway.pdhc")
+                              org="org-rumi")
     assert resp.status_code == 201
     body = resp.get_json()
     meta = body["meta"]
-    assert "source" in meta and "gateway.pdhc" in meta["source"] and "trace-42" in meta["source"]
+    assert "source" in meta and "sim.pdhc" in meta["source"] and "trace-42" in meta["source"]
     tags = meta.get("tag") or []
     assert any(t.get("code") == "ingest_at" for t in tags)
     sec = meta.get("security") or []
@@ -325,8 +344,7 @@ def test_history_on_update(client, fake_canon, app):
     r2 = client.put(
         f"/api/v1/fhir/Observation/{guid}",
         json=new_body,
-        headers={"X-Org-Guid": "org-xyz", "X-Source-Service": "test",
-                 "If-Match": r1.headers["ETag"]},
+        headers={**WRITE_HEADERS, "If-Match": r1.headers["ETag"]},
     )
     assert r2.status_code in (200, 201)
     assert r2.headers["ETag"].startswith('W/"2"')
@@ -347,11 +365,7 @@ def test_etag_if_match_stale_returns_412(client, fake_canon):
     r2 = client.put(
         f"/api/v1/fhir/Observation/{guid}",
         json=new_body,
-        headers={
-            "X-Org-Guid": "org-xyz",
-            "X-Source-Service": "test",
-            "If-Match": 'W/"99"',  # stale
-        },
+        headers={**WRITE_HEADERS, "If-Match": 'W/"99"'},  # stale
     )
     assert r2.status_code == 412
 
@@ -399,8 +413,7 @@ def test_change_feed_event_emitted_on_update(client, fake_canon, app):
     client.put(
         f"/api/v1/fhir/Observation/{guid}",
         json=new_body,
-        headers={"X-Org-Guid": "org-xyz", "X-Source-Service": "test",
-                 "If-Match": r1.headers["ETag"]},
+        headers={**WRITE_HEADERS, "If-Match": r1.headers["ETag"]},
     )
     with app.app_context():
         events = ChangeFeed.query.order_by(ChangeFeed.seq).all()
@@ -419,8 +432,7 @@ def test_bundle_transaction_dispatches_to_per_type_writers(client, fake_canon, a
     resp = client.post(
         "/api/v1/fhir/Bundle",
         json=bundle,
-        headers={"X-Org-Guid": "org-xyz", "X-Source-Service": "test",
-                 "X-Request-Id": "bundle-1"},
+        headers={**WRITE_HEADERS, "X-Request-Id": "bundle-1"},
     )
     assert resp.status_code == 200
     body = resp.get_json()
@@ -463,7 +475,7 @@ def test_bundle_transaction_rolls_back_on_entry_failure(client, fake_canon, app)
     }
     resp = client.post(
         "/api/v1/fhir/Bundle", json=bundle,
-        headers={"X-Org-Guid": "org-xyz", "X-Source-Service": "test"},
+        headers=WRITE_HEADERS,
     )
     assert resp.status_code == 422
     with app.app_context():
