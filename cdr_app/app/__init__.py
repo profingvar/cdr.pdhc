@@ -61,6 +61,8 @@ def create_app(config_override=None):
     # step on transient unreachability so seeding doesn't deadlock if
     # plan.pdhc is briefly unreachable.
     app.config["PLAN_BASE_URL"] = os.environ.get("PLAN_BASE_URL", "")
+    # #422 — consent verdicts (analysis-filter) come from ips.pdhc.
+    app.config["IPS_BASE_URL"] = os.environ.get("IPS_BASE_URL", "")
     app.config["STRICT_CANONICALISATION"] = (
         os.environ.get("STRICT_CANONICALISATION", "true").lower() in ("true", "1", "yes")
     )

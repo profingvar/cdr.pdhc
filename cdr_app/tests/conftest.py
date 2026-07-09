@@ -46,6 +46,20 @@ def app():
         if request.headers.get("X-Is-Admin") == "1":
             blob = {"user_type": "professional", "is_su_admin": True,
                     "effective_phases": ["analysis"], "organization_ids": []}
+        elif request.headers.get("X-Aff-Role"):
+            # Reform-shaped operator blob for #422 consent tests: one active
+            # affiliation whose role drives analysis_purpose().
+            projects = [p for p in
+                        request.headers.get("X-Aff-Projects", "").split(",") if p]
+            blob = {"user_type": "professional", "is_su_admin": False,
+                    "effective_phases": ["analysis"],
+                    "affiliations": [{
+                        "affiliation_guid": "aff-t1",
+                        "role": request.headers["X-Aff-Role"],
+                        "care_unit_guid": request.headers.get(
+                            "X-Aff-Org", "org-aaaa"),
+                        "research_project_guids": projects,
+                    }]}
         elif request.headers.get("X-Org-Guids"):
             orgs = [o for o in request.headers["X-Org-Guids"].split(",") if o]
             blob = {"user_type": "professional", "is_su_admin": False,
@@ -67,6 +81,19 @@ def db_session(app):
     with app.app_context():
         yield _db
         _db.session.rollback()
+
+
+@pytest.fixture(autouse=True)
+def _consent_allow_all(monkeypatch):
+    """#422 default: ips analysis-filter allows everyone, so the rest of the
+    suite stays hermetic (no IPS_BASE_URL → the real call would 503 every
+    operator-blob read, fail-closed by design). test_analysis_consent.py
+    overrides this with its own verdicts."""
+    from app.services import analysis_consent as ac
+    monkeypatch.setattr(
+        ac, "_analysis_filter",
+        lambda guids, purpose, projects: {"allowed": list(guids),
+                                          "excluded": []})
 
 
 @pytest.fixture

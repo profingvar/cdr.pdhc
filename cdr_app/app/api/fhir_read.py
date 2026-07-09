@@ -33,6 +33,16 @@ from app.models.resources import (
     history_model,
     live_model,
 )
+from app.services.analysis_consent import (
+    check_patient_allowed,
+    consent_allowed_guids,
+)
+
+
+def _row_patient_guid(row) -> str | None:
+    """Patient rows identify themselves; every other type carries
+    patient_guid (§1.1.b common columns)."""
+    return getattr(row, "patient_guid", None) or getattr(row, "guid", None)
 
 
 log = logging.getLogger(__name__)
@@ -108,6 +118,7 @@ def read_instance(resource_type: str, guid: str):
     row = q.one_or_none()
     if row is None:
         return jsonify(_operation_outcome("error", "not-found", "resource not found")), 404
+    check_patient_allowed(_row_patient_guid(row))  # #422
     resp = jsonify(row.raw_json)
     resp.headers["ETag"] = row.etag or f'W/"{row.version_id}"'
     return resp, 200
@@ -136,6 +147,7 @@ def history_list(resource_type: str, guid: str):
     )
     if live_row is None and not hist_rows:
         return jsonify(_operation_outcome("error", "not-found", "resource not found")), 404
+    check_patient_allowed(_row_patient_guid(live_row or hist_rows[0]))  # #422
 
     entries = []
     if live_row is not None:
@@ -177,6 +189,7 @@ def vread(resource_type: str, guid: str, vid: int):
         Live,
     ).one_or_none()
     if live_row is not None and live_row.version_id == vid:
+        check_patient_allowed(_row_patient_guid(live_row))  # #422
         resp = jsonify(live_row.raw_json)
         resp.headers["ETag"] = live_row.etag or f'W/"{vid}"'
         return resp, 200
@@ -187,6 +200,7 @@ def vread(resource_type: str, guid: str, vid: int):
     ).one_or_none()
     if hist_row is None:
         return jsonify(_operation_outcome("error", "not-found", "version not found")), 404
+    check_patient_allowed(_row_patient_guid(hist_row))  # #422
     resp = jsonify(hist_row.raw_json)
     resp.headers["ETag"] = hist_row.etag or f'W/"{vid}"'
     return resp, 200
@@ -259,6 +273,7 @@ def search(resource_type: str):
         # we keep it dialect-portable: pull a candidate set then filter in Python.
         rows = q.limit(1000).all()
         rows = [r for r in rows if _has_tag(r.meta_tag or [], tag_arg)]
+        rows = _consent_filter(rows)  # #422
         return _bundle_searchset(rows, resource_type, with_includes=False)
 
     # _count + sort (default to most recent first by effective_at).
@@ -272,7 +287,21 @@ def search(resource_type: str):
     q = q.limit(count)
 
     rows = q.all()
+    rows = _consent_filter(rows)  # #422
     return _bundle_searchset(rows, resource_type)
+
+
+def _consent_filter(rows: list) -> list:
+    """Drop rows whose patient is excluded by the operator's role-derived
+    purpose (#422). One batched ips call per request; pass-through for
+    machine/SU contexts (consent_allowed_guids handles the gating)."""
+    guids = {_row_patient_guid(r) for r in rows if _row_patient_guid(r)}
+    if not guids:
+        return rows
+    allowed = consent_allowed_guids(guids)
+    if allowed == guids:
+        return rows
+    return [r for r in rows if _row_patient_guid(r) in allowed]
 
 
 def _filter_patients_by_identifier(Patient, ident_value: str):
@@ -474,6 +503,7 @@ def patient_everything(guid: str):
     patient = pat_q.one_or_none()
     if patient is None:
         return jsonify(_operation_outcome("error", "not-found", "Patient not found")), 404
+    check_patient_allowed(guid)  # #422 — gates the whole compartment
 
     since = request.args.get("_since")
     types_filter = set((request.args.get("_type") or "").split(",")) - {""}
