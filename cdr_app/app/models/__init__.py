@@ -310,3 +310,36 @@ from app.models.resources import (  # noqa: E402, F401
     live_model,
     history_model,
 )
+
+
+class ReadAudit(db.Model):
+    """X1 (#407/#443) — one row per patient-touching FHIR read.
+
+    cdr1..5 SoT counterpart of cdr_6's cdr_6_read_audit (M0 #412
+    reference). Tuple columns per the emission contract in
+    plans/pdhc_data_shapes.md §5: role_guid = the ACTIVE affiliation's
+    role; purpose/access_basis are the closed enums. Machine reads
+    (dashboard federation, sim) carry caller_service with NULL tuple —
+    the sibling reader holds the operator context and logs the real
+    purpose on its side.
+    """
+    __tablename__ = "cdr_read_audit"
+
+    id = db.Column(db.Integer, primary_key=True)
+    timestamp = db.Column(db.DateTime(timezone=True), default=_now,
+                          nullable=False, index=True)
+
+    caller_service = db.Column(db.String(64), nullable=True, index=True)
+    caller_user_guid = db.Column(db.String(36), nullable=True, index=True)
+    caller_org_guids = db.Column(db.JSON, nullable=True)
+
+    route = db.Column(db.String(200), nullable=False, index=True)
+    resource_type = db.Column(db.String(64), nullable=True)
+    patient_guid = db.Column(db.String(64), nullable=True, index=True)
+    n_rows_returned = db.Column(db.Integer, nullable=True)
+    response_status = db.Column(db.Integer, nullable=False, default=200)
+
+    session_id = db.Column(db.String(128), nullable=True, index=True)
+    role_guid = db.Column(db.String(64), nullable=True, index=True)
+    purpose = db.Column(db.String(32), nullable=True)
+    access_basis = db.Column(db.String(32), nullable=True)

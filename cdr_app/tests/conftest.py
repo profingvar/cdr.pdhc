@@ -56,6 +56,8 @@ def app():
                     "affiliations": [{
                         "affiliation_guid": "aff-t1",
                         "role": request.headers["X-Aff-Role"],
+                        "role_guid": ("role-" +
+                                      request.headers["X-Aff-Role"].lower()),
                         "care_unit_guid": request.headers.get(
                             "X-Aff-Org", "org-aaaa"),
                         "research_project_guids": projects,

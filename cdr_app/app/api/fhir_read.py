@@ -37,6 +37,7 @@ from app.services.analysis_consent import (
     check_patient_allowed,
     consent_allowed_guids,
 )
+from app.services.read_audit import record_read_audit
 
 
 def _row_patient_guid(row) -> str | None:
@@ -119,6 +120,8 @@ def read_instance(resource_type: str, guid: str):
     if row is None:
         return jsonify(_operation_outcome("error", "not-found", "resource not found")), 404
     check_patient_allowed(_row_patient_guid(row))  # #422
+    record_read_audit(resource_type=resource_type,  # X1 #443
+                      patient_guid=_row_patient_guid(row), n_rows=1)
     resp = jsonify(row.raw_json)
     resp.headers["ETag"] = row.etag or f'W/"{row.version_id}"'
     return resp, 200
@@ -148,6 +151,9 @@ def history_list(resource_type: str, guid: str):
     if live_row is None and not hist_rows:
         return jsonify(_operation_outcome("error", "not-found", "resource not found")), 404
     check_patient_allowed(_row_patient_guid(live_row or hist_rows[0]))  # #422
+    record_read_audit(resource_type=resource_type,  # X1 #443
+                      patient_guid=_row_patient_guid(live_row or hist_rows[0]),
+                      n_rows=(1 if live_row else 0) + len(hist_rows))
 
     entries = []
     if live_row is not None:
@@ -190,6 +196,8 @@ def vread(resource_type: str, guid: str, vid: int):
     ).one_or_none()
     if live_row is not None and live_row.version_id == vid:
         check_patient_allowed(_row_patient_guid(live_row))  # #422
+        record_read_audit(resource_type=resource_type,  # X1 #443
+                          patient_guid=_row_patient_guid(live_row), n_rows=1)
         resp = jsonify(live_row.raw_json)
         resp.headers["ETag"] = live_row.etag or f'W/"{vid}"'
         return resp, 200
@@ -201,6 +209,8 @@ def vread(resource_type: str, guid: str, vid: int):
     if hist_row is None:
         return jsonify(_operation_outcome("error", "not-found", "version not found")), 404
     check_patient_allowed(_row_patient_guid(hist_row))  # #422
+    record_read_audit(resource_type=resource_type,  # X1 #443
+                      patient_guid=_row_patient_guid(hist_row), n_rows=1)
     resp = jsonify(hist_row.raw_json)
     resp.headers["ETag"] = hist_row.etag or f'W/"{vid}"'
     return resp, 200
@@ -274,6 +284,7 @@ def search(resource_type: str):
         rows = q.limit(1000).all()
         rows = [r for r in rows if _has_tag(r.meta_tag or [], tag_arg)]
         rows = _consent_filter(rows)  # #422
+        record_read_audit(resource_type=resource_type, n_rows=len(rows))  # X1 #443
         return _bundle_searchset(rows, resource_type, with_includes=False)
 
     # _count + sort (default to most recent first by effective_at).
@@ -288,6 +299,7 @@ def search(resource_type: str):
 
     rows = q.all()
     rows = _consent_filter(rows)  # #422
+    record_read_audit(resource_type=resource_type, n_rows=len(rows))  # X1 #443
     return _bundle_searchset(rows, resource_type)
 
 
@@ -504,6 +516,8 @@ def patient_everything(guid: str):
     if patient is None:
         return jsonify(_operation_outcome("error", "not-found", "Patient not found")), 404
     check_patient_allowed(guid)  # #422 — gates the whole compartment
+    record_read_audit(resource_type="Patient/$everything",  # X1 #443
+                      patient_guid=guid)
 
     since = request.args.get("_since")
     types_filter = set((request.args.get("_type") or "").split(",")) - {""}
