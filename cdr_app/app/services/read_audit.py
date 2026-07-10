@@ -29,6 +29,11 @@ from app.services.analysis_consent import analysis_purpose
 log = logging.getLogger(__name__)
 
 
+def _forwarded_session_id() -> str | None:
+    val = request.headers.get("X-Operator-Session-Id")
+    return val[:128] if val else None
+
+
 def _active_role_guid(blob: dict) -> str | None:
     affs = blob.get("affiliations") or []
     active_guid = blob.get("active_affiliation_guid")
@@ -60,7 +65,11 @@ def record_read_audit(*, resource_type: str | None = None,
             patient_guid=patient_guid,
             n_rows_returned=n_rows,
             response_status=response_status,
-            session_id=blob.get("session_id"),
+            # Operator sid: the blob carries it on session reads; machine
+            # hops (dashboard federation) forward it as
+            # X-Operator-Session-Id (X2 #408) — same resolution the
+            # ingest path uses, so the kontroller chain survives the hop.
+            session_id=(blob.get("session_id") or _forwarded_session_id()),
         )
         if not service and blob:
             purpose, _projects = analysis_purpose(blob)

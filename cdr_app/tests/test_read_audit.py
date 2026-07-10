@@ -87,3 +87,17 @@ def test_audit_failure_does_not_break_read(client, fake_canon, app):
         r = client.get("/api/v1/fhir/Observation", headers=DOCTOR)
     assert r.status_code == 200
     assert _rows(app) == []
+
+
+def test_service_read_carries_forwarded_operator_sid(client, fake_canon, app):
+    """X2 chain-of-custody: a machine hop forwarding the operator's sid
+    (dashboard federation) lands it on the read-audit row."""
+    _seed_two_patients(client)
+    r = client.get("/api/v1/fhir/Observation",
+                   headers={"X-Source-Service": "sim.pdhc",
+                            "X-Service-Key": "test-sim-key",
+                            "X-Operator-Session-Id": "sid-chain-1"})
+    assert r.status_code == 200
+    row = _rows(app)[0]
+    assert row.caller_service == "sim.pdhc"
+    assert row.session_id == "sid-chain-1"
