@@ -73,3 +73,5 @@ Pending follow-ups documented in `plans/post_seed_followups.md`:
 - cdr_app/tests/test_reform_scope.py — NEW, 8 tests.
 - Note: test_fhir_read.py has 17 PRE-EXISTING failures (structural fixture
   KeyErrors, fail on baseline) — unrelated to this change.
+
+| 2026-07-13 | cdr_app/docs/00-user-manual.md (new) | Shared layman user manual for CDR 1-5 (identical software; role differences in §5). Published on pdhc.se/documentation.html for all five CDR rows. |
