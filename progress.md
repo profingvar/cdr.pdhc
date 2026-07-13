@@ -245,3 +245,35 @@ of pdhc.se.
 - nginx `client_body_temp` blocked by macOS provenance — Block B.
 - PlanClient should treat HTTP 429 as transient, not plan_miss —
   Block A.
+
+---
+
+## #468 / #462 D6 — care-delivery read surface for the clinical dashboard (2026-07-13)
+
+The rebuilt dashboard.pdhc (#462) reads CDR1 under a CARE-DELIVERY basis,
+not analysis-consent. Two facts shaped the design:
+  1. #422 (check_patient_allowed) ALREADY passes through for service-key
+     callers (_operator_blob returns None when service_source set) — so a
+     dashboard service-key read is already consent-bypassed = the
+     care-delivery basis for consent. No change needed there.
+  2. BUT the service blob is is_su_admin=True, so fhir_read._org_filter
+     short-circuits and returns ALL orgs — it ignores X-Org-Guids. Reusing
+     it for a care-delivery read would leak every org's patients.
+
+New blueprint `api/clinical_read.py` (mounted /api/v1/clinical) does its OWN
+explicit org scoping from X-Org-Guids / X-Is-Admin, and requires the caller
+to be the dashboard.pdhc service declaring X-Access-Purpose: care-delivery:
+  - GET /api/v1/clinical/patients — org's patients that HAVE data, with
+    name/birth_date (from patient table) + observation_count +
+    last_observed_at, most-recent-activity first. Feeds #465 picker.
+  - GET /api/v1/clinical/patient/<guid>/summary — per-concept
+    (code_canonical) counts + first/last + unit, count desc. Feeds #466
+    sorted parameter dropdown.
+Spärr enforced dashboard-side (operator #469 Q1); CDR-side spärr
+(defense-in-depth) deferred. /api/v1/clinical added to _is_read_path so
+CDR_READ_LOCKDOWN admits dashboard.pdhc.
+
+Tests: test_clinical_read.py 7/7. Full suite 131 passed. NOT deployed —
+cdr1 already has DASHBOARD_PDHC_SERVICE_KEY in its config (auth.py
+KNOWN_FHIR_SERVICES); a deploy needs the key value present in cdr1's .env
+and matching dashboard's DASHBOARD_PDHC_SERVICE_KEY.

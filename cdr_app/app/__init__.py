@@ -84,7 +84,7 @@ def create_app(config_override=None):
 
     from .api import (
         health_bp, ingest_bp, fhir_bp, fhir_write_bp, fhir_read_bp,
-        openehr_bp, cambio_bp, provenance_bp, stats_bp,
+        openehr_bp, cambio_bp, provenance_bp, stats_bp, clinical_read_bp,
     )
     app.register_blueprint(health_bp)
     app.register_blueprint(ingest_bp, url_prefix="/api/v1")
@@ -96,6 +96,8 @@ def create_app(config_override=None):
     app.register_blueprint(provenance_bp, url_prefix="/api/v1")
     # #292 shim — see api/__init__.py for the rationale.
     app.register_blueprint(stats_bp, url_prefix="/api/v1")
+    # #468 / #462 D6 — care-delivery read surface for the clinical dashboard.
+    app.register_blueprint(clinical_read_bp, url_prefix="/api/v1/clinical")
 
     # Start Cambio delivery scheduler if enabled
     if app.config["CAMBIO_DELIVERY_ENABLED"] and not app.config.get("TESTING"):

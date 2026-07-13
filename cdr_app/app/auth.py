@@ -148,7 +148,9 @@ def _is_read_path(path: str) -> bool:
             or path.startswith("/api/v1/canonical/")
             or path.startswith("/api/v1/openehr/")
             or path.startswith("/api/v1/stats")
-            or path.startswith("/api/v1/cambio/"))
+            or path.startswith("/api/v1/cambio/")
+            # #468 — care-delivery read surface for the clinical dashboard.
+            or path.startswith("/api/v1/clinical"))
 
 
 def _service_key_outcome(app):

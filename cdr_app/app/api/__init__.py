@@ -17,8 +17,11 @@ from .provenance import bp as provenance_bp
 # doing its own aggregation later; this restoration is a soft
 # compatibility shim for the analyse-split rollout.
 from .stats import bp as stats_bp
+# #468 / #462 D6 — care-delivery read surface for the rebuilt clinical
+# dashboard (org-scoped, consent-bypassed per the care-delivery basis).
+from .clinical_read import bp as clinical_read_bp
 
 __all__ = [
     "health_bp", "ingest_bp", "fhir_bp", "fhir_write_bp", "fhir_read_bp",
-    "openehr_bp", "cambio_bp", "provenance_bp", "stats_bp",
+    "openehr_bp", "cambio_bp", "provenance_bp", "stats_bp", "clinical_read_bp",
 ]
