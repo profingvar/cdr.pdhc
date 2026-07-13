@@ -31,6 +31,8 @@ Endpoints (mounted at /api/v1/clinical):
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 from flask import Blueprint, g, jsonify, request
 from sqlalchemy import func
 
@@ -43,6 +45,10 @@ CARE_DELIVERY_PURPOSE = "care-delivery"
 CLINICAL_SERVICE = "dashboard.pdhc"
 _DEFAULT_LIMIT = 500
 _MAX_LIMIT = 2000
+# Series can be dense (CGM ≈ 1 point / 5 min). Higher ceiling than the
+# patient/summary lists; the dashboard downsamples for display.
+_DEFAULT_SERIES_LIMIT = 10000
+_MAX_SERIES_LIMIT = 50000
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +104,24 @@ def _limit() -> int:
 
 def _iso(dt):
     return dt.isoformat() if dt is not None else None
+
+
+def _parse_iso(s: str | None):
+    """Lenient ISO-8601 parse (accepts a trailing 'Z'); None on failure."""
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _series_limit() -> int:
+    try:
+        n = int(request.args.get("limit", _DEFAULT_SERIES_LIMIT))
+    except (TypeError, ValueError):
+        return _DEFAULT_SERIES_LIMIT
+    return max(1, min(_MAX_SERIES_LIMIT, n))
 
 
 def _patient_name(pat) -> str:
@@ -194,3 +218,54 @@ def patient_summary(guid):
         "last_observed_at": _iso(last),
     } for code, count, first, last, unit in rows]
     return jsonify(patient_guid=guid, parameters=out, count=len(out)), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/clinical/patient/<guid>/series — the actual data points
+# ---------------------------------------------------------------------------
+
+@bp.get("/patient/<guid>/series")
+def patient_series(guid):
+    """Time-series points for a patient, optionally filtered to specific
+    concept codes and an effective-date window. Ordered oldest→newest.
+
+    Each point carries ``org_guid`` so the dashboard can apply spärr
+    (per-clinic blocks) on its side (operator #469 Q1) — CDR1 has already
+    org-scoped to the caller's affiliation, but a patient can still block a
+    clinic the caller is affiliated with.
+    """
+    err = _care_delivery_guard()
+    if err:
+        return err
+    Obs = live_model("Observation")
+    q = (db.session.query(
+            Obs.code_canonical, Obs.effective_at, Obs.value_quantity,
+            Obs.value_unit, Obs.value_string, Obs.org_guid,
+         )
+         .filter(Obs.patient_guid == guid))
+    q = _apply_org_scope(q, Obs)
+    if q is None:
+        return jsonify(patient_guid=guid, points=[], count=0), 200
+
+    codes = [c for c in request.args.getlist("code") if c]
+    if codes:
+        q = q.filter(Obs.code_canonical.in_(codes))
+    frm = _parse_iso(request.args.get("from"))
+    if frm is not None:
+        q = q.filter(Obs.effective_at >= frm)
+    to = _parse_iso(request.args.get("to"))
+    if to is not None:
+        q = q.filter(Obs.effective_at <= to)
+
+    q = q.order_by(Obs.effective_at.asc()).limit(_series_limit())
+    rows = q.all()
+
+    points = [{
+        "code": code,
+        "at": _iso(at),
+        "value": float(vq) if vq is not None else None,
+        "unit": unit,
+        "value_string": vs,
+        "org_guid": org,
+    } for code, at, vq, unit, vs, org in rows]
+    return jsonify(patient_guid=guid, points=points, count=len(points)), 200

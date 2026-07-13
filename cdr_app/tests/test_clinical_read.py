@@ -156,3 +156,42 @@ def test_patient_summary_org_scope_blocks_cross_org(client):
     r = client.get("/api/v1/clinical/patient/pat-b1/summary", headers=h)
     assert r.status_code == 200
     assert r.get_json() == {"patient_guid": "pat-b1", "parameters": [], "count": 0}
+
+
+# --- series ---------------------------------------------------------------
+
+def test_series_ordered_with_value_and_org(client):
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    r = client.get("/api/v1/clinical/patient/pat-a1/series?code=sys|weight",
+                   headers=h)
+    assert r.status_code == 200
+    body = r.get_json()
+    pts = body["points"]
+    assert [p["at"][:10] for p in pts] == [
+        "2026-04-05", "2026-04-08", "2026-04-12"]  # oldest → newest
+    assert all(p["code"] == "sys|weight" for p in pts)
+    assert all(p["org_guid"] == "org-a" for p in pts)  # for spärr on the client
+    assert pts[0]["unit"] == "mmol/L"
+
+
+def test_series_code_and_date_filter(client):
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    # window excludes day 5; only day 8 + 12 weight remain
+    r = client.get(
+        "/api/v1/clinical/patient/pat-a1/series"
+        "?code=sys|weight&from=2026-04-07T00:00:00Z", headers=h)
+    days = [p["at"][:10] for p in r.get_json()["points"]]
+    assert days == ["2026-04-08", "2026-04-12"]
+
+
+def test_series_org_scope_blocks_cross_org(client):
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    r = client.get("/api/v1/clinical/patient/pat-b1/series", headers=h)
+    assert r.get_json() == {"patient_guid": "pat-b1", "points": [], "count": 0}
+
+
+def test_series_requires_care_delivery_guard(client):
+    h = {k: v for k, v in BASE_H.items() if k != "X-Access-Purpose"}
+    h["X-Org-Guids"] = "org-a"
+    r = client.get("/api/v1/clinical/patient/pat-a1/series", headers=h)
+    assert r.status_code == 400

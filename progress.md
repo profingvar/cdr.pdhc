@@ -277,3 +277,12 @@ Tests: test_clinical_read.py 7/7. Full suite 131 passed. NOT deployed —
 cdr1 already has DASHBOARD_PDHC_SERVICE_KEY in its config (auth.py
 KNOWN_FHIR_SERVICES); a deploy needs the key value present in cdr1's .env
 and matching dashboard's DASHBOARD_PDHC_SERVICE_KEY.
+
+## #464 — CDR1 care-delivery series endpoint (2026-07-13)
+Added GET /api/v1/clinical/patient/<guid>/series to clinical_read.py: the
+actual time-series points (code_canonical, effective_at, value_quantity→float,
+unit, value_string, org_guid), filtered by ?code (repeatable) + ?from/?to
+(effective_at ge/le), ordered oldest→newest, capped (10k default/50k max).
+org_guid on every point so the dashboard applies spärr on its side (#469 Q1).
+Same care-delivery guard + org scoping as the #468 endpoints. Tests 11/11 in
+test_clinical_read.py; full suite 135 passed.

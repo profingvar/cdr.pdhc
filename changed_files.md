@@ -80,3 +80,5 @@ Pending follow-ups documented in `plans/post_seed_followups.md`:
 | 2026-07-13 | cdr_app/app/__init__.py | Mount clinical_read_bp at /api/v1/clinical (#468). |
 | 2026-07-13 | cdr_app/app/auth.py | Add /api/v1/clinical to _is_read_path so CDR_READ_LOCKDOWN (cdr2-5) admits dashboard.pdhc on it (#468). |
 | 2026-07-13 | cdr_app/tests/test_clinical_read.py (new) | 7 tests: purpose/identity guards, org-scoped patient index (names+counts, cross-org excluded, admin sees all), per-patient summary desc + org-scope block. |
+| 2026-07-13 | cdr_app/app/api/clinical_read.py | #464 — add GET /api/v1/clinical/patient/<guid>/series: org-scoped care-delivery time-series points (code+effective-date filters), each carries org_guid for dashboard-side spärr. |
+| 2026-07-13 | cdr_app/tests/test_clinical_read.py | +4 series tests (ordering+value+org, code/date filter, cross-org block, care-delivery guard). |
