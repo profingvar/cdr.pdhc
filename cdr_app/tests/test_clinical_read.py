@@ -1,0 +1,250 @@
+"""Care-delivery read surface for the clinical dashboard (#468 / #462 D6).
+
+Uses a module-local ``app`` fixture (NOT the conftest one) so the
+dashboard service identity survives — the conftest test-shim rewrites
+``g.access_blob`` into an operator blob whenever ``X-Org-Guids`` is
+present, which would strip ``service_source`` and defeat the point.
+"""
+from datetime import datetime, timezone, date
+
+import pytest
+from sqlalchemy.pool import StaticPool
+
+from app import create_app, db as _db
+from app.models.resources import live_model
+
+DASH_KEY = "test-dash-key"
+BASE_H = {
+    "X-Source-Service": "dashboard.pdhc",
+    "X-Service-Key": DASH_KEY,
+    "X-Access-Purpose": "care-delivery",
+}
+
+
+@pytest.fixture
+def app():
+    app = create_app({
+        "TESTING": True,
+        "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:",
+        "SQLALCHEMY_ENGINE_OPTIONS": {
+            "connect_args": {"check_same_thread": False},
+            "poolclass": StaticPool,
+        },
+        "AUTH_MODE": "off",
+        "CAMBIO_DELIVERY_ENABLED": False,
+        "DASHBOARD_PDHC_SERVICE_KEY": DASH_KEY,
+        "SIM_PDHC_SERVICE_KEY": "test-sim-key",
+    })
+    with app.app_context():
+        _db.create_all()
+        _seed()
+    return app
+
+
+@pytest.fixture
+def client(app):
+    return app.test_client()
+
+
+def _dt(day):
+    return datetime(2026, 4, day, 10, 0, tzinfo=timezone.utc)
+
+
+def _seed():
+    Obs = live_model("Observation")
+    Pat = live_model("Patient")
+    n = 0
+
+    def obs(patient, org, code, day, unit="mmol/L"):
+        nonlocal n
+        n += 1
+        return Obs(guid=f"o{n}", patient_guid=patient, org_guid=org,
+                   code_canonical=code, value_unit=unit, effective_at=_dt(day),
+                   status="final", raw_json={})
+
+    _db.session.add_all([
+        Pat(guid="pat-a1", org_guid="org-a", raw_json={}, active=True,
+            names=[{"family": "Ek", "given": ["Anna"]}], birth_date=date(1980, 1, 2)),
+        Pat(guid="pat-a2", org_guid="org-a", raw_json={}, active=True,
+            names=[{"text": "Bo Berg"}]),
+        Pat(guid="pat-b1", org_guid="org-b", raw_json={}, active=True,
+            names=[{"family": "Carlsson"}]),
+    ])
+    _db.session.add_all([
+        # pat-a1: weight x3 (newest day 12), glucose x1
+        obs("pat-a1", "org-a", "sys|weight", 5),
+        obs("pat-a1", "org-a", "sys|weight", 8),
+        obs("pat-a1", "org-a", "sys|weight", 12),
+        obs("pat-a1", "org-a", "sys|glucose", 6),
+        # pat-a2: glucose x2 (newest day 3)
+        obs("pat-a2", "org-a", "sys|glucose", 2),
+        obs("pat-a2", "org-a", "sys|glucose", 3),
+        # pat-b1: in a DIFFERENT org
+        obs("pat-b1", "org-b", "sys|weight", 9),
+    ])
+    _db.session.commit()
+
+
+# --- guards ---------------------------------------------------------------
+
+def test_missing_purpose_header_400(client):
+    h = {k: v for k, v in BASE_H.items() if k != "X-Access-Purpose"}
+    h["X-Org-Guids"] = "org-a"
+    assert client.get("/api/v1/clinical/patients", headers=h).status_code == 400
+
+
+def test_non_dashboard_service_403(client):
+    h = dict(BASE_H)
+    h["X-Source-Service"] = "sim.pdhc"
+    h["X-Service-Key"] = "test-sim-key"
+    h["X-Org-Guids"] = "org-a"
+    assert client.get("/api/v1/clinical/patients", headers=h).status_code == 403
+
+
+def test_non_admin_no_orgs_empty(client):
+    r = client.get("/api/v1/clinical/patients", headers=BASE_H)  # no X-Org-Guids
+    assert r.status_code == 200
+    assert r.get_json() == {"patients": [], "count": 0}
+
+
+# --- patient index --------------------------------------------------------
+
+def test_patients_org_scoped_with_names_and_counts(client):
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    r = client.get("/api/v1/clinical/patients", headers=h)
+    assert r.status_code == 200
+    body = r.get_json()
+    guids = [p["patient_guid"] for p in body["patients"]]
+    assert set(guids) == {"pat-a1", "pat-a2"}  # org-b excluded
+    a1 = next(p for p in body["patients"] if p["patient_guid"] == "pat-a1")
+    assert a1["name"] == "Anna Ek"
+    assert a1["birth_date"] == "1980-01-02"
+    assert a1["observation_count"] == 4
+    # most-recent-activity first: pat-a1 (day 12) before pat-a2 (day 3)
+    assert guids[0] == "pat-a1"
+    a2 = next(p for p in body["patients"] if p["patient_guid"] == "pat-a2")
+    assert a2["name"] == "Bo Berg"
+
+
+def test_admin_sees_all_orgs(client):
+    h = dict(BASE_H, **{"X-Is-Admin": "1"})
+    r = client.get("/api/v1/clinical/patients", headers=h)
+    guids = {p["patient_guid"] for p in r.get_json()["patients"]}
+    assert guids == {"pat-a1", "pat-a2", "pat-b1"}
+
+
+# --- per-patient summary --------------------------------------------------
+
+def test_patient_summary_counts_desc(client):
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    r = client.get("/api/v1/clinical/patient/pat-a1/summary", headers=h)
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["patient_guid"] == "pat-a1"
+    params = body["parameters"]
+    # weight (3) before glucose (1) — sorted by count desc
+    assert [p["code"] for p in params] == ["sys|weight", "sys|glucose"]
+    w = params[0]
+    assert w["count"] == 3 and w["unit"] == "mmol/L"
+    assert w["first_observed_at"].startswith("2026-04-05")
+    assert w["last_observed_at"].startswith("2026-04-12")
+
+
+def test_patient_summary_org_scope_blocks_cross_org(client):
+    # pat-b1 lives in org-b; a caller scoped to org-a sees no data for them.
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    r = client.get("/api/v1/clinical/patient/pat-b1/summary", headers=h)
+    assert r.status_code == 200
+    assert r.get_json() == {"patient_guid": "pat-b1", "parameters": [], "count": 0}
+
+
+# --- series ---------------------------------------------------------------
+
+def test_series_ordered_with_value_and_org(client):
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    r = client.get("/api/v1/clinical/patient/pat-a1/series?code=sys|weight",
+                   headers=h)
+    assert r.status_code == 200
+    body = r.get_json()
+    pts = body["points"]
+    assert [p["at"][:10] for p in pts] == [
+        "2026-04-05", "2026-04-08", "2026-04-12"]  # oldest → newest
+    assert all(p["code"] == "sys|weight" for p in pts)
+    assert all(p["org_guid"] == "org-a" for p in pts)  # for spärr on the client
+    assert pts[0]["unit"] == "mmol/L"
+
+
+def test_series_code_and_date_filter(client):
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    # window excludes day 5; only day 8 + 12 weight remain
+    r = client.get(
+        "/api/v1/clinical/patient/pat-a1/series"
+        "?code=sys|weight&from=2026-04-07T00:00:00Z", headers=h)
+    days = [p["at"][:10] for p in r.get_json()["points"]]
+    assert days == ["2026-04-08", "2026-04-12"]
+
+
+def test_series_org_scope_blocks_cross_org(client):
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    r = client.get("/api/v1/clinical/patient/pat-b1/series", headers=h)
+    assert r.get_json() == {"patient_guid": "pat-b1", "points": [], "count": 0}
+
+
+def test_series_requires_care_delivery_guard(client):
+    h = {k: v for k, v in BASE_H.items() if k != "X-Access-Purpose"}
+    h["X-Org-Guids"] = "org-a"
+    r = client.get("/api/v1/clinical/patient/pat-a1/series", headers=h)
+    assert r.status_code == 400
+
+
+# --- concept display resolution (#471) ------------------------------------
+
+def test_concept_guid_from_canonical():
+    from app.api.clinical_read import _concept_guid_from_canonical as parse
+    g = "1c34a590-fc2d-430c-92e6-d123b95fe392"
+    assert parse("urn:pdhc:concept/" + g) == g
+    assert parse("https://plan.pdhc.se/api/v1/concepts/" + g) == g
+    # non-guid tails, termbank URIs, empties → None
+    assert parse("urn:pdhc:concept/smoke-c-296") is None
+    assert parse("https://termbank.pdhc.se/CodeSystem/loinc/4548-4") is None
+    assert parse("") is None
+    assert parse(None) is None
+
+
+def test_lookup_display_parses_and_fails_open(monkeypatch):
+    from app.services.plan_client import PlanClient, PlanUnreachable
+
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {"parameter": [
+                {"name": "display", "valueString": "HbA1c"},
+                {"name": "name", "valueString": "plan"}]}
+
+    pc = PlanClient(base_url="http://plan.test")
+    monkeypatch.setattr(pc, "_get_with_retry", lambda *a, **k: _Resp())
+    assert pc.lookup_display("g1") == "HbA1c"
+
+    pc2 = PlanClient(base_url="http://plan.test")
+    monkeypatch.setattr(pc2, "_get_with_retry",
+                        lambda *a, **k: (_ for _ in ()).throw(PlanUnreachable("x")))
+    assert pc2.lookup_display("g1") is None      # fail open
+
+
+def test_summary_includes_display(client, monkeypatch):
+    import app.api.clinical_read as cr
+    monkeypatch.setattr(cr, "resolve_display",
+                        lambda code: "Weight" if "weight" in (code or "") else None)
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    params = client.get(
+        "/api/v1/clinical/patient/pat-a1/summary", headers=h).get_json()["parameters"]
+    assert next(p for p in params if p["code"] == "sys|weight")["display"] == "Weight"
+    assert next(p for p in params if p["code"] == "sys|glucose")["display"] is None
+
+
+def test_summary_display_none_when_plan_unconfigured(client):
+    client.application.config["PLAN_BASE_URL"] = ""   # no plan → skip resolution
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    params = client.get(
+        "/api/v1/clinical/patient/pat-a1/summary", headers=h).get_json()["parameters"]
+    assert params and all(p["display"] is None for p in params)

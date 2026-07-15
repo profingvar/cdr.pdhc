@@ -227,6 +227,46 @@ class PlanClient:
                 out[name] = p["valueCode"]
         return out
 
+    def lookup_display(self, guid: str) -> str | None:
+        """Human display name for a plan Concept GUID via the FHIR
+        ``CodeSystem/$lookup`` operation (system = the local CodeSystem).
+
+        Used to turn a CDR ``code_canonical`` of the form
+        ``urn:pdhc:concept/<guid>`` into a readable chart label (#471/#462).
+        Purely COSMETIC → FAILS OPEN: returns None on any non-200,
+        malformed body, or unreachability (never raises), so a display miss
+        degrades to showing the raw code, never a broken read. Cached like
+        the other calls; a clean "no display" is cached briefly, a
+        reachability blip is not (so it retries next time)."""
+        if not guid:
+            return None
+        key = ("lookup_display", guid)
+        cached = self._get_cached(key)
+        if cached is not self._MISS:
+            return cached
+        url = f"{self.base_url}/api/v1/CodeSystem/$lookup"
+        try:
+            resp = self._get_with_retry(
+                url, params={"system": PLAN_LOCAL_CS_URL, "code": guid},
+                operation=f"lookup_display[{guid[:8]}]",
+            )
+        except PlanUnreachable:
+            return None  # transient — don't cache, retry next request
+        if resp.status_code != 200:
+            self._set_cached(key, None)
+            return None
+        try:
+            body = resp.json()
+        except ValueError:
+            return None
+        display = None
+        for p in body.get("parameter") or []:
+            if p.get("name") == "display" and "valueString" in p:
+                display = p["valueString"]
+                break
+        self._set_cached(key, display)
+        return display
+
     # ----- cache helpers -------------------------------------------------
     def _get_cached(self, key: tuple):
         with self._lock:

@@ -75,3 +75,13 @@ Pending follow-ups documented in `plans/post_seed_followups.md`:
   KeyErrors, fail on baseline) — unrelated to this change.
 
 | 2026-07-13 | cdr_app/docs/00-user-manual.md (new) | Shared layman user manual for CDR 1-5 (identical software; role differences in §5). Published on pdhc.se/documentation.html for all five CDR rows. |
+| 2026-07-13 | cdr_app/app/api/clinical_read.py (new) | #468/#462 D6 — care-delivery read surface for the rebuilt clinical dashboard: GET /api/v1/clinical/patients (org's patients WITH data + counts) and GET /api/v1/clinical/patient/<guid>/summary (per-concept counts desc). Explicit X-Org-Guids/X-Is-Admin scoping (service blob is is_su_admin so fhir_read._org_filter can't be reused); requires X-Access-Purpose:care-delivery + dashboard.pdhc service identity; #422 already passes through for service callers. |
+| 2026-07-13 | cdr_app/app/api/__init__.py | Register clinical_read_bp (#468). |
+| 2026-07-13 | cdr_app/app/__init__.py | Mount clinical_read_bp at /api/v1/clinical (#468). |
+| 2026-07-13 | cdr_app/app/auth.py | Add /api/v1/clinical to _is_read_path so CDR_READ_LOCKDOWN (cdr2-5) admits dashboard.pdhc on it (#468). |
+| 2026-07-13 | cdr_app/tests/test_clinical_read.py (new) | 7 tests: purpose/identity guards, org-scoped patient index (names+counts, cross-org excluded, admin sees all), per-patient summary desc + org-scope block. |
+| 2026-07-13 | cdr_app/app/api/clinical_read.py | #464 — add GET /api/v1/clinical/patient/<guid>/series: org-scoped care-delivery time-series points (code+effective-date filters), each carries org_guid for dashboard-side spärr. |
+| 2026-07-13 | cdr_app/tests/test_clinical_read.py | +4 series tests (ordering+value+org, code/date filter, cross-org block, care-delivery guard). |
+| 2026-07-15 | cdr_app/app/services/plan_client.py | #471 item 5 — add PlanClient.lookup_display(guid) via CodeSystem/$lookup (cached, FAIL-OPEN cosmetic). |
+| 2026-07-15 | cdr_app/app/api/clinical_read.py | #471 item 5 — resolve_display(code_canonical): parse embedded concept guid (urn:pdhc:concept/<guid>, live prod format) → plan.pdhc display; enrich /clinical/patient/<guid>/summary parameters with `display`. Skips when PLAN_BASE_URL unset. |
+| 2026-07-15 | cdr_app/tests/test_clinical_read.py | +4 tests (guid parse, lookup_display parse+fail-open, summary display enrichment, display None when plan unconfigured). |

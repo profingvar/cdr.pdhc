@@ -245,3 +245,59 @@ of pdhc.se.
 - nginx `client_body_temp` blocked by macOS provenance — Block B.
 - PlanClient should treat HTTP 429 as transient, not plan_miss —
   Block A.
+
+---
+
+## #468 / #462 D6 — care-delivery read surface for the clinical dashboard (2026-07-13)
+
+The rebuilt dashboard.pdhc (#462) reads CDR1 under a CARE-DELIVERY basis,
+not analysis-consent. Two facts shaped the design:
+  1. #422 (check_patient_allowed) ALREADY passes through for service-key
+     callers (_operator_blob returns None when service_source set) — so a
+     dashboard service-key read is already consent-bypassed = the
+     care-delivery basis for consent. No change needed there.
+  2. BUT the service blob is is_su_admin=True, so fhir_read._org_filter
+     short-circuits and returns ALL orgs — it ignores X-Org-Guids. Reusing
+     it for a care-delivery read would leak every org's patients.
+
+New blueprint `api/clinical_read.py` (mounted /api/v1/clinical) does its OWN
+explicit org scoping from X-Org-Guids / X-Is-Admin, and requires the caller
+to be the dashboard.pdhc service declaring X-Access-Purpose: care-delivery:
+  - GET /api/v1/clinical/patients — org's patients that HAVE data, with
+    name/birth_date (from patient table) + observation_count +
+    last_observed_at, most-recent-activity first. Feeds #465 picker.
+  - GET /api/v1/clinical/patient/<guid>/summary — per-concept
+    (code_canonical) counts + first/last + unit, count desc. Feeds #466
+    sorted parameter dropdown.
+Spärr enforced dashboard-side (operator #469 Q1); CDR-side spärr
+(defense-in-depth) deferred. /api/v1/clinical added to _is_read_path so
+CDR_READ_LOCKDOWN admits dashboard.pdhc.
+
+Tests: test_clinical_read.py 7/7. Full suite 131 passed. NOT deployed —
+cdr1 already has DASHBOARD_PDHC_SERVICE_KEY in its config (auth.py
+KNOWN_FHIR_SERVICES); a deploy needs the key value present in cdr1's .env
+and matching dashboard's DASHBOARD_PDHC_SERVICE_KEY.
+
+## #464 — CDR1 care-delivery series endpoint (2026-07-13)
+Added GET /api/v1/clinical/patient/<guid>/series to clinical_read.py: the
+actual time-series points (code_canonical, effective_at, value_quantity→float,
+unit, value_string, org_guid), filtered by ?code (repeatable) + ?from/?to
+(effective_at ge/le), ordered oldest→newest, capped (10k default/50k max).
+org_guid on every point so the dashboard applies spärr on its side (#469 Q1).
+Same care-delivery guard + org scoping as the #468 endpoints. Tests 11/11 in
+test_clinical_read.py; full suite 135 passed.
+
+## #471 item 5 — concept display names via plan.pdhc (2026-07-15)
+LIVE-DATA finding (read-only query of cdr_pdhc_db, operator-approved): prod
+code_canonical is dominantly `urn:pdhc:concept/<concept-guid>` (7064/7065 rows;
+14 distinct codes; ZERO termbank URIs). The concept GUID is embedded in
+code_canonical — so display resolution is: parse the guid, then plan.pdhc
+CodeSystem/$lookup → display (cached in PlanClient, FAIL-OPEN). Added
+PlanClient.lookup_display + clinical_read.resolve_display; the summary endpoint
+now returns a `display` per parameter (dashboard dropdown/legend uses it, falls
+back to the raw code). Skips entirely when PLAN_BASE_URL is unset (tests/
+plan-less envs). Tests 15/15 in test_clinical_read; full suite 139 passed.
+Remaining #471: item 1 (retire legacy view, blocked #469 Q6), item 2 (#212
+re-home, needs legal #437), item 4 (spärr lift refinement — now EASY since the
+guid is embedded in code_canonical: parse → compare to lift_concept_guids; still
+legal-sensitive, deferred).
