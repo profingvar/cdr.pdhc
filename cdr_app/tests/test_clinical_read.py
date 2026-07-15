@@ -195,3 +195,56 @@ def test_series_requires_care_delivery_guard(client):
     h["X-Org-Guids"] = "org-a"
     r = client.get("/api/v1/clinical/patient/pat-a1/series", headers=h)
     assert r.status_code == 400
+
+
+# --- concept display resolution (#471) ------------------------------------
+
+def test_concept_guid_from_canonical():
+    from app.api.clinical_read import _concept_guid_from_canonical as parse
+    g = "1c34a590-fc2d-430c-92e6-d123b95fe392"
+    assert parse("urn:pdhc:concept/" + g) == g
+    assert parse("https://plan.pdhc.se/api/v1/concepts/" + g) == g
+    # non-guid tails, termbank URIs, empties → None
+    assert parse("urn:pdhc:concept/smoke-c-296") is None
+    assert parse("https://termbank.pdhc.se/CodeSystem/loinc/4548-4") is None
+    assert parse("") is None
+    assert parse(None) is None
+
+
+def test_lookup_display_parses_and_fails_open(monkeypatch):
+    from app.services.plan_client import PlanClient, PlanUnreachable
+
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {"parameter": [
+                {"name": "display", "valueString": "HbA1c"},
+                {"name": "name", "valueString": "plan"}]}
+
+    pc = PlanClient(base_url="http://plan.test")
+    monkeypatch.setattr(pc, "_get_with_retry", lambda *a, **k: _Resp())
+    assert pc.lookup_display("g1") == "HbA1c"
+
+    pc2 = PlanClient(base_url="http://plan.test")
+    monkeypatch.setattr(pc2, "_get_with_retry",
+                        lambda *a, **k: (_ for _ in ()).throw(PlanUnreachable("x")))
+    assert pc2.lookup_display("g1") is None      # fail open
+
+
+def test_summary_includes_display(client, monkeypatch):
+    import app.api.clinical_read as cr
+    monkeypatch.setattr(cr, "resolve_display",
+                        lambda code: "Weight" if "weight" in (code or "") else None)
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    params = client.get(
+        "/api/v1/clinical/patient/pat-a1/summary", headers=h).get_json()["parameters"]
+    assert next(p for p in params if p["code"] == "sys|weight")["display"] == "Weight"
+    assert next(p for p in params if p["code"] == "sys|glucose")["display"] is None
+
+
+def test_summary_display_none_when_plan_unconfigured(client):
+    client.application.config["PLAN_BASE_URL"] = ""   # no plan → skip resolution
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    params = client.get(
+        "/api/v1/clinical/patient/pat-a1/summary", headers=h).get_json()["parameters"]
+    assert params and all(p["display"] is None for p in params)

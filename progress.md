@@ -286,3 +286,18 @@ unit, value_string, org_guid), filtered by ?code (repeatable) + ?from/?to
 org_guid on every point so the dashboard applies spärr on its side (#469 Q1).
 Same care-delivery guard + org scoping as the #468 endpoints. Tests 11/11 in
 test_clinical_read.py; full suite 135 passed.
+
+## #471 item 5 — concept display names via plan.pdhc (2026-07-15)
+LIVE-DATA finding (read-only query of cdr_pdhc_db, operator-approved): prod
+code_canonical is dominantly `urn:pdhc:concept/<concept-guid>` (7064/7065 rows;
+14 distinct codes; ZERO termbank URIs). The concept GUID is embedded in
+code_canonical — so display resolution is: parse the guid, then plan.pdhc
+CodeSystem/$lookup → display (cached in PlanClient, FAIL-OPEN). Added
+PlanClient.lookup_display + clinical_read.resolve_display; the summary endpoint
+now returns a `display` per parameter (dashboard dropdown/legend uses it, falls
+back to the raw code). Skips entirely when PLAN_BASE_URL is unset (tests/
+plan-less envs). Tests 15/15 in test_clinical_read; full suite 139 passed.
+Remaining #471: item 1 (retire legacy view, blocked #469 Q6), item 2 (#212
+re-home, needs legal #437), item 4 (spärr lift refinement — now EASY since the
+guid is embedded in code_canonical: parse → compare to lift_concept_guids; still
+legal-sensitive, deferred).

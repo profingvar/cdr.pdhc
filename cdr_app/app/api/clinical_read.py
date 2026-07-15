@@ -31,13 +31,15 @@ Endpoints (mounted at /api/v1/clinical):
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy import func
 
 from app import db
 from app.models.resources import live_model
+from app.services.plan_client import PlanClient
 
 bp = Blueprint("clinical_read", __name__)
 
@@ -122,6 +124,55 @@ def _series_limit() -> int:
     except (TypeError, ValueError):
         return _DEFAULT_SERIES_LIMIT
     return max(1, min(_MAX_SERIES_LIMIT, n))
+
+
+# --- concept display resolution (#471/#462 item 5) ------------------------
+#
+# Live CDR1 data (2026-07-15): code_canonical is dominantly
+# ``urn:pdhc:concept/<concept-guid>`` (Path B — the concept GUID is embedded
+# as the last path segment). So a chart's human label is: parse the GUID out
+# of code_canonical, then resolve its display via plan.pdhc CodeSystem/$lookup
+# (cached in PlanClient). Cosmetic + FAIL-OPEN — a miss shows the raw code.
+
+_CONCEPT_GUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I,
+)
+_plan_client_singleton: PlanClient | None = None
+
+
+def _concept_guid_from_canonical(code: str | None) -> str | None:
+    """Extract the plan Concept GUID embedded in a Path-B code_canonical
+    (``urn:pdhc:concept/<guid>`` or ``.../api/v1/concepts/<guid>``). Returns
+    None for termbank URIs, smoke codes, or anything without a GUID tail."""
+    if not code:
+        return None
+    if code.startswith("urn:pdhc:concept/") or "/api/v1/concepts/" in code:
+        tail = code.rsplit("/", 1)[-1]
+        return tail if _CONCEPT_GUID_RE.match(tail) else None
+    return None
+
+
+def _plan_client() -> PlanClient:
+    global _plan_client_singleton
+    if _plan_client_singleton is None:
+        _plan_client_singleton = PlanClient(
+            base_url=current_app.config.get("PLAN_BASE_URL") or None)
+    return _plan_client_singleton
+
+
+def resolve_display(code: str | None) -> str | None:
+    """code_canonical → human display via plan.pdhc, or None. Skips entirely
+    when PLAN_BASE_URL is unconfigured (tests / plan-less envs) so no network
+    is touched. Never raises (cosmetic)."""
+    if not current_app.config.get("PLAN_BASE_URL"):
+        return None
+    guid = _concept_guid_from_canonical(code)
+    if not guid:
+        return None
+    try:
+        return _plan_client().lookup_display(guid)
+    except Exception:  # noqa: BLE001 — display is cosmetic, never break a read
+        return None
 
 
 def _patient_name(pat) -> str:
@@ -212,6 +263,7 @@ def patient_summary(guid):
 
     out = [{
         "code": code,
+        "display": resolve_display(code),   # human label via plan.pdhc (#471)
         "unit": unit,
         "count": int(count or 0),
         "first_observed_at": _iso(first),

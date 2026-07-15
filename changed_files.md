@@ -82,3 +82,6 @@ Pending follow-ups documented in `plans/post_seed_followups.md`:
 | 2026-07-13 | cdr_app/tests/test_clinical_read.py (new) | 7 tests: purpose/identity guards, org-scoped patient index (names+counts, cross-org excluded, admin sees all), per-patient summary desc + org-scope block. |
 | 2026-07-13 | cdr_app/app/api/clinical_read.py | #464 — add GET /api/v1/clinical/patient/<guid>/series: org-scoped care-delivery time-series points (code+effective-date filters), each carries org_guid for dashboard-side spärr. |
 | 2026-07-13 | cdr_app/tests/test_clinical_read.py | +4 series tests (ordering+value+org, code/date filter, cross-org block, care-delivery guard). |
+| 2026-07-15 | cdr_app/app/services/plan_client.py | #471 item 5 — add PlanClient.lookup_display(guid) via CodeSystem/$lookup (cached, FAIL-OPEN cosmetic). |
+| 2026-07-15 | cdr_app/app/api/clinical_read.py | #471 item 5 — resolve_display(code_canonical): parse embedded concept guid (urn:pdhc:concept/<guid>, live prod format) → plan.pdhc display; enrich /clinical/patient/<guid>/summary parameters with `display`. Skips when PLAN_BASE_URL unset. |
+| 2026-07-15 | cdr_app/tests/test_clinical_read.py | +4 tests (guid parse, lookup_display parse+fail-open, summary display enrichment, display None when plan unconfigured). |
