@@ -1,16 +1,16 @@
 # CDR — User manual
 
 > **One manual for CDR 1–5.** All five CDR instances run the **identical
-> software** and the same storage design; they differ only in *role* (see
-> §5). This manual applies to every one of them.
+> software** and the same storage design; they differ only in *role* and one
+> configuration switch (see §5). This manual applies to every one of them.
 
 A **CDR (Clinical Data Repository)** is the platform's authoritative store for
-patient health data — the "single source of truth" for observations, no matter
-how they arrived. It mirrors the shape of Cambio's real CDR, so the rest of the
-platform can treat it exactly like the production record.
+patient health data — the "single source of truth" for observations, no
+matter how they arrived. It mirrors the shape of Cambio's real CDR, so the
+rest of the platform can treat it exactly like the production record.
 
-You don't usually *use* a CDR directly — services write to it and read from it.
-This manual explains, in plain terms, what it does and how to tell it's
+You don't usually *use* a CDR directly — services write to it and read from
+it. This manual explains, in plain terms, what it does and how to tell it's
 healthy.
 
 ---
@@ -18,9 +18,10 @@ healthy.
 ## 1. What it's for
 
 When a provider reports a measurement (a weight, a blood pressure, a glucose
-reading, a questionnaire answer), that data is normalised by `gateway.pdhc` and
-handed to the CDR. The CDR keeps it safely, in three increasingly useful forms,
-and makes it available to dashboards and analysis tools.
+reading, a questionnaire answer), that data is normalised by `gateway.pdhc`
+and handed to the CDR. The CDR keeps it safely, makes it searchable in a
+standard clinical format, and makes it available to dashboards and analysis
+tools.
 
 ```
 gateway.pdhc ──(normalised observation)──► CDR ──► dashboards / analysis
@@ -29,58 +30,76 @@ gateway.pdhc ──(normalised observation)──► CDR ──► dashboards / 
 
 ---
 
-## 2. How it stores data — three layers
+## 2. How it stores data
 
-Every observation is kept in three layers, from "exactly as received" to
-"ready for a dashboard":
+Every clinical fact is stored as a proper **FHIR R5 resource** in a table for
+its type: observations go in one table, patients in another, conditions,
+medications, encounters, questionnaire answers, and so on — each with its own
+**history table** alongside it.
 
-1. **Raw** — the original payload, stored verbatim and hashed, so nothing is
-   ever lost and duplicates are detected.
-2. **Standard** — the observation as a **FHIR R5** resource *and* an
-   **openEHR** composition. If only one format arrives, the CDR generates the
-   other automatically, so both standards are always available.
-3. **Canonical** — a clean, dashboard-friendly table of numeric health metrics
-   (weight, blood pressure, heart rate, temperature, …) and activities.
+Two things follow from that shape:
 
-This means the same reading can be read back as raw JSON, as FHIR, as openEHR,
-or as a simple metric — whichever a consumer needs.
+- **Standard format.** Data is held as FHIR R5, the same standard clinical
+  systems use, so a dashboard or analysis tool reads it with ordinary FHIR
+  searches (by patient, by concept/code, by date).
+- **Nothing is overwritten.** The original payload is stored verbatim and
+  hashed, so duplicates are detected and nothing is lost. A correction doesn't
+  erase the old value — it becomes a new version, and the previous version is
+  kept in the history table.
+
+An **openEHR** copy of an incoming measurement is also generated on the older
+ingest path, and every fact is given a shared identifier that links its FHIR
+and openEHR sides. In today's build the openEHR side is largely a placeholder
+kept ready for the future; the live, searchable store is the FHIR one.
 
 ---
 
 ## 3. Onward delivery to Cambio
 
-The CDR doesn't just store data — it **automatically forwards** concept-mapped
-observations to the real **Cambio CDR** sandbox, so the platform's data reaches
-the production clinical record. Delivery is tracked, retried on failure, and
-auditable.
+CDR 1 doesn't just store data — it **automatically forwards** concept-mapped
+observations to the real **Cambio CDR** sandbox, so the platform's data
+reaches the production clinical record. Delivery is tracked, retried on
+failure, and auditable. (The analysis CDRs, 2–5, hold synthetic data and do
+not forward to Cambio.)
 
 ---
 
 ## 4. Checking it's healthy
 
 Each CDR exposes a health check at **`/healthz`** returning
-`{status, database, service, version}` — `status: ok` (HTTP 200) when the app
-and its database are both up, `degraded` (HTTP 503) otherwise. This is what the
-platform status page (`www.pdhc.se/services.html`) polls to show the green dot.
+`{status, service, database}` — `status: ok` (HTTP 200) when the app and its
+database are both up, `degraded` (HTTP 503) otherwise. This is what the
+platform status page (`www.pdhc.se/services.html`) polls to show the green
+dot.
 
-Reads and writes are authenticated (a service key per calling service), and
-every read is written to an audit log so access can be traced.
+Reads and writes are authenticated (a service key per calling service, or an
+SSO login for people), non-admin users only see data for their own
+organisation, and every read is written to an audit log so access can be
+traced.
 
 ---
 
 ## 5. The five CDRs — same software, different roles
 
-All CDR instances are the **same application** with the **same 39-table
-schema**. What differs is what each one is *for*:
+All CDR instances are the **same application** with the **same schema**. What
+differs is what each one is *for* — and one switch that controls who may read
+it:
 
-- **CDR 1** (`cdr.pdhc.se`) — the **canonical, live** repository. This is where
-  `gateway.pdhc` forwards real provider-reported observations; it is the
-  authoritative source of truth and the one that forwards to Cambio.
-- **CDR 2–5** (`cdr2…5.pdhc.se`) — **analysis replicas**. Identical software,
+- **CDR 1** (`cdr.pdhc.se`) — the **production clinical** repository. This is
+  where `gateway.pdhc` forwards real provider-reported observations; it is the
+  authoritative source of truth and the one that forwards to Cambio. Its
+  clinical dashboard reads it under a **care-delivery** basis (a treating
+  clinician seeing their own patient).
+- **CDR 2–5** (`cdr2…5.pdhc.se`) — **analysis instances**. Identical software,
   but populated with **synthetic** cohorts (generated by `sim.pdhc`) so the
   platform's federation and analysis features can be developed and tested
-  without touching real patient data. They are read-only from the analysis
-  layer.
+  without touching real patient data.
+
+**Read-lockdown.** CDR 2–5 run with a *read-lockdown* switch on: any trusted
+service may still *write* to them, but only the platform's **analysis layer**
+(`analyse.pdhc`, and for now also `dashboard.pdhc`) is permitted to *read*
+them. CDR 1 keeps this switch off, because the gateway writes to it directly
+and its clinical dashboard reads from it.
 
 *(There is also an internal **CDR 6** — a deliberately lighter, loopback-only
 "sim sink" with a different, simpler design; it is documented under the Sim
@@ -90,10 +109,13 @@ service, not here.)*
 
 ## 6. Good to know
 
-- **Nothing is overwritten.** The raw layer is immutable; corrections arrive as
-  new observations, and duplicates are detected by hash.
-- **Both FHIR and openEHR are always available** for any observation, even if
-  the source only sent one of them.
+- **Nothing is overwritten.** The original payload is immutable; corrections
+  arrive as new versions, older versions are kept in history, and duplicates
+  are detected by hash.
+- **Consent is honoured.** For analysis reads, the CDR checks each patient's
+  consent (via `ips.pdhc`) before returning data, and fails safe if that
+  check can't be reached. A clinician reading their own patient on CDR 1's
+  care-delivery surface is handled under the separate care-delivery basis.
 - A CDR is a *store*, not a UI — to see the data, use the platform's
   dashboards; to understand the tables, endpoints, transformation, and
   deployment, see the **technical manual** (link at the top of this page, with

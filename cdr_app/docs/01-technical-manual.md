@@ -1,171 +1,373 @@
 # cdr.pdhc — Technical Manual
 
+> **One codebase, five instances (CDR 1–5).** All five run the *identical*
+> software and schema. They differ only in configuration — chiefly the
+> `CDR_READ_LOCKDOWN` flag (see §3) — and in the data they hold.
+
 ## 1. Overview
 
-cdr.pdhc is the canonical clinical data repository for the PDHC platform.
-It receives normalised observations from gateway.pdhc (and later 2gate.pdhc),
-stores them in a three-layer architecture (raw → standard → canonical), and
-automatically delivers concept-mapped data to the Cambio CDR sandbox.
+cdr.pdhc is the platform's clinical data repository. It ingests normalised
+observations from the gateways, stores every FHIR resource type in its own
+per-type table (with full version history), exposes a FHIR R5 read/search
+surface plus a care-delivery clinical surface, and — on CDR 1 only —
+forwards concept-mapped data to the Cambio CDR sandbox.
 
-**Ports:** 9046 (Flask), 9047 (PostgreSQL), 9048–9049 reserved.
+**Ports:** 9046 (Flask/gunicorn, bound to `127.0.0.1`), 9047 (PostgreSQL),
+9048–9049 reserved. Health at `GET /healthz` (also `GET /api/v1/health`).
 
-## 2. Three-Layer Storage
+## 2. Storage model — per-FHIR-type tables
 
-### Layer 1 — Raw Store
-- Table: `ingest_raw`
-- Immutable payload archive — every ingest request is stored verbatim
-- SHA-256 hash computed for deduplication
-- Columns: guid, source_service, patient_guid, payload_json, payload_hash, headers_json, received_at
+The authoritative store is a **set of per-resource-type tables**, one live
+table per FHIR type plus a matching `*_history` twin. This replaced the old
+three-layer (`raw → standard → canonical`) design; the old tables still
+exist but are legacy (see §2.3).
 
-### Layer 2 — Standard Store (dual-format)
-- Table: `fhir_resources` — FHIR R5 Observation resources
-- Table: `openehr_compositions` — openEHR Compositions
-- Cross-linked via fhir_resource_guid ↔ openehr_comp_guid
-- Bidirectional transformation: if only FHIR is provided, openEHR is generated; if only openEHR is provided, FHIR is generated
+### 2.1 Per-type live + history tables
 
-### Layer 3 — Canonical Store
-- Table: `health_observations` — numeric health metrics (weight, BP, SpO2, etc.)
-- Table: `activities` — activity-type observations (steps, exercise, etc.)
-- Optimised for dashboard queries: patient_guid + metric + effective_at
+`app/models/resources.py` builds, from a single `RESOURCES` list, one live
+ORM model and one history model for each of these ten FHIR R5 types:
 
-## 3. FHIR ↔ openEHR Transformation
+| FHIR type | Live table | History table |
+|-----------|-----------|----------------|
+| Patient | `patient` | `patient_history` |
+| Observation | `observation` | `observation_history` |
+| QuestionnaireResponse | `questionnaire_response` | `questionnaire_response_history` |
+| Condition | `condition` | `condition_history` |
+| MedicationStatement | `medication_statement` | `medication_statement_history` |
+| MedicationRequest | `medication_request` | `medication_request_history` |
+| AllergyIntolerance | `allergy_intolerance` | `allergy_intolerance_history` |
+| Procedure | `procedure` | `procedure_history` |
+| Encounter | `encounter` | `encounter_history` |
+| DiagnosticReport | `diagnostic_report` | `diagnostic_report_history` |
 
-The transformer uses a LOINC-to-archetype mapping table (11 seed entries):
+Every live table shares these common columns:
 
-| LOINC    | Metric                   | openEHR Archetype                          | Unit    |
-|----------|--------------------------|---------------------------------------------|---------|
-| 29463-7  | body_weight_kg           | openEHR-EHR-OBSERVATION.body_weight.v2      | kg      |
-| 85354-9  | blood_pressure_systolic  | openEHR-EHR-OBSERVATION.blood_pressure.v2   | mmHg    |
-| 8867-4   | heart_rate_bpm           | openEHR-EHR-OBSERVATION.pulse.v2            | /min    |
-| 8310-5   | body_temperature_c       | openEHR-EHR-OBSERVATION.body_temperature.v2 | Cel     |
-| 2708-6   | spo2_percent             | openEHR-EHR-OBSERVATION.pulse_oximetry.v1   | %       |
-| 8302-2   | body_height_cm           | openEHR-EHR-OBSERVATION.height.v2           | cm      |
-| 9279-1   | respiratory_rate         | openEHR-EHR-OBSERVATION.respiration.v2      | /min    |
-| 39156-5  | bmi                      | openEHR-EHR-OBSERVATION.body_mass_index.v2  | kg/m2   |
-| 2339-0   | blood_glucose_mmol       | openEHR-EHR-OBSERVATION.laboratory_test_result.v1 | mmol/L |
-| 8280-0   | waist_circumference_cm   | openEHR-EHR-OBSERVATION.waist_circumference.v2 | cm   |
-| 93832-4  | sleep_hours              | openEHR-EHR-OBSERVATION.sleep.v0            | h       |
-
-Unknown LOINC codes fall back to the generic `laboratory_test_result.v1` archetype.
-
-## 4. Ingest Pipeline
-
-The 8-step ingest pipeline processes each incoming observation:
-
-1. **Deduplicate** — check payload SHA-256 hash against dedupe_registry
-2. **Store raw** — immutable insert into ingest_raw
-3. **Store/transform standard** — store provided FHIR/openEHR, generate missing format
-4. **Store canonical** — insert into health_observations or activities
-5. **Store context** — clinical provenance (transaction, careplan, plandef)
-6. **Register dedupe** — add hash to dedupe_registry
-7. **Enqueue Cambio** — create delivery_log entries if concept-mapped
-8. **Audit** — write to audit_log with correlation ID and IP
-
-## 5. Authentication
-
-### Ingest (service-to-service)
-Two headers required:
-- `X-Service-Key`: shared secret per source service
-- `X-Source-Service`: service identifier (`gateway.pdhc` or `2gate.pdhc`)
-
-### Web UI (SSO)
-- OAuth2 via sso.pdhc.se
-- Admin-only, analysis phase required
-- `AUTH_MODE=sso` enables SSO; `AUTH_MODE=off` uses dev SU user
-
-## 6. Cambio CDR Sandbox Delivery
-
-### Scope
-Only observations with a `concept_guid` referencing the plan.pdhc.se concept store
-are eligible for Cambio delivery. Data without concept mappings is stored locally only.
-
-### Delivery process
-1. Background worker (APScheduler, 60-second interval) picks up pending deliveries
-2. Ensures patient exists in Cambio (FHIR Patient + openEHR EHR creation)
-3. Delivers FHIR Observation via FHIR Gateway service
-4. Delivers openEHR Composition via xCDR service
-5. Retries with exponential backoff: 10s, 20s, 40s, 80s, 160s (max 5 attempts)
-
-### OAuth2 token management
-- Client credentials grant against Cambio IdP
-- Tokens cached with 30-second safety margin before expiry
-- Audiences: service.fhir-gateway, service.xcdr, service.patient, service.consent, service.organization
-
-## 7. API Reference
-
-### POST /api/v1/ingest
-Single observation ingest. Returns 202 (accepted) or 200 (duplicate).
-
-### POST /api/v1/ingest/batch
-Batch ingest (max 100). Accepts `{"items": [...]}` or bare array.
-
-### GET /api/v1/fhir/metadata
-FHIR CapabilityStatement.
-
-### GET /api/v1/fhir/Observation?patient_guid=X&loinc_code=Y
-Search FHIR resources. Optional: limit, offset.
-
-### GET /api/v1/fhir/Observation/<guid>
-Read single FHIR resource.
-
-### GET /api/v1/openehr/composition?patient_guid=X&archetype_id=Y
-Search openEHR compositions.
-
-### GET /api/v1/canonical/<table_name>?patient_guid=X&metric=Y
-Query canonical tables (health_observations, activities).
-
-### GET /api/v1/cambio/status
-Delivery counts by status (pending, delivered, failed, skipped).
-
-### GET /api/v1/cambio/patient/<guid>
-Patient mapping + delivery history.
-
-### POST /api/v1/cambio/retry
-Reset all failed deliveries to pending.
-
-## 8. Operations
-
-### Cold start
-```bash
-cd /usr/local/www/cdr.pdhc
-bash start.sh
+```
+guid, patient_guid, org_guid, code_canonical, effective_at, raw_json,
+source, source_request_id, meta_tag, version_id, sync_group_id,
+mapping_version, etag, received_at, created_at, updated_at
 ```
 
-### Graceful restart
-```bash
-cd /usr/local/www/cdr.pdhc
-bash safe_restart.sh
+plus a few type-specific columns (e.g. `observation` adds `value_quantity`,
+`value_unit`, `value_string`, `value_code`, `status`; `patient` adds
+`identifiers`, `names`, `gender`, `birth_date`, `active`). The full FHIR
+resource is always kept verbatim in `raw_json`; the extracted columns exist
+only to index and search.
+
+**Time fields (#294 RFC E1):** `effective_at` is the clinical measurement
+time; `received_at` is when the platform first saw the payload; `created_at`
+is when this row was written; `updated_at` is the last version bump.
+
+**History tables** carry the same columns (minus the live-only ones) plus
+`superseded_at` and `superseded_by_request_id`. The primary key is the
+composite `(guid, version_id)` — one row per historical version.
+
+**`code_canonical`** is the concept key a row is searched by. On live CDR 1
+it is dominantly the **Path-B embedded-GUID form** `urn:pdhc:concept/<guid>`
+— the plan.pdhc Concept GUID is the last path segment. Display resolution
+parses that GUID out and looks it up via plan.pdhc (see §6.2).
+
+### 2.2 Cross-cutting tables
+
+- **`sync_group`** — one row per logical clinical fact, linking the FHIR and
+  openEHR representations. The openEHR side is a reserved placeholder today
+  (bidirectional mapping deferred); the `sync_group_id` is minted now so the
+  wiring is ready.
+- **`change_feed`** — append-only event log; one row (`create`/`update`/
+  `delete`) is emitted on every per-type write. Consumers poll it via
+  `GET /api/v1/fhir/events` (§4.2).
+- **`cdr_audit_plan_miss`** — a canonical URI returned by xlate.pdhc that no
+  active plan.pdhc Concept references. Bookkept for out-of-band review.
+- **`cdr_read_audit`** (X1 #407/#443) — one row per patient-touching FHIR
+  read: caller service/user, org guids, route, resource type, patient guid,
+  rows returned, HTTP status, and the session/role/purpose/access-basis
+  tuple. Machine reads carry `caller_service` with a NULL role tuple.
+
+### 2.3 Legacy tables (read-mostly)
+
+The pre-platform-plan tables remain in place: `ingest_raw`, `fhir_resources`,
+`openehr_compositions`, `health_observations`, `activities`, plus
+`clinical_context`, `dedupe_registry`, `loinc_archetype_map`, `service_keys`,
+`users`, `audit_log`, `cambio_patient_map`, `cambio_delivery_log`.
+
+The **flat ingest path** (§4.1) still writes several of these — `ingest_raw`
+(immutable payload + SHA-256), `fhir_resources`, an `openehr_compositions`
+row generated by the transformer, `clinical_context`, `dedupe_registry`,
+`cambio_delivery_log`, `audit_log` — because they back dedup, provenance and
+Cambio delivery. But the **read/search surface no longer reads them**: step
+3.5 of the flat ingest (#295) mirrors each Observation into the per-type
+`observation` table, and all FHIR reads hit the per-type tables. So the
+legacy standard/canonical tables (`fhir_resources`, `openehr_compositions`,
+`health_observations`, `activities`) are effectively write-through legacy for
+provenance, not the query store.
+
+**Table count is ~37**, not 13: 10 live + 10 history + 4 cross-cutting
+(`sync_group`, `change_feed`, `cdr_audit_plan_miss`, `cdr_read_audit`) + 13
+legacy/infra tables.
+
+## 3. The five CDRs and `CDR_READ_LOCKDOWN` (#293)
+
+The single most important config difference between instances:
+
+- **CDR 1 (`cdr.pdhc.se`)** — production clinical repository.
+  `CDR_READ_LOCKDOWN=false`. Gateway writes real provider observations
+  directly to CDR 1 (per SSOT), and CDR 1 forwards to Cambio.
+- **CDR 2–5 (`cdr2…5.pdhc.se`)** — analysis instances.
+  `CDR_READ_LOCKDOWN=true`. Populated with synthetic cohorts; only the
+  analyse layer reads them.
+
+**Under lockdown** (`_is_read_path` in `app/auth.py`), the read endpoints
+(`/api/v1/fhir/*`, `/api/v1/openehr/*`, `/api/v1/stats`, `/api/v1/cambio/*`,
+`/api/v1/clinical/*`) accept **only** the analyse-layer reader identities
+`dashboard.pdhc` and `analyse.pdhc`. All other trusted services may still
+**write**; they just cannot read a locked-down CDR. CDR 1, with the flag
+false, serves reads to any valid trusted reader.
+
+## 4. Data flow
+
+### 4.1 Flat ingest (legacy wire, gateway → CDR 1)
+
+`POST /api/v1/ingest` and `POST /api/v1/ingest/batch` (max 100). Service-key
+auth via `KNOWN_SERVICES` (§5.1). Body must carry `patient_guid` and may
+carry `fhir_resource`, `openehr_composition`, `canonical`, and
+`clinical_context` blocks. `IngestPipeline.process` runs:
+
+1. **Deduplicate** — SHA-256 of the payload vs `dedupe_registry` (scoped by
+   source service). A repeat returns `200 {"status":"duplicate"}`.
+2. **Store raw** — immutable `ingest_raw` insert.
+3. **Store standard** — write the FHIR resource to `fhir_resources`; store or
+   (from FHIR) **generate** an `openehr_compositions` row via the transformer
+   (§6.1). If only openEHR arrived, generate the FHIR side.
+   **3.5 Mirror to per-type** (#295) — build and insert the live
+   `observation` row (this is what search reads).
+4. **Store canonical** — `health_observations` or `activities` (legacy).
+5. **Store context** — the canonical 12-field `clinical_context` row.
+6. **Register dedupe** — add the hash to `dedupe_registry`.
+7. **Enqueue Cambio** — create `cambio_delivery_log` rows (`pending` if a
+   concept reference is present, else `skipped`). The X2 operator session id
+   (`X-Operator-Session-Id`) is captured for later replay.
+8. **Audit** — write `audit_log` with correlation id and client IP.
+
+Returns `202 accepted`, `200 duplicate`, or `422 rejected`.
+
+`GET /api/v1/ingest/by-source-id/<source_system_id>` (service-key,
+source-scoped) confirms a prior delivery landed.
+
+### 4.2 FHIR write (per-type path)
+
+`POST /api/v1/fhir/<Type>`, `PUT /api/v1/fhir/<Type>/<guid>` (optimistic
+concurrency via `If-Match`), and `POST /api/v1/fhir/Bundle` (transaction =
+atomic; batch = per-entry). Each entry runs:
+
+```
+canonicalise → dedup-lookup → insert-or-update-with-history →
+sync_group → mapping_version → change_feed
 ```
 
-### Environment variables
+Canonicalisation resolves codings to a `code_canonical` (via xlate.pdhc /
+plan.pdhc). A body carrying an `id` upserts by that id (FHIR "update as
+create"), version-bumping and pushing the prior row to `*_history`. Error
+outcomes: `422 xlate_miss`, `422 plan_miss` (also bookkept to
+`cdr_audit_plan_miss`), `412` on stale `If-Match`, `503 transient` when xlate
+or plan is unreachable.
+
+### 4.3 FHIR read / search
+
+All under `/api/v1/fhir/` (`app/api/fhir_read.py`), reading the per-type
+tables:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /<Type>` | Search (see params below) |
+| `GET /<Type>/<guid>` | Instance read (ETag) |
+| `GET /<Type>/<guid>/_history` | Version list Bundle |
+| `GET /<Type>/<guid>/_history/<vid>` | vread a specific version |
+| `GET /Patient/<guid>/$everything` | Patient compartment Bundle |
+| `GET /events` | `change_feed` long-poll (`?since=<seq>`) |
+| `GET /metadata` | FHIR CapabilityStatement |
+
+**Search parameters** are FHIR-standard (not the old `patient_guid` /
+`loinc_code`):
+
+- `patient` / `subject` — accepts `Patient/<guid>` or a bare guid.
+- `code` — `system|code` (equality-matched against the indexed
+  `code_canonical`) or a bare code (suffix match).
+- `date` — FHIR prefix syntax `ge` / `le` / `gt` / `lt` / `eq`.
+- `_id`, `_tag` (`system|code` against `meta_tag`), `_count` (cap 30000,
+  default 100, most-recent-first by `effective_at`).
+- `_has` reverse-chain, e.g. `_has:Observation:patient:code=<code>`.
+- `_include` / `_revinclude` (e.g. `Observation:patient`).
+- Chained `patient.identifier=<system>|<value>` (also `subject.identifier`).
+
+Every read is org-scoped (Rule 24, §5.3), consent-filtered (§5.4), and
+written to `cdr_read_audit`.
+
+> Group aggregations (`$stats`, `$agp`) were moved out to the analyse layer
+> (dashboard.pdhc) in the CDR1/analyse split (#289). CDR 1 is pure storage;
+> analyse fetches raw Observations via search and aggregates locally.
+
+### 4.4 Care-delivery clinical read surface (#468)
+
+`app/api/clinical_read.py`, mounted at `/api/v1/clinical`. This serves the
+rebuilt single-patient **clinical** dashboard (#462), which reads CDR 1 under
+a **care-delivery** legal basis (vårdrelation + spärr), *not* the
+analysis-consent basis:
+
+| Endpoint | Returns |
+|----------|---------|
+| `GET /clinical/patients` | The org's patients that have Observation data, with counts |
+| `GET /clinical/patient/<guid>/summary` | Per-concept counts + unit + first/last seen |
+| `GET /clinical/patient/<guid>/series` | Time-series points (optional `code`, `from`, `to` filters) |
+
+Guard (`_care_delivery_guard`): the request **must** carry
+`X-Access-Purpose: care-delivery` **and** the service identity must be
+`dashboard.pdhc`. Because the service blob is `is_su_admin`, the shared FHIR
+org-filter would leak all orgs — so these endpoints do their **own** explicit
+org scoping from the forwarded `X-Org-Guids` / `X-Is-Admin` headers (the
+operator's affiliation care-unit guids). Consent (#422) is **bypassed** here:
+a patient may be treatable while having declined research. Series points
+carry `org_guid` so the dashboard can apply spärr (per-clinic blocks) on its
+side. Concept display names are resolved via plan.pdhc (#471), fail-open.
+
+### 4.5 openEHR read
+
+`GET /api/v1/openehr/composition/<guid>` — a single by-GUID read of a legacy
+`openehr_compositions` row. The former search form
+(`?patient_guid=&archetype_id=`) was moved to the analyse layer (#292); CDR 1
+keeps only the storage-style per-GUID lookup.
+
+### 4.6 Other read endpoints
+
+- `GET /api/v1/stats` (#292 compatibility shim) — per-type row-count
+  aggregate so the analyse-layer federation shape is uniform across CDRs.
+- `GET /api/v1/observations/<guid>/provenance` (service-key) — a FHIR
+  `collection` Bundle: the Observation plus its linked ServiceRequest,
+  PlanDefinition, CarePlan, Contract, and requesting + provider Organizations,
+  reconstructed from `clinical_context` and the resource's own back-refs.
+  Missing context degrades gracefully.
+- `GET /api/v1/cambio/status`, `/api/v1/cambio/patient/<guid>`,
+  `POST /api/v1/cambio/retry` (§7).
+
+## 5. Authentication and access control
+
+### 5.1 Ingest (write) service keys — `KNOWN_SERVICES`
+
+Header pair `X-Source-Service` + `X-Service-Key` (`app/api/auth.py`).
+Accepted sources and the env var each key is matched against:
+
+| Source service | Config / env var |
+|----------------|------------------|
+| `gateway.pdhc` | `GATEWAY_PDHC_SERVICE_KEY` |
+| `2gate.pdhc` | `TWOGATE_PDHC_SERVICE_KEY` |
+| `sim.pdhc` | `SIM_PDHC_SERVICE_KEY` |
+
+### 5.2 FHIR/read trusted services — `KNOWN_FHIR_SERVICES`
+
+Sibling services may read/write the FHIR surface with a service key
+(`app/auth.py`), each keyed to its own env var:
+
+| Source service | Config / env var | Role |
+|----------------|------------------|------|
+| `sim.pdhc` | `SIM_PDHC_SERVICE_KEY` | writes synthetic cohorts |
+| `dashboard.pdhc` | `DASHBOARD_PDHC_SERVICE_KEY` | analyse-layer + clinical reader |
+| `analyse.pdhc` | `ANALYSE_PDHC_SERVICE_KEY` | extracted analyse-layer reader (#541) |
+
+Under `CDR_READ_LOCKDOWN`, only `dashboard.pdhc` and `analyse.pdhc` may take
+a **read** path; every listed service may still **write**. A valid
+service-key request gets a synthetic `is_su_admin` blob tagged with
+`service_source`, which downstream code uses to distinguish machine writes
+from human operators.
+
+### 5.3 SSO (human operators)
+
+`AUTH_MODE=sso` validates the session bearer token against
+`sso.pdhc /api/auth/me/service` on **every** request (no blob caching, so an
+SSO logout takes effect immediately). Access requires the analysis phase gate
+— `is_su_admin`, or `user_type == "professional"` with `analysis` in the
+session phases. `flask create-su` bootstraps an SU. `AUTH_MODE=off` (local
+dev only) loads a dev SU blob.
+
+**Org scoping (Rule 24):** non-admin reads are filtered to the operator's
+Zone-1 care-unit guids — `affiliations[].care_unit_guid`, with a dual-read
+fallback to the legacy `organization_ids` (M0 #416). Admins (`is_su_admin`)
+see all.
+
+### 5.4 Analysis consent / spärr filtering (#422)
+
+`app/services/analysis_consent.py` enforces analysis-phase consent (EHDS
+opt-out, per-project research consent, quality-registry opt-out). The verdict
+comes from **ips.pdhc** (`POST /api/v1/patients/analysis-filter`) — nothing
+is computed locally. The operator's purpose is derived from their **active
+affiliation role** (researcher → research; quality/registry → quality_registry;
+other clinical → statistics; SU-admin without affiliations → administration,
+never blocked). `check_patient_allowed` gates a single patient (403 on
+exclusion); `consent_allowed_guids` batch-filters a search result set. **Fail
+closed:** if ips is unreachable, reads abort `503`. Service-key/machine
+contexts and the care-delivery surface (§4.4) pass through — the sibling
+holds the real operator context.
+
+## 6. FHIR ↔ openEHR transformation
+
+### 6.1 Flat-ingest transformer
+
+`app/services/transformer.py` generates an openEHR composition from a FHIR
+Observation on the flat-ingest path, using a LOINC-to-archetype seed map (11
+entries: body weight, blood pressure, pulse, temperature, SpO2, height,
+respiration, BMI, blood glucose, waist circumference, sleep). Unknown LOINC
+codes fall back to `openEHR-EHR-OBSERVATION.laboratory_test_result.v1`. This
+is the only path that materialises openEHR; the per-type write path defers
+openEHR and only mints the `sync_group_id`.
+
+### 6.2 Concept display (#471)
+
+`clinical_read.resolve_display` parses the Concept GUID out of a Path-B
+`code_canonical` (`urn:pdhc:concept/<guid>`) and resolves a human label via
+plan.pdhc `CodeSystem/$lookup` (cached in `PlanClient`). Cosmetic and
+fail-open — a miss shows the raw code.
+
+## 7. Cambio CDR sandbox delivery (CDR 1)
+
+Only observations with a concept reference are eligible; unmapped data stays
+local (`cambio_delivery_log.status = skipped`). When
+`CAMBIO_DELIVERY_ENABLED=true`, an APScheduler background worker runs a
+delivery cycle every 60 s: ensure the patient exists in Cambio (FHIR Patient
++ openEHR EHR), deliver the FHIR Observation and openEHR Composition, retry
+with backoff. The X2 operator session id captured at ingest is replayed as
+`X-Operator-Session-Id` on the CDR 1 → Cambio hop so chain-of-custody
+survives the async gap. Status/retry via `/api/v1/cambio/*`.
+
+## 8. Health check
+
+`GET /healthz` (and `GET /api/v1/health`) returns:
+
+```json
+{ "status": "ok", "service": "cdr.pdhc", "database": "connected" }
+```
+
+`status` is `ok` (HTTP 200) when the DB `SELECT 1` succeeds, `degraded`
+(HTTP 503) otherwise; `database` is `connected` / `unavailable`. **There is
+no `version` field.** CORS headers allow `https://www.pdhc.se/services.html`
+to read the body cross-origin and drive the real status/DB dots.
+
+## 9. Configuration (environment)
+
 | Variable | Purpose |
 |----------|---------|
-| DATABASE_URL | PostgreSQL connection string |
-| AUTH_MODE | `off` (dev) or `sso` (production) |
-| SSO_BASE_URL | SSO service URL |
-| SSO_CLIENT_ID / SSO_CLIENT_SECRET | SSO client credentials |
-| GATEWAY_PDHC_SERVICE_KEY | Shared secret for gateway.pdhc |
-| CAMBIO_DELIVERY_ENABLED | `true` to activate delivery worker |
-| CAMBIO_CLIENT_ID / CAMBIO_CLIENT_SECRET | Cambio OAuth2 credentials |
-| CAMBIO_BASE_URL | Cambio sandbox base URL |
-| CAMBIO_TOKEN_URL | Cambio IdP token endpoint |
+| `DATABASE_URL` | PostgreSQL connection string (default port 9047) |
+| `AUTH_MODE` | `off` (dev) or `sso` (production) |
+| `SSO_BASE_URL` / `SSO_CLIENT_ID` / `SSO_CLIENT_SECRET` / `SSO_CALLBACK_URL` | SSO validation |
+| `CDR_READ_LOCKDOWN` | `false` on CDR 1, `true` on CDR 2–5 (#293) |
+| `GATEWAY_PDHC_SERVICE_KEY` / `TWOGATE_PDHC_SERVICE_KEY` / `SIM_PDHC_SERVICE_KEY` | Ingest service keys |
+| `DASHBOARD_PDHC_SERVICE_KEY` / `ANALYSE_PDHC_SERVICE_KEY` | Read/analyse service keys |
+| `PLAN_BASE_URL` | plan.pdhc — canonicalisation + concept display |
+| `IPS_BASE_URL` | ips.pdhc — consent analysis-filter (#422) |
+| `STRICT_CANONICALISATION` | Relax plan-validate on transient unreachability when `false` |
+| `CAMBIO_DELIVERY_ENABLED` | Activate the delivery worker (CDR 1) |
+| `CAMBIO_CLIENT_ID` / `CAMBIO_CLIENT_SECRET` / `CAMBIO_TOKEN_URL` / `CAMBIO_BASE_URL` / `CAMBIO_TENANT` / `CAMBIO_*_HSA_ID` | Cambio sandbox credentials |
 
-## 9. Database Schema
+## 10. Operations
 
-13 tables across PostgreSQL:
-
-| Table | Layer | Description |
-|-------|-------|-------------|
-| ingest_raw | Raw | Immutable payload store |
-| fhir_resources | Standard | FHIR R5 Observations |
-| openehr_compositions | Standard | openEHR Compositions |
-| health_observations | Canonical | Numeric health metrics |
-| activities | Canonical | Activity observations |
-| clinical_context | Provenance | Careplan/transaction links |
-| dedupe_registry | Infra | SHA-256 dedup hashes |
-| loinc_archetype_map | Infra | LOINC ↔ archetype mappings |
-| service_keys | Auth | Gateway service keys |
-| users | Auth | SSO-synced users |
-| audit_log | Governance | Event audit trail |
-| cambio_patient_map | Cambio | PDHC ↔ Cambio patient IDs |
-| cambio_delivery_log | Cambio | Delivery tracking with retry |
+Cold start `bash start.sh`. Graceful restart of the CDR's own service only
+(Rule 19 / CLAUDE.md §15) — never touch sibling services, volumes, or the
+shared Colima VM. See the platform CLAUDE.md for the deploy layout, the
+Postgres credential-drift trap, and the Docker/Colima gotchas.
