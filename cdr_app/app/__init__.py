@@ -44,6 +44,8 @@ def create_app(config_override=None):
     app.config["TWOGATE_PDHC_SERVICE_KEY"] = os.environ.get("TWOGATE_PDHC_SERVICE_KEY", "")
     app.config["SIM_PDHC_SERVICE_KEY"] = os.environ.get("SIM_PDHC_SERVICE_KEY", "")
     app.config["DASHBOARD_PDHC_SERVICE_KEY"] = os.environ.get("DASHBOARD_PDHC_SERVICE_KEY", "")
+    # #541 — analyse.pdhc's read identity (extracted analyse-layer reader).
+    app.config["ANALYSE_PDHC_SERVICE_KEY"] = os.environ.get("ANALYSE_PDHC_SERVICE_KEY", "")
 
     # Read-side lockdown (#293). When true, only X-Source-Service:
     # dashboard.pdhc is permitted on read endpoints. Ingest paths are

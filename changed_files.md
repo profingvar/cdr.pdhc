@@ -85,3 +85,6 @@ Pending follow-ups documented in `plans/post_seed_followups.md`:
 | 2026-07-15 | cdr_app/app/services/plan_client.py | #471 item 5 — add PlanClient.lookup_display(guid) via CodeSystem/$lookup (cached, FAIL-OPEN cosmetic). |
 | 2026-07-15 | cdr_app/app/api/clinical_read.py | #471 item 5 — resolve_display(code_canonical): parse embedded concept guid (urn:pdhc:concept/<guid>, live prod format) → plan.pdhc display; enrich /clinical/patient/<guid>/summary parameters with `display`. Skips when PLAN_BASE_URL unset. |
 | 2026-07-15 | cdr_app/tests/test_clinical_read.py | +4 tests (guid parse, lookup_display parse+fail-open, summary display enrichment, display None when plan unconfigured). |
+2026-08-08T09:19:48Z cdr_app/app/auth.py — #541 add analyse.pdhc to KNOWN_FHIR_SERVICES + _ANALYSE_READER_SOURCES lockdown allow-list (additive; dashboard.pdhc retained)
+2026-08-08T09:19:48Z cdr_app/app/__init__.py — #541 wire ANALYSE_PDHC_SERVICE_KEY config
+2026-08-08T09:19:48Z cdr_app/tests/test_lockdown.py — #541 analyse.pdhc read accepted under lockdown + wrong-key 403

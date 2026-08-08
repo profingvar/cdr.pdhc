@@ -19,6 +19,7 @@ _KEYS = (
     "GATEWAY_PDHC_SERVICE_KEY",
     "DASHBOARD_PDHC_SERVICE_KEY",
     "SIM_PDHC_SERVICE_KEY",
+    "ANALYSE_PDHC_SERVICE_KEY",
 )
 
 
@@ -42,6 +43,7 @@ def _set_keys(app):
     app.config["GATEWAY_PDHC_SERVICE_KEY"] = "gw-key"
     app.config["DASHBOARD_PDHC_SERVICE_KEY"] = "dash-key"
     app.config["SIM_PDHC_SERVICE_KEY"] = "sim-key"
+    app.config["ANALYSE_PDHC_SERVICE_KEY"] = "analyse-key"
 
 
 # ── Default behaviour (flag false) ──────────────────────────────────
@@ -76,6 +78,28 @@ def test_lockdown_dashboard_read_succeeds(client, app):
     r = client.get("/api/v1/fhir/Observation/no-such-guid",
                    headers=_hdr("dashboard.pdhc", "dash-key"))
     assert r.status_code in (404, 410)
+
+
+def test_lockdown_analyse_read_succeeds(client, app):
+    """#541 — analyse.pdhc is the extracted analyse-layer reader; under
+    lockdown its reads are accepted (alongside dashboard.pdhc) with the
+    matching ANALYSE_PDHC_SERVICE_KEY."""
+    _set_keys(app)
+    app.config["CDR_READ_LOCKDOWN"] = True
+    r = client.get("/api/v1/fhir/Observation/no-such-guid",
+                   headers=_hdr("analyse.pdhc", "analyse-key"))
+    assert r.status_code in (404, 410)
+
+
+def test_lockdown_analyse_read_wrong_key_rejected(client, app):
+    """analyse.pdhc with a wrong key is 403 (the additive trust must not
+    weaken key validation)."""
+    _set_keys(app)
+    app.config["CDR_READ_LOCKDOWN"] = True
+    r = client.get("/api/v1/fhir/Observation/no-such-guid",
+                   headers=_hdr("analyse.pdhc", "WRONG"))
+    assert r.status_code == 403
+    assert b"Invalid service credentials" in r.data
 
 
 def test_lockdown_sim_read_rejected(client, app):

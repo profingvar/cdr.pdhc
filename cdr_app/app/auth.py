@@ -133,7 +133,17 @@ def _public_path(path: str) -> bool:
 KNOWN_FHIR_SERVICES = {
     "sim.pdhc":       "SIM_PDHC_SERVICE_KEY",
     "dashboard.pdhc": "DASHBOARD_PDHC_SERVICE_KEY",
+    # #541 — analyse.pdhc is the extracted analyse-layer reader (federates
+    # CDR2-6 group/population reads), taking over from dashboard.pdhc. Added
+    # alongside (not replacing) dashboard.pdhc so the cutover is reversible;
+    # dashboard's identity is retired at #543 once analyse serves live.
+    "analyse.pdhc":   "ANALYSE_PDHC_SERVICE_KEY",
 }
+
+# #293 read-lockdown allow-list: under CDR_READ_LOCKDOWN only these
+# analyse-layer reader identities may read (all other trusted services may
+# still WRITE). #541 admits analyse.pdhc here alongside dashboard.pdhc.
+_ANALYSE_READER_SOURCES = ("dashboard.pdhc", "analyse.pdhc")
 
 
 def _is_read_path(path: str) -> bool:
@@ -157,9 +167,11 @@ def _service_key_outcome(app):
     """None = no headers (fall through), True = valid, False = bad.
 
     When CDR_READ_LOCKDOWN is true AND the request targets a read
-    path, only X-Source-Service: dashboard.pdhc is accepted. The
-    flag is per-CDR-deploy (cdr1 ships false because gateway writes
-    to cdr1 directly per SSOT; cdr2-5 + cdr_6 ship true). See #293.
+    path, only the analyse-layer reader identities in
+    _ANALYSE_READER_SOURCES (dashboard.pdhc, analyse.pdhc — #541) are
+    accepted. The flag is per-CDR-deploy (cdr1 ships false because
+    gateway writes to cdr1 directly per SSOT; cdr2-5 + cdr_6 ship
+    true). See #293.
     """
     source = request.headers.get("X-Source-Service", "").strip()
     key = request.headers.get("X-Service-Key", "").strip()
@@ -175,7 +187,7 @@ def _service_key_outcome(app):
         return False
     if (app.config.get("CDR_READ_LOCKDOWN")
             and _is_read_path(request.path)
-            and source != "dashboard.pdhc"):
+            and source not in _ANALYSE_READER_SOURCES):
         return False
     g.source_service = source
     return True
