@@ -88,3 +88,4 @@ Pending follow-ups documented in `plans/post_seed_followups.md`:
 2026-08-08T09:19:48Z cdr_app/app/auth.py — #541 add analyse.pdhc to KNOWN_FHIR_SERVICES + _ANALYSE_READER_SOURCES lockdown allow-list (additive; dashboard.pdhc retained)
 2026-08-08T09:19:48Z cdr_app/app/__init__.py — #541 wire ANALYSE_PDHC_SERVICE_KEY config
 2026-08-08T09:19:48Z cdr_app/tests/test_lockdown.py — #541 analyse.pdhc read accepted under lockdown + wrong-key 403
+- cdr.pdhc/cdr_app/docs/01-technical-manual.md (Port Allocation section)

@@ -371,3 +371,18 @@ Cold start `bash start.sh`. Graceful restart of the CDR's own service only
 (Rule 19 / CLAUDE.md §15) — never touch sibling services, volumes, or the
 shared Colima VM. See the platform CLAUDE.md for the deploy layout, the
 Postgres credential-drift trap, and the Docker/Colima gotchas.
+
+## Port Allocation
+
+All ports bind to `127.0.0.1` (loopback only); external traffic arrives
+via the reverse proxy. Every instance runs identical software; only the
+host port pair (`APP_PORT` / `DB_PORT`) differs. Inside every container
+the app listens on `9046` and Postgres on `5432`.
+
+| Instance | App (Gunicorn) | PostgreSQL |
+|----------|----------------|------------|
+| CDR 1 | 9046 | 9045 (local-dev default 9047) |
+| CDR 2 | 9146 | 9145 |
+| CDR 3 | 9246 | 9245 |
+| CDR 4 | 9346 | 9345 |
+| CDR 5 | 9446 | 9445 |
