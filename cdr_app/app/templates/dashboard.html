@@ -74,6 +74,28 @@
   </div>
 </div>
 
+<hr class="section-break">
+
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;">
+    <h2 style="margin:0;">Recent Observations</h2>
+    <label style="font-size:.85em;color:var(--text-muted);">
+      <input type="checkbox" id="obs-autorefresh" checked> auto-refresh (10s)
+    </label>
+  </div>
+  <p class="text-muted" style="font-size:.8em;margin:.25rem 0 .6rem;">
+    Newest first · operator monitor of inbound line data (not spärr/consent filtered).
+  </p>
+  <div class="table-wrap" style="overflow-x:auto;">
+    <table>
+      <thead>
+        <tr><th>Received</th><th>Observation</th><th>Value</th><th>Patient</th><th>Source</th></tr>
+      </thead>
+      <tbody id="obs-rows"><tr><td colspan="5" class="text-muted">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -102,5 +124,43 @@ async function loadStats() {
   } catch(e) {}
 }
 loadStats();
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function fmtTime(iso) {
+  if (!iso) return '—';
+  try { return new Date(iso).toLocaleString(); } catch(e) { return iso; }
+}
+function shortGuid(g) { return g ? g.slice(0, 8) : '—'; }
+async function loadRecentObs() {
+  try {
+    const r = await fetch('/api/v1/recent-observations?limit=50');
+    if (!r.ok) return;
+    const d = await r.json();
+    const tb = document.getElementById('obs-rows');
+    if (!tb) return;
+    if (!d.items || !d.items.length) {
+      tb.innerHTML = '<tr><td colspan="5" class="text-muted">No observations yet</td></tr>';
+      return;
+    }
+    tb.innerHTML = d.items.map(o => {
+      const name = o.display || o.code || '—';
+      const val = (o.value === null || o.value === undefined ? '—' : o.value)
+                  + (o.unit ? ' ' + o.unit : '');
+      return '<tr><td>' + fmtTime(o.received_at) + '</td>'
+           + '<td>' + escapeHtml(name) + '</td>'
+           + '<td>' + escapeHtml(String(val)) + '</td>'
+           + '<td><code>' + shortGuid(o.patient_guid) + '</code></td>'
+           + '<td>' + escapeHtml(o.source || '—') + '</td></tr>';
+    }).join('');
+  } catch(e) {}
+}
+loadRecentObs();
+setInterval(() => {
+  const cb = document.getElementById('obs-autorefresh');
+  if (cb && cb.checked) loadRecentObs();
+}, 10000);
 </script>
 {% endblock %}
