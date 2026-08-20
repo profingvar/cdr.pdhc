@@ -126,8 +126,16 @@ def test_patients_org_scoped_with_names_and_counts(client):
     assert a2["name"] == "Bo Berg"
 
 
-def test_admin_sees_all_orgs(client):
+def test_admin_read_without_reason_is_gated(client):
+    # #575: an admin-override read must carry an attestation reason.
     h = dict(BASE_H, **{"X-Is-Admin": "1"})
+    r = client.get("/api/v1/clinical/patients", headers=h)
+    assert r.status_code == 428
+    assert r.get_json()["code"] == "ADMIN_READ_REASON_REQUIRED"
+
+
+def test_admin_sees_all_orgs(client):
+    h = dict(BASE_H, **{"X-Is-Admin": "1", "X-Admin-Read-Reason": "test attest"})
     r = client.get("/api/v1/clinical/patients", headers=h)
     guids = {p["patient_guid"] for p in r.get_json()["patients"]}
     assert guids == {"pat-a1", "pat-a2", "pat-b1"}

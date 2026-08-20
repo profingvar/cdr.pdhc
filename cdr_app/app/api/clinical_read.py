@@ -68,6 +68,17 @@ def _care_delivery_guard():
     if blob.get("service_source") != CLINICAL_SERVICE:
         return jsonify(error="care-delivery reads require the dashboard.pdhc "
                              "service identity"), 403
+    # #575 (#212 re-home): an admin-OVERRIDE read (X-Is-Admin:1 bypasses org
+    # scoping and returns every patient) is break-glass — it MUST carry an
+    # attestation reason (X-Admin-Read-Reason). Enforced at the data layer so
+    # no client can bypass the dashboard's attestation prompt. The reason
+    # itself is recorded in the dashboard's audit (event_type=admin_override).
+    if request.headers.get("X-Is-Admin") == "1":
+        if not (request.headers.get("X-Admin-Read-Reason") or "").strip():
+            return jsonify(
+                error="admin-override read requires an attestation reason",
+                code="ADMIN_READ_REASON_REQUIRED",
+            ), 428
     return None
 
 
