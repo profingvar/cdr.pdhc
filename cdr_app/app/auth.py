@@ -138,6 +138,12 @@ KNOWN_FHIR_SERVICES = {
     # alongside (not replacing) dashboard.pdhc so the cutover is reversible;
     # dashboard's identity is retired at #543 once analyse serves live.
     "analyse.pdhc":   "ANALYSE_PDHC_SERVICE_KEY",
+    # gateway.pdhc is the ingestion gatekeeper; besides observations (via
+    # /api/v1/ingest) it upserts the Patient FHIR resource so the care-delivery
+    # patient list has a name (demographics resolved from ips at validated
+    # report ingestion). Key is the same GATEWAY_PDHC_SERVICE_KEY cdr1 already
+    # trusts for ingest — this just admits it on the /api/v1/fhir/* write path.
+    "gateway.pdhc":   "GATEWAY_PDHC_SERVICE_KEY",
 }
 
 # #293 read-lockdown allow-list: under CDR_READ_LOCKDOWN only these
