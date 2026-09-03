@@ -89,3 +89,7 @@ Pending follow-ups documented in `plans/post_seed_followups.md`:
 2026-08-08T09:19:48Z cdr_app/app/__init__.py — #541 wire ANALYSE_PDHC_SERVICE_KEY config
 2026-08-08T09:19:48Z cdr_app/tests/test_lockdown.py — #541 analyse.pdhc read accepted under lockdown + wrong-key 403
 - cdr.pdhc/cdr_app/docs/01-technical-manual.md (Port Allocation section)
+
+## 2026-09-03 — admit gateway.pdhc as a FHIR-write service
+- cdr_app/app/auth.py — KNOWN_FHIR_SERVICES += gateway.pdhc:GATEWAY_PDHC_SERVICE_KEY (for Patient demographics upsert)
+Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local git re: #541 analyse additions; do NOT file-overwrite). Key already 3-way-synced.
