@@ -102,3 +102,5 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 - cdr_app/migrations/versions/a1b2c3d4e5f6_add_author_org.py (new) — additive, nullable, no backfill
 - cdr_app/tests/test_declared_service_purpose.py (new, 12)
 - cdr_app/tests/test_author_org.py (new, 5)
+
+## 2026-09-23 — #664/#665 deployed to cdr1 (surgical: 4 files + 1 migration, auth.py/__init__.py untouched)

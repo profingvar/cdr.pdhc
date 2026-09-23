@@ -362,3 +362,49 @@ left alone.
 instance (cdr.pdhc, cdr1-5, cdr_6). Additive and nullable, so it is safe
 instance by instance, and nothing reads the column until gateway.pdhc #666
 starts populating it.
+
+---
+
+## 2026-09-23 — #664 + #665 DEPLOYED to cdr1 (cdr.pdhc)
+
+Live and functionally verified. `healthz` 200, alembic head `a1b2c3d4e5f6`,
+`clinical_context.author_org_guid` and its index present.
+
+Verified in the running container, not just deployed: a service declaring
+`statistics` is filtered; a service declaring nothing still passes through
+(dashboard.pdhc and sim unaffected); `administration` is refused with 400;
+`research` without project guids is refused with 400.
+
+**The deploy method matters, and nearly went wrong.** Checksumming the deployed
+tree against local found **six** differing files, not the four I changed —
+`app/__init__.py` and `app/auth.py` differ too. Those carry the **#541
+federation wiring**: `ANALYSE_PDHC_SERVICE_KEY`, `analyse.pdhc` as a trusted
+service identity, and `_ANALYSE_READER_SOURCES`. **Local git has it; cdr1
+production does not.**
+
+A wholesale file copy would have silently admitted analyse.pdhc as a trusted
+reader on cdr1 — a real authorisation change nobody asked for, shipped as a
+side effect of an unrelated deploy.
+
+So: the four files I changed were each verified **byte-identical to HEAD~1**
+before copying, which proves copying them applies my change and nothing else.
+The two divergent files were left untouched, and there is an explicit
+post-copy check that `auth.py` still lacks the #541 wiring.
+
+That is a better instrument than the surgical string edits
+`infra_cdr_prod_behind_local_git` prescribes — it is deterministic and
+verifiable — but only because the baseline was *proven* first. Where a file
+does not match its baseline, the surgical rule still stands.
+
+**NOT deployed to cdr2–cdr5 or cdr_6.** Those are the instances that memory
+records as behind local git, and there is no urgency: nothing reads
+`author_org_guid` until gateway #666 populates it, and nothing sends
+`X-Access-Purpose` until an analyse node exists, which needs transport that is
+not built. Doing five divergent instances for zero current benefit is risk
+without return. They should be done as their own scheduled piece of work,
+each baseline-checked the same way.
+
+**Open, and it predates today:** cdr1 is missing the #541 wiring that cdr2–5
+have. Whether that is deliberate (analyse federates cdr2–6, not cdr1) or drift
+is worth settling — it is exactly the kind of gap that is invisible until
+something fails.
