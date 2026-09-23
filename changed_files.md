@@ -93,3 +93,12 @@ Pending follow-ups documented in `plans/post_seed_followups.md`:
 ## 2026-09-03 — admit gateway.pdhc as a FHIR-write service
 - cdr_app/app/auth.py — KNOWN_FHIR_SERVICES += gateway.pdhc:GATEWAY_PDHC_SERVICE_KEY (for Patient demographics upsert)
 Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local git re: #541 analyse additions; do NOT file-overwrite). Key already 3-way-synced.
+
+## 2026-09-23 — #664 declared service purpose, #665 author_org_guid
+- cdr_app/app/services/analysis_consent.py — declared_service_purpose(), _resolve_purpose(); both entry points routed through it
+- cdr_app/app/models/__init__.py — ClinicalContext.author_org_guid (13th field)
+- cdr_app/app/services/ingest_pipeline.py — accept author_org_guid from clinical_context
+- cdr_app/app/api/provenance.py — expose author org; no performer fallback
+- cdr_app/migrations/versions/a1b2c3d4e5f6_add_author_org.py (new) — additive, nullable, no backfill
+- cdr_app/tests/test_declared_service_purpose.py (new, 12)
+- cdr_app/tests/test_author_org.py (new, 5)

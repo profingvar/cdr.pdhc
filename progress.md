@@ -301,3 +301,64 @@ Remaining #471: item 1 (retire legacy view, blocked #469 Q6), item 2 (#212
 re-home, needs legal #437), item 4 (spärr lift refinement — now EASY since the
 guid is embedded in code_canonical: parse → compare to lift_concept_guids; still
 legal-sensitive, deferred).
+
+---
+
+## 2026-09-23 — #664 + #665: enablers for the analyse.pdhc reconstruction
+
+Both raised by analyse.pdhc AN-0 discovery (#642). 159 tests pass, up from a
+clean 142 baseline. NOT DEPLOYED.
+
+**#664 — a registered analysis service may declare a read purpose.**
+`analysis_consent._operator_blob()` returned None for any service-key caller,
+so every machine read passed the #422 consent gate untouched. That reasoning
+("a machine identity has no role to derive a purpose from") holds for
+dashboard.pdhc and sim, which read under a sibling's operator context. It does
+not hold for an analyse node, whose purpose is an explicit parameter of the
+analysis spec.
+
+`declared_service_purpose()` reads `X-Access-Purpose` from a machine caller
+and, when present, filters on it. Both entry points (`consent_allowed_guids`,
+`check_patient_allowed`) now go through one `_resolve_purpose()` rather than
+each testing the blob themselves.
+
+The safety property: **declaring can only ever reduce access**, because the
+alternative is the pass-through. A caller that sends no header behaves exactly
+as before, so dashboard.pdhc and sim are untouched.
+
+Three guards, each with a test:
+- Only the SECONDARY purposes are declarable (research, statistics,
+  quality_registry). `administration` is never blocked by ips, so allowing a
+  service to declare it would turn the gate into a bypass.
+- `research` requires `X-Research-Project-Guids`; consent is per project.
+- A human operator cannot declare — the header is a machine affordance, and an
+  operator's purpose comes from their role. Otherwise a header would let them
+  pick a softer purpose than their role implies.
+- ips down still fails closed (503) for a machine, exactly as for an operator.
+
+**#665 — `clinical_context.author_org_guid`.** The platform had fields for who
+ORDERED (`requesting_org_guid`) and who SUBMITTED (`provider_org_guid`) but
+none for who AUTHORED. Migration `a1b2c3d4e5f6`, additive and nullable.
+
+Two deliberate non-decisions, both from analyse.pdhc ADR-0006:
+- **No backfill.** `author = provider` is a guess that becomes
+  indistinguishable from a declared fact once written. NULL means unknown.
+- **No `performer` fallback in provenance.** On this platform gateway stamps
+  the authenticated SUBMITTER into FHIR `performer`, so filling author from
+  performer would recreate exactly the conflation the field exists to end.
+
+The asymmetry worth repeating: `provider_org_guid` is AUTHENTICATED (from the
+PAT, unfalsifiable); `author_org_guid` can only be DECLARED, because only the
+submitter knows. Anything filtering on it is trusting the submitter.
+
+**Test-isolation note.** `tests/test_ingest.py` asserts on
+`IngestRaw.query.first()` and `OpenEhrComposition.query.first()`, which only
+mean anything when those tables hold one row. The new `test_author_org.py`
+creates ingest rows, so it wipes the ingest tables before AND after itself. It
+neither inherits another test's rows nor leaks its own; `test_ingest.py` was
+left alone.
+
+**Operator note for deployment:** the migration runs against every CDR
+instance (cdr.pdhc, cdr1-5, cdr_6). Additive and nullable, so it is safe
+instance by instance, and nothing reads the column until gateway.pdhc #666
+starts populating it.

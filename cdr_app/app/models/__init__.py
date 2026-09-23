@@ -135,12 +135,13 @@ class Activity(db.Model):
 # ---------------------------------------------------------------------------
 
 class ClinicalContext(db.Model):
-    """Per-observation clinical context — the canonical 12-field record.
+    """Per-observation clinical context — the canonical record.
 
     Matches plans/pdhc_clinical_context_harmonisation_plan.md §3
-    field-for-field. #302 widened this from 6 fields to the full 12 in
-    2026-06-28, renaming the legacy aliases (careplan_guid →
-    care_plan_guid; plandef_guid → plan_definition_guid).
+    field-for-field. #302 widened this from 6 fields to 12 in 2026-06-28,
+    renaming the legacy aliases (careplan_guid → care_plan_guid;
+    plandef_guid → plan_definition_guid). #665 added author_org_guid,
+    making it 13.
     """
     __tablename__ = "clinical_context"
 
@@ -157,6 +158,14 @@ class ClinicalContext(db.Model):
     contract_guid = db.Column(db.String(36), nullable=True)
     requesting_org_guid = db.Column(db.String(36), nullable=True)
     provider_org_guid = db.Column(db.String(36), nullable=True, index=True)
+    # #665: who CREATED the observation, as distinct from who submitted it.
+    # provider_org_guid is AUTHENTICATED — it comes from the PAT and the
+    # submitter cannot falsify it. author_org_guid can only be DECLARED,
+    # because only the submitter knows who authored. It is therefore weaker
+    # evidence, and anything that filters or groups on it is trusting the
+    # submitter's word. NULL means unknown, never "same as provider" — see
+    # analyse.pdhc ADR-0006.
+    author_org_guid = db.Column(db.String(36), nullable=True, index=True)
     requester_user_guid = db.Column(db.String(36), nullable=True)
     received_at = db.Column(db.DateTime(timezone=True), nullable=True)
     source_service = db.Column(db.String(64), nullable=True)

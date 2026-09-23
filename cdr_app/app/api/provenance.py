@@ -114,17 +114,24 @@ def observation_provenance(guid):
         sr_guid             = context_row.service_request_guid
         plan_definition_guid        = context_row.plan_definition_guid
         provider_org_guid   = context_row.provider_org_guid
+        author_org_guid     = context_row.author_org_guid
         contract_guid       = context_row.contract_guid
         requesting_org_guid = context_row.requesting_org_guid
         care_plan_guid       = context_row.care_plan_guid
     else:
         sr_guid = plan_definition_guid = provider_org_guid = None
+        author_org_guid = None
         contract_guid = requesting_org_guid = care_plan_guid = None
 
     # Fill remaining gaps from the FHIR Observation's own back-refs.
     sr_guid             = sr_guid             or _basedon_guid(observation, "ServiceRequest")
     plan_definition_guid        = plan_definition_guid        or _basedon_guid(observation, "PlanDefinition")
     provider_org_guid   = provider_org_guid   or _performer_guid(observation)
+    # #665: author_org_guid gets NO fallback. On this platform FHIR `performer`
+    # currently carries the SUBMITTER (gateway stamps the authenticated PAT
+    # holder there), so filling author from performer would re-create exactly
+    # the author/submitter conflation this field exists to end. Absent means
+    # unknown. Revisit once gateway.pdhc #666 changes what performer carries.
     contract_guid       = contract_guid       or _extension_ref_guid(observation, _EXT_CONTRACT)
     requesting_org_guid = requesting_org_guid or _extension_ref_guid(observation, _EXT_REQUESTING_ORG)
 
@@ -164,6 +171,14 @@ def observation_provenance(guid):
         entries.append(_stub_resource(
             "Organization", provider_org_guid,
             f"https://sso.pdhc.se/api/organisations/{provider_org_guid}",
+        ))
+    # #665: the authoring organisation, when it is a third party distinct from
+    # both the requester and the submitter — the case the field exists for.
+    if (author_org_guid
+            and author_org_guid not in (requesting_org_guid, provider_org_guid)):
+        entries.append(_stub_resource(
+            "Organization", author_org_guid,
+            f"https://sso.pdhc.se/api/organisations/{author_org_guid}",
         ))
 
     return jsonify({

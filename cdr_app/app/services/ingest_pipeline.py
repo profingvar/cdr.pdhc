@@ -167,7 +167,8 @@ class IngestPipeline:
             _store_canonical(raw.guid, patient_guid, canonical, source_service,
                              received_at=raw.received_at)
 
-        # 5. Store context — canonical 12-field set (#302). Accept
+        # 5. Store context — canonical field set (#302, +author_org #665).
+        # Accept
         # legacy alias keys (careplan_guid, plandef_guid) from
         # producers during the deprecation window.
         if context:
@@ -184,6 +185,11 @@ class IngestPipeline:
                 contract_guid=context.get("contract_guid"),
                 requesting_org_guid=context.get("requesting_org_guid"),
                 provider_org_guid=context.get("provider_org_guid"),
+                # #665: declared by the submitter; NULL when not declared.
+                # Deliberately NOT defaulted to provider_org_guid — a guess
+                # written into the row becomes indistinguishable from a
+                # declared fact. A consumer that wants a value can coalesce.
+                author_org_guid=context.get("author_org_guid"),
                 requester_user_guid=context.get("requester_user_guid"),
                 received_at=raw.received_at,
                 source_service=context.get("source_service") or source_service,
