@@ -408,3 +408,43 @@ each baseline-checked the same way.
 have. Whether that is deliberate (analyse federates cdr2–6, not cdr1) or drift
 is worth settling — it is exactly the kind of gap that is invisible until
 something fails.
+
+---
+
+## 2026-09-23 — cdr1 read wiring brought in line with cdr2–5 (#541 gap)
+
+Operator: the wiring to get data out of cdr1 should be identical to every
+other CDR. It was not, and that is now fixed and verified.
+
+**What the gap actually was.** Diffing cdr1's `auth.py` against cdr2's showed
+divergence in BOTH directions, which is why it had gone unnoticed:
+
+- cdr1 has things cdr2 lacks and *should* lack — the `gateway.pdhc` write
+  identity (patient-demographics upsert) and the `/api/v1/clinical`
+  care-delivery read surface. Both are cdr1-specific and correct.
+- cdr2–5 have the **#541 analyse wiring** that cdr1 lacked: `analyse.pdhc` as
+  a trusted service identity, and its inclusion in the read-lockdown
+  allow-list.
+
+So a federated read that worked against every other CDR failed **only** on
+cdr1 — the CDR that matters most, since it is the primary analysis record.
+
+**Three surgical edits**, chosen so cdr1 keeps what is legitimately its own:
+`analyse.pdhc` added to the trusted-services map *alongside* `gateway.pdhc`;
+the read-lockdown check widened from `!= "dashboard.pdhc"` to
+`not in ("dashboard.pdhc", "analyse.pdhc")`; and `ANALYSE_PDHC_SERVICE_KEY`
+read from config as cdr2–5 do. The key was copied from cdr2 and verified to
+hash identically across cdr1, cdr2, analyse and the running container.
+
+**Verified functionally, not just deployed:** `analyse.pdhc` against cdr1
+`/api/v1/stats` returns 200 where it previously could not authenticate, a
+wrong key still returns 403, and cdr2 returns 200 for the same call.
+
+**Deliberately NOT applied:** local git's `_ANALYSE_READER_SOURCES` refactor.
+It exists in HEAD but on **no deployed CDR**, so shipping it to cdr1 alone
+would have created a *new* asymmetry while fixing an old one. The deployed
+form on cdr2–5 is what cdr1 now matches.
+
+**Still open:** all five instances run an older form of this code than local
+git. A proper reconcile-prod-to-local for cdr2–5 remains the follow-up it has
+been since #541.
