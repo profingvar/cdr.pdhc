@@ -448,3 +448,58 @@ form on cdr2–5 is what cdr1 now matches.
 **Still open:** all five instances run an older form of this code than local
 git. A proper reconcile-prod-to-local for cdr2–5 remains the follow-up it has
 been since #541.
+
+---
+
+## 2026-09-23 — #689: #664 + #665 rolled out to cdr2–cdr5
+
+Deployed and verified on all four. Each: alembic head `a1b2c3d4e5f6`, a
+single head, `clinical_context.author_org_guid` present, `#664`'s
+`declared_service_purpose` live **inside the container**, `/healthz` 200,
+zero errors in the log. 41 containers on the mini, none unhealthy.
+
+The consent-gate asymmetry is closed: a federated analysis query fanning out
+across cdr1–cdr5 is now consent-enforced on every node rather than on one.
+
+### cdr_6 is NOT in scope, and the ticket was wrong to include it
+
+Established before touching anything:
+
+- Its tables are `cdr_6_observations` / `cdr_6_read_audit`. **There is no
+  `clinical_context` table**, so #665 has nothing to add a column to.
+- Its alembic lineage is entirely separate — head `0006_add_observation_unit`,
+  numbered migrations `0001`–`0006`, not the hash lineage cdr1–5 share.
+  Applying `a1b2c3d4e5f6` there would fail on a missing `down_revision`.
+- Its `analysis_consent.py` is a different, shorter file (110 lines) whose
+  `_operator_blob()` does **not** contain the `service_source` bug #664
+  fixed — it has no service-caller branch at all.
+
+cdr_6 is a different service that shares a name prefix. Whether a service-key
+caller can reach its consent gate is a real question, but a different one;
+ticketed separately rather than forced through here.
+
+### Method
+
+The standing rule for these boxes is *never file-overwrite deployed cdr2–5
+source* — a wholesale copy previously dropped `clinical_read_bp` and produced
+a crash-loop. So:
+
+- Verified cdr2–5's `analysis_consent.py` and `ingest_pipeline.py` were
+  **byte-identical to local's pre-#664 versions** (`1cd93ab`), i.e. no
+  server-only edits to lose.
+- Copied **three files only**. Confirmed afterwards that `app/__init__.py`
+  still has no `clinical_read` on cdr2–5 — that divergence from cdr1 is real
+  and was left alone, which is exactly what a wholesale copy would have
+  destroyed.
+- Checked every model `ingest_pipeline.py` imports exists on cdr2 before
+  rebuilding.
+- `py_compile` per file with automatic restore of the saved copy on failure.
+- `docker-compose up -d --build` (source is baked; no mounts) then
+  `flask db upgrade` per container — nothing auto-migrates on boot here.
+
+### Backups
+
+`~/backups/predeploy/cdr2-5/20260923T185955Z/` — pg_dump per CDR, 513–515 MB
+gzipped each. Disk checked first (48 GB free) given this box's disk-full
+history. `clinical_context` held **0 rows** in all four beforehand, so the
+migration added a column to an empty table.

@@ -104,3 +104,8 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 - cdr_app/tests/test_author_org.py (new, 5)
 
 ## 2026-09-23 — #664/#665 deployed to cdr1 (surgical: 4 files + 1 migration, auth.py/__init__.py untouched)
+
+## #689 deploy 2026-09-23 — copied to cdr2–cdr5 on miserver (no local source change)
+- cdr_app/app/services/analysis_consent.py
+- cdr_app/app/services/ingest_pipeline.py
+- cdr_app/migrations/versions/a1b2c3d4e5f6_add_author_org.py
