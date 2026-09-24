@@ -508,7 +508,7 @@ migration added a column to an empty table.
 
 ## 2026-09-24 — #698: FHIR `value-quantity` search
 
-171 tests pass (+12). **Not deployed.**
+171 tests pass (+12). **DEPLOYED to cdr1 2026-09-24** — see the deploy note at the end of this entry.
 
 `GET /api/v1/fhir/Observation?code=<concept>&value-quantity=ge5` now works.
 It filters on the indexed `value_quantity` column, so an analysis node can
@@ -551,3 +551,51 @@ cdr can now answer the question; analyse does not yet ask it. The push-down
 needs care — it must preserve "spärr before read" and agree with
 `cohort_criteria`'s ANY-observation semantics, or the two paths will disagree
 about who is in a cohort. Ticketed separately rather than bolted on here.
+
+### Deployed to cdr1 2026-09-24
+
+`cdr_pdhc_app` rebuilt and verified. Markers live **inside the container**:
+`_apply_value_quantity_filter` ×2, `_SearchParamError` ×5,
+`_value_search_params` ×2. `/healthz` 200, zero errors, 41 containers on the
+mini, none unhealthy. Data intact (7420 observations, head `a1b2c3d4e5f6`).
+
+`/api/v1/fhir/metadata` is SSO-gated (302), so the CapabilityStatement
+content was not re-verified on the server; it is covered by
+`test_capability_statement_declares_value_quantity_only_where_it_works`.
+
+The #541 analyse read wiring in `app/auth.py` was checked before **and**
+after and is intact — that was a server-side fix, and only the two #698
+files were copied.
+
+Predeploy tar: `~/backups/predeploy/cdr.pdhc/app_20260924T091125Z.tar.gz`
+Rollback image: `sha256:64109fdda6ba5`
+
+**cdr2–5 do not have #698.** The fast path exists on cdr1 only, so a
+federated push-down would behave differently per source. Worth rolling out
+before anything depends on it — though nothing does yet (#701).
+
+### A compose warning, investigated and benign
+
+The rebuild printed:
+
+```
+volume "cdr_pdhc_pgdata" already exists but was created for project
+"cdr_pdhc" (expected "cdr_app")
+```
+
+That looks like the compose-project-name class of incident that has cost
+data here before, so it was chased down before going further. It is benign:
+
+- cdr1 **deliberately** pins `COMPOSE_PROJECT_NAME=cdr_app` in its `.env`,
+  so `cdr_app` is the intended project. The containers already carried that
+  label; the rebuild did not change it.
+- The volume is declared `name: ${DB_VOLUME:-cdr_pdhc_pgdata}`, an explicit
+  name, so it resolves the same under any project. `cdr_pdhc_db` is mounted
+  on `cdr_pdhc_pgdata` as it should be.
+- The warning is docker comparing the volume's *creation-time* project label
+  against the current one.
+
+**One real finding, left alone:** an orphan volume `cdr_app_pgdata` exists,
+created **2026-04-10**, used by **no container**, holding **47 MB** (the live
+volume is 217 MB). It predates this deploy by five months. Not empty, so not
+something to remove without a decision — flagged for the operator.
