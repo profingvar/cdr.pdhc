@@ -620,3 +620,42 @@ Method as for #689: cdr2 deployed and verified first as a canary, then 3–5
 with `py_compile` and automatic restore of the saved copy on failure.
 
 Backups: `~/backups/predeploy/cdr2-5-698/20260924T092836Z/` (api dir per CDR).
+
+---
+
+## 2026-09-24 — #701 (cdr half): a patient allow-list on the FHIR search
+
+178 tests pass (+7). **Not deployed.**
+
+`patient` / `subject` now accept one guid, a comma-separated list, or the
+parameter repeated — all meaning "any of these".
+
+**Why this exists, which is the whole point.** An analysis node excludes
+spärr-blocked patients *before* it reads, and that ordering is the security
+argument rather than a detail. Without an allow-list a candidate query could
+not honour it: the CDR would hand back rows belonging to blocked patients
+before the node had excluded them. Now the node filters first and passes the
+survivors.
+
+Chosen over teaching cdr's search to apply spärr itself (which would make
+every FHIR search depend on ips being reachable, changing that endpoint's
+failure mode for readers well beyond analyse) and over accepting that a
+candidate query reads blocked patients (which is exactly what the codebase
+refuses for aggregates).
+
+### Two decisions
+
+- **Repeated parameters are ORed, not ANDed.** Strict FHIR ANDs repeated
+  params; on a single-valued subject reference that can only ever match
+  nothing, so no legitimate client depends on that reading and unioning
+  cannot change an answer that was previously non-empty. Comma-separated is
+  the canonical form and is real FHIR OR syntax.
+- **An oversized list is refused, never truncated.** A guid plus separator is
+  37 bytes, so a few hundred fit in a normal request line; the cap is 500 and
+  the error names it so the caller can batch. Silently truncating would
+  analyse fewer patients than the node asked about, and nothing downstream
+  could tell.
+
+The analyse half (AN-14, #701) is still to do: the node must spärr-filter,
+batch, and keep `cohort_criteria` as the authority so the fast path can only
+ever be an optimisation of the slow one.

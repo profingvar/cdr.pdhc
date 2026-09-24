@@ -254,15 +254,27 @@ def search(resource_type: str):
         q = _apply_has_filter(q, Live, resource_type, has_arg, request.args.get(has_arg))
 
     # ----- direct params -------------------------------------------------
-    patient = request.args.get("patient") or request.args.get("subject")
-    if patient:
-        # Allow "Patient/<guid>" or bare "<guid>".
-        if "/" in patient:
-            patient = patient.rsplit("/", 1)[-1]
-        if hasattr(Live, "patient_guid"):
-            q = q.filter(Live.patient_guid == patient)
-        else:
-            q = q.filter(Live.guid == patient)
+    # patient / subject. Accepts ONE guid, a comma-separated list, or the
+    # parameter repeated — all treated as "any of these" (#701).
+    #
+    # Comma-separated is FHIR's OR syntax and is the canonical form here.
+    # Repeated parameters are strictly an AND in FHIR, which on a
+    # single-valued subject reference can only ever match nothing, so no
+    # legitimate client depends on that reading; unioning them instead is
+    # useful and cannot change any answer that was previously non-empty.
+    #
+    # The reason this exists: an analysis node excludes spärr-blocked
+    # patients BEFORE it reads, and that ordering is the security argument,
+    # not a detail. Passing the surviving patients as an allow-list is what
+    # lets a node narrow a cohort here without the CDR first handing back
+    # rows belonging to blocked patients.
+    try:
+        patient_guids = _requested_patients()
+    except _SearchParamError as e:
+        return jsonify(_operation_outcome("error", "invalid", str(e))), 400
+    if patient_guids:
+        col = Live.patient_guid if hasattr(Live, "patient_guid") else Live.guid
+        q = q.filter(col.in_(patient_guids))
 
     code = request.args.get("code")
     if code:
@@ -430,6 +442,39 @@ def _apply_date_filter(q, Live, date_arg: str):
     return q.filter(col == dt)
 
 
+
+
+#: A URL cannot carry an unbounded allow-list. A guid plus its separator is
+#: 37 bytes, so a few hundred fit comfortably inside the usual ~8 KB request
+#: line. A caller with a larger cohort batches; the node is expected to.
+MAX_PATIENT_ALLOWLIST = 500
+
+
+def _requested_patients() -> list[str]:
+    """Every patient guid named by `patient` / `subject`, de-duplicated.
+
+    Accepts "Patient/<guid>" and bare "<guid>", comma-separated lists, and
+    the parameter repeated.
+    """
+    raw: list[str] = []
+    for key in ("patient", "subject"):
+        for value in request.args.getlist(key):
+            raw.extend(value.split(","))
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        guid = item.strip()
+        if "/" in guid:
+            guid = guid.rsplit("/", 1)[-1]
+        if guid and guid not in seen:
+            seen.add(guid)
+            out.append(guid)
+    if len(out) > MAX_PATIENT_ALLOWLIST:
+        raise _SearchParamError(
+            f"patient: at most {MAX_PATIENT_ALLOWLIST} may be named in one "
+            f"request; batch a larger cohort")
+    return out
 
 #: FHIR prefixes on a quantity search. `ne` is included because the analysis
 #: spec's Op enum has it, and a node that could express a predicate the CDR

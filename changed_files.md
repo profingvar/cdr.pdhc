@@ -114,3 +114,7 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_read.py
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_api.py
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_fhir_read.py
+
+## #701 (cdr half) — patient allow-list, 2026-09-24
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_read.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_fhir_read.py

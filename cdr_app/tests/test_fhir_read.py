@@ -543,3 +543,85 @@ def test_capability_statement_declares_value_quantity_only_where_it_works(
     pat = {p["name"] for p in by_type["Patient"]["searchParam"]}
     assert "value-quantity" in obs
     assert "value-quantity" not in pat
+
+
+# ---------------------------------------------------------------------------
+# #701 — a patient allow-list, so a node can narrow a cohort AFTER it has
+# excluded spärr-blocked patients. The ordering is the point: without this,
+# a candidate query hands the node rows belonging to blocked patients.
+# ---------------------------------------------------------------------------
+
+P2 = "patient-guid-two"
+P3 = "patient-guid-three"
+
+
+def _seed_patients(client):
+    _post(client, "/api/v1/fhir/Observation", _hba1c(value=5.0))
+    _post(client, "/api/v1/fhir/Observation",
+          _hba1c(value=6.0, patient=P2, eff="2026-04-02T10:00:00Z"))
+    _post(client, "/api/v1/fhir/Observation",
+          _hba1c(value=7.0, patient=P3, eff="2026-04-03T10:00:00Z"))
+
+
+def test_a_comma_separated_allowlist_is_an_or(client, fake_canon):
+    _seed_patients(client)
+    r = client.get(
+        f"/api/v1/fhir/Observation?patient={PATIENT_GUID},{P2}",
+        headers=ORG_HEADERS)
+    assert r.status_code == 200
+    assert r.get_json()["total"] == 2
+
+
+def test_a_repeated_parameter_is_also_an_or(client, fake_canon):
+    """Strict FHIR says repeated params are ANDed, which on a single-valued
+    subject can only match nothing — so no client depends on that reading."""
+    _seed_patients(client)
+    r = client.get(
+        f"/api/v1/fhir/Observation?patient={PATIENT_GUID}&patient={P3}",
+        headers=ORG_HEADERS)
+    assert r.get_json()["total"] == 2
+
+
+def test_a_single_patient_still_works(client, fake_canon):
+    _seed_patients(client)
+    r = client.get(f"/api/v1/fhir/Observation?patient={PATIENT_GUID}",
+                   headers=ORG_HEADERS)
+    assert r.get_json()["total"] == 1
+
+
+def test_the_reference_form_is_accepted_in_a_list(client, fake_canon):
+    _seed_patients(client)
+    r = client.get(
+        f"/api/v1/fhir/Observation?patient=Patient/{PATIENT_GUID},{P2}",
+        headers=ORG_HEADERS)
+    assert r.get_json()["total"] == 2
+
+
+def test_duplicates_do_not_multiply_results(client, fake_canon):
+    _seed_patients(client)
+    r = client.get(
+        f"/api/v1/fhir/Observation?patient={PATIENT_GUID},{PATIENT_GUID}",
+        headers=ORG_HEADERS)
+    assert r.get_json()["total"] == 1
+
+
+def test_an_allowlist_combines_with_value_quantity(client, fake_canon):
+    """The actual #701 use: spärr-filtered patients AND a value predicate."""
+    _seed_patients(client)
+    r = client.get(
+        f"/api/v1/fhir/Observation?patient={PATIENT_GUID},{P2},{P3}"
+        "&value-quantity=ge6",
+        headers=ORG_HEADERS)
+    assert r.status_code == 200
+    assert r.get_json()["total"] == 2          # 6.0 and 7.0, not 5.0
+
+
+def test_an_oversized_allowlist_is_refused_with_a_reason(client, fake_canon):
+    """A URL cannot carry an unbounded cohort. Refused with a number to
+    batch by, rather than silently truncated — a truncated allow-list would
+    quietly analyse fewer patients than the node asked about."""
+    many = ",".join(f"guid-{i}" for i in range(501))
+    r = client.get(f"/api/v1/fhir/Observation?patient={many}",
+                   headers=ORG_HEADERS)
+    assert r.status_code == 400
+    assert "batch" in r.get_json()["issue"][0]["details"]["text"]
