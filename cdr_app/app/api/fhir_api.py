@@ -22,6 +22,28 @@ _RESOURCE_TYPES = [
 ]
 
 
+#: Resource types whose live table carries a numeric value column, and which
+#: therefore support ``value-quantity`` (#698). Declared per type rather than
+#: for every type: advertising a parameter the server answers with 400 sends
+#: a client looking for a bug in its own request.
+_VALUE_SEARCHABLE = frozenset({"Observation"})
+
+
+def _value_search_params(resource_type: str) -> list:
+    if resource_type not in _VALUE_SEARCHABLE:
+        return []
+    return [{
+        "name": "value-quantity",
+        "type": "quantity",
+        "documentation": (
+            "FHIR prefix syntax (eq/ne/gt/ge/lt/le) with an optional "
+            "|system|code unit, e.g. value-quantity=ge5||mg. A unit, if "
+            "given, is matched rather than ignored. Results are consent-"
+            "filtered exactly as an unparameterised search is."
+        ),
+    }]
+
+
 @bp.get("/metadata")
 def capability_statement():
     return jsonify({
@@ -63,7 +85,7 @@ def capability_statement():
                         {"name": "_tag", "type": "token"},
                         {"name": "_id", "type": "token"},
                         {"name": "_count", "type": "number"},
-                    ],
+                    ] + _value_search_params(rt),
                 }
                 for rt in _RESOURCE_TYPES
             ],

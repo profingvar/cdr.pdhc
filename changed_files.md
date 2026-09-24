@@ -109,3 +109,8 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 - cdr_app/app/services/analysis_consent.py
 - cdr_app/app/services/ingest_pipeline.py
 - cdr_app/migrations/versions/a1b2c3d4e5f6_add_author_org.py
+
+## #698 — FHIR value-quantity search, 2026-09-24
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_read.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_api.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_fhir_read.py

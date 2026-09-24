@@ -429,3 +429,117 @@ def test_events_since_advances(client, fake_canon):
         f"/api/v1/fhir/events?since={next_since}", headers=ORG_HEADERS,
     ).get_json()
     assert r2["count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# #698 — value-quantity search
+#
+# Lets an analysis node narrow a cohort in SQL instead of reading every
+# candidate and discarding most of them. The rows that come back are still
+# consent-filtered, so this narrows what is READ without widening what is
+# RETURNED.
+# ---------------------------------------------------------------------------
+
+def _seed_values(client, *values):
+    for i, v in enumerate(values):
+        _post(client, "/api/v1/fhir/Observation",
+              _hba1c(value=v, eff=f"2026-04-{i + 1:02d}T10:00:00Z"))
+
+
+def _qty(client, arg):
+    return client.get(f"/api/v1/fhir/Observation?value-quantity={arg}",
+                      headers=ORG_HEADERS)
+
+
+def test_value_quantity_ge(client, fake_canon):
+    _seed_values(client, 4.0, 6.4, 9.1)
+    r = _qty(client, "ge6.4")
+    assert r.status_code == 200
+    assert r.get_json()["total"] == 2
+
+
+def test_value_quantity_gt_excludes_the_boundary(client, fake_canon):
+    _seed_values(client, 4.0, 6.4, 9.1)
+    assert _qty(client, "gt6.4").get_json()["total"] == 1
+
+
+def test_value_quantity_le_and_lt(client, fake_canon):
+    _seed_values(client, 4.0, 6.4, 9.1)
+    assert _qty(client, "le6.4").get_json()["total"] == 2
+    assert _qty(client, "lt6.4").get_json()["total"] == 1
+
+
+def test_value_quantity_eq_is_the_default_prefix(client, fake_canon):
+    _seed_values(client, 4.0, 6.4, 9.1)
+    assert _qty(client, "6.4").get_json()["total"] == 1
+    assert _qty(client, "eq6.4").get_json()["total"] == 1
+
+
+def test_value_quantity_ne(client, fake_canon):
+    _seed_values(client, 4.0, 6.4, 9.1)
+    assert _qty(client, "ne6.4").get_json()["total"] == 2
+
+
+def test_value_quantity_combines_with_code(client, fake_canon):
+    """The two predicates an analysis cohort criterion actually uses."""
+    _post(client, "/api/v1/fhir/Observation", _hba1c(value=9.1, code="4548-4"))
+    _post(client, "/api/v1/fhir/Observation",
+          _hba1c(value=9.1, code="29463-7", eff="2026-04-02T10:00:00Z"))
+    r = client.get(
+        "/api/v1/fhir/Observation?code=4548-4&value-quantity=ge5",
+        headers=ORG_HEADERS)
+    assert r.status_code == 200
+    assert r.get_json()["total"] == 1
+
+
+def test_a_unit_is_matched_not_ignored(client, fake_canon):
+    """Comparing 5 mg against a row holding 5 g would be a wrong answer that
+    looks like a right one."""
+    _seed_values(client, 9.1)
+    assert _qty(client, "ge5||%").get_json()["total"] == 1
+    assert _qty(client, "ge5||mg").get_json()["total"] == 0
+
+
+def test_a_unit_with_a_system_is_accepted(client, fake_canon):
+    _seed_values(client, 9.1)
+    assert _qty(client, "ge5|http://unitsofmeasure.org|%"
+                ).get_json()["total"] == 1
+
+
+def test_a_non_numeric_value_is_refused_not_ignored(client, fake_canon):
+    """Silently dropping the predicate would return MORE rows than were asked
+    for, and the caller could not tell it from a wider cohort."""
+    _seed_values(client, 4.0, 9.1)
+    r = _qty(client, "gehigh")
+    assert r.status_code == 400
+    assert r.get_json()["resourceType"] == "OperationOutcome"
+
+
+def test_it_is_refused_on_a_resource_type_without_values(client, fake_canon):
+    _create_patient(client)
+    r = client.get("/api/v1/fhir/Patient?value-quantity=ge5",
+                   headers=ORG_HEADERS)
+    assert r.status_code == 400
+
+
+def test_rows_are_still_consent_filtered(client, fake_canon):
+    """The safety property: narrowing happens in SQL BEFORE the #422 filter,
+    so a value predicate must not become a way to see a row the caller may
+    not read."""
+    _seed_values(client, 4.0, 6.4, 9.1)
+    with patch("app.api.fhir_read.consent_allowed_guids", return_value=set()):
+        r = _qty(client, "ge0")
+    assert r.status_code == 200
+    assert r.get_json()["total"] == 0
+
+
+def test_capability_statement_declares_value_quantity_only_where_it_works(
+        client, fake_canon):
+    """Advertising a parameter the server answers with 400 sends a client
+    looking for a bug in its own request."""
+    caps = client.get("/api/v1/fhir/metadata").get_json()
+    by_type = {r["type"]: r for r in caps["rest"][0]["resource"]}
+    obs = {p["name"] for p in by_type["Observation"]["searchParam"]}
+    pat = {p["name"] for p in by_type["Patient"]["searchParam"]}
+    assert "value-quantity" in obs
+    assert "value-quantity" not in pat

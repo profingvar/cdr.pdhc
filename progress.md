@@ -503,3 +503,51 @@ a crash-loop. So:
 gzipped each. Disk checked first (48 GB free) given this box's disk-full
 history. `clinical_context` held **0 rows** in all four beforehand, so the
 migration added a column to an empty table.
+
+---
+
+## 2026-09-24 — #698: FHIR `value-quantity` search
+
+171 tests pass (+12). **Not deployed.**
+
+`GET /api/v1/fhir/Observation?code=<concept>&value-quantity=ge5` now works.
+It filters on the indexed `value_quantity` column, so an analysis node can
+narrow a cohort in SQL instead of reading every candidate and discarding most
+of them.
+
+FHIR prefix syntax (`eq`/`ne`/`gt`/`ge`/`lt`/`le`, default `eq`) with an
+optional `|system|code` unit.
+
+### The safety property
+
+The filter is applied **before** `_consent_filter`, exactly like `code` and
+`date` already are. That is safe because the rows that come back are still
+consent-filtered: this narrows what is READ without widening what is
+RETURNED. A test pins it — with the consent verdict stubbed to allow nobody,
+a matching search returns zero rows.
+
+The warning in the ticket was about a different design — one where a *count*
+is returned before the consent join. Nothing here does that.
+
+### Two decisions
+
+- **A unit, if given, is matched, never ignored.** Comparing 5 mg against a
+  row holding 5 g would be a wrong answer that looks like a right one.
+- **A malformed value is a 400, not a silently dropped predicate.** The
+  existing `date` filter returns the query unchanged when it cannot parse —
+  a pre-existing weakness left alone, but not one to copy. Dropping a value
+  predicate returns MORE rows than were asked for and the caller cannot tell
+  it from a genuinely wider cohort. Same class of bug as the analyse cohort
+  one (#696).
+
+`value-quantity` is declared in the CapabilityStatement **for Observation
+only**, since that is the one live table with a numeric value column.
+Advertising it everywhere would send a client looking for a bug in its own
+request when Patient answers 400.
+
+### Not wired on the analyse side
+
+cdr can now answer the question; analyse does not yet ask it. The push-down
+needs care — it must preserve "spärr before read" and agree with
+`cohort_criteria`'s ANY-observation semantics, or the two paths will disagree
+about who is in a cohort. Ticketed separately rather than bolted on here.

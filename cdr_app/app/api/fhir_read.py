@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from flask import Blueprint, current_app, g, jsonify, request
@@ -271,6 +272,20 @@ def search(resource_type: str):
     for date_arg in request.args.getlist("date"):
         q = _apply_date_filter(q, Live, date_arg)
 
+    # value-quantity=ge5 / ge5||mg  (#698) — lets an analysis node narrow a
+    # cohort in SQL instead of reading every candidate. Applied BEFORE the
+    # consent filter, exactly like `code` and `date`: the rows that come back
+    # are still consent-filtered, so this narrows what is read without
+    # widening what is returned.
+    try:
+        for qty_arg in request.args.getlist("value-quantity"):
+            q = _apply_value_quantity_filter(q, Live, qty_arg)
+    except _SearchParamError as e:
+        # 400 with a reason, not a 500 and not a silent pass. A dropped value
+        # predicate returns more rows than were asked for, and the caller
+        # cannot tell the difference from a genuinely wider cohort.
+        return jsonify(_operation_outcome("error", "invalid", str(e))), 400
+
     # _id
     for id_arg in request.args.getlist("_id"):
         q = q.filter(Live.guid == id_arg)
@@ -413,6 +428,75 @@ def _apply_date_filter(q, Live, date_arg: str):
     if prefix == "le":
         return q.filter(col <= dt)
     return q.filter(col == dt)
+
+
+
+#: FHIR prefixes on a quantity search. `ne` is included because the analysis
+#: spec's Op enum has it, and a node that could express a predicate the CDR
+#: silently dropped would get back more rows than it asked for.
+_QTY_PREFIXES = ("eq", "ne", "gt", "ge", "lt", "le")
+
+
+class _SearchParamError(ValueError):
+    """A search parameter this CDR understands but cannot honour as written.
+
+    Raised, never swallowed. Ignoring a malformed VALUE predicate returns
+    MORE rows than were asked for, and the caller has no way to tell — the
+    response looks like a legitimately wider cohort.
+    """
+
+
+def _apply_value_quantity_filter(q, Live, arg: str):
+    """FHIR R5 ``value-quantity`` (#698).
+
+    Syntax: ``[prefix][number]`` optionally followed by ``|system|code``,
+    e.g. ``ge5``, ``ge5|http://unitsofmeasure.org|mg``, ``ge5||mg``.
+
+    Filters on the indexed ``value_quantity`` column, so a caller can narrow
+    a cohort instead of reading every candidate and discarding most of them.
+
+    **A unit, if given, is matched, never ignored.** Comparing 5 mg against a
+    row holding 5 g would be a wrong answer that looks like a right one.
+    """
+    col = getattr(Live, "value_quantity", None)
+    if col is None:
+        raise _SearchParamError(
+            "value-quantity is not searchable on this resource type")
+
+    body, _, unit_part = arg.partition("|")
+    body = body.strip()
+    prefix = body[:2].lower()
+    if prefix in _QTY_PREFIXES:
+        number = body[2:]
+    else:
+        prefix, number = "eq", body
+
+    try:
+        value = Decimal(number.strip())
+    except (InvalidOperation, AttributeError):
+        raise _SearchParamError(
+            f"value-quantity: {number!r} is not a number") from None
+
+    if unit_part:
+        # "system|code" or "|code" or "code"
+        pieces = unit_part.split("|")
+        code = (pieces[-1] or "").strip()
+        if code:
+            ucol = getattr(Live, "value_unit", None)
+            if ucol is None:
+                raise _SearchParamError(
+                    "value-quantity: a unit was given but this resource type "
+                    "stores none")
+            q = q.filter(ucol == code)
+
+    ops = {
+        "eq": col == value, "ne": col != value,
+        "gt": col > value, "ge": col >= value,
+        "lt": col < value, "le": col <= value,
+    }
+    # NULL never satisfies a numeric predicate in SQL, which is the correct
+    # reading: a row with no numeric value is not a row below the threshold.
+    return q.filter(ops[prefix])
 
 
 def _has_tag(tags: list, tag_arg: str) -> bool:
