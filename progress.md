@@ -570,9 +570,7 @@ files were copied.
 Predeploy tar: `~/backups/predeploy/cdr.pdhc/app_20260924T091125Z.tar.gz`
 Rollback image: `sha256:64109fdda6ba5`
 
-**cdr2–5 do not have #698.** The fast path exists on cdr1 only, so a
-federated push-down would behave differently per source. Worth rolling out
-before anything depends on it — though nothing does yet (#701).
+~~**cdr2–5 do not have #698.**~~ — rolled out 2026-09-24, see below.
 
 ### A compose warning, investigated and benign
 
@@ -599,3 +597,26 @@ data here before, so it was chased down before going further. It is benign:
 created **2026-04-10**, used by **no container**, holding **47 MB** (the live
 volume is 217 MB). It predates this deploy by five months. Not empty, so not
 something to remove without a decision — flagged for the operator.
+
+### #698 rolled out to cdr2–cdr5, 2026-09-24
+
+All four rebuilt and verified: `_apply_value_quantity_filter` ×2 and
+`_value_search_params` ×2 **inside each container**, `/healthz` 200, zero
+errors, 41 containers on the mini, none unhealthy. `value-quantity` is now
+uniform across cdr1–cdr5, so a federated push-down cannot behave differently
+per source.
+
+Code-only — no migration. Confirmed unchanged afterwards: every CDR still at
+head `a1b2c3d4e5f6` with `clinical_context` untouched.
+
+**Pre-deploy check, which is the part that mattered.** cdr2–5 diverge from
+cdr1 (they have no `clinical_read_bp`, and a wholesale copy once crash-looped
+them). So both target files were compared first: on all four they were
+**byte-identical to local's pre-#698 versions**, i.e. the divergence does not
+touch `fhir_read.py` or `fhir_api.py`. Copying local's versions was therefore
+safe, and only those two files (plus the test) were copied.
+
+Method as for #689: cdr2 deployed and verified first as a canary, then 3–5
+with `py_compile` and automatic restore of the saved copy on failure.
+
+Backups: `~/backups/predeploy/cdr2-5-698/20260924T092836Z/` (api dir per CDR).
