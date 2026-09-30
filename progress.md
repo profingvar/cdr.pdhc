@@ -659,3 +659,53 @@ refuses for aggregates).
 The analyse half (AN-14, #701) is still to do: the node must spärr-filter,
 batch, and keep `cohort_criteria` as the authority so the fast path can only
 ever be an optimisation of the slow one.
+
+## #718 — observation.effective_at was unindexed; unfiltered searches seq-scanned 2.6M rows (2026-09-30)
+
+Found by analyse's #708 sibling smoke. Every FHIR search in
+`api/fhir_read.py` ends in `ORDER BY effective_at DESC NULLS LAST LIMIT n`.
+The existing composite `(patient_guid, org_guid, code_canonical, effective_at)`
+cannot serve that when no patient is given — the leading columns are
+unconstrained — so Postgres seq-scanned and sorted the whole table.
+
+Measured on cdr2, 2.6M rows, with the real call analyse makes when no patient
+is selected (`_count=10000`, unfiltered):
+
+| | |
+|---|---|
+| before | **23,498 ms**, external merge sort spilling **~1.5 GB per worker** — about **4.4 GB of temp writes for one query** |
+| after | **118 ms**, Index Scan, no sort at all |
+
+Index is 17 MB per 2.6M-row CDR; 68 MB across the five.
+
+**The disk risk was the serious part.** Five CDRs are queried in parallel, so
+one unfiltered analyse page could write ~22 GB of temporary files on a host
+with 47 GB free. 2026-05-22 is the precedent for what filling that disk does —
+it corrupted Colima's containerd.
+
+**cdr_6 already had an effective_at index** and answered the same query in
+6 ms. That is what pointed at the cause: the one CDR that was fast was the one
+with the index.
+
+### Applied
+
+`CREATE INDEX CONCURRENTLY` (no write lock, droppable) on cdr1–cdr5 by hand
+for immediate relief, then migration `b5c6d7e8f9a0` so it is permanent and a
+fresh CDR gets it. All five were at `a1b2c3d4e5f6`, exactly its
+`down_revision`, so it applies cleanly and is a no-op index-wise via
+`IF NOT EXISTS`.
+
+Plain `CREATE INDEX` in the migration rather than `CONCURRENTLY`, because
+alembic runs inside a transaction and `CONCURRENTLY` cannot — and anywhere the
+migration actually builds something, the table is new and empty.
+
+### Verified end to end
+
+analyse's smoke went from `mode=error; 1 of 5 ok` at a 15 s timeout to
+`mode=complete; 5 endpoints returned data` in **14 ms**.
+
+### Not done
+
+The API still permits an unfiltered `_count=10000` observation search, which is
+now fast but is still "give me ten thousand arbitrary rows". Whether that
+should be allowed at all is a separate question for cdr and analyse together.
