@@ -118,3 +118,6 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 ## #701 (cdr half) — patient allow-list, 2026-09-24
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_read.py
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_fhir_read.py
+
+## 2026-10-02 — #708: cross-service smoke for cdr1
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/deploy/smoke_siblings.py — NEW. Read-only sibling smoke: plan.pdhc concept resolution against a canonical this CDR actually stores, ips.pdhc consent verdict for a service-shaped read, sso reachability + client-credential presence, Cambio config (deliberately NOT called — external third party), xlate absent-as-expected, and a Rule 18 check on stored code_canonical tails. Runs via stdin so no rebuild is needed.

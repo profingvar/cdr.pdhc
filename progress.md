@@ -709,3 +709,61 @@ analyse's smoke went from `mode=error; 1 of 5 ok` at a 15 s timeout to
 The API still permits an unfiltered `_count=10000` observation search, which is
 now fast but is still "give me ten thousand arbitrary rows". Whether that
 should be allowed at all is a separate question for cdr and analyse together.
+
+## 2026-10-02 — #708: cdr1 gets a sibling smoke, and it found two things
+
+`cdr_app/deploy/smoke_siblings.py`, built on the pattern #708 names — it drives
+cdr's **own clients** (`PlanClient`, `analysis_consent`) rather than hand-written
+`curl`, because a curl smoke tests the author's idea of the contract instead of
+the code's. Read-only; creates and writes nothing.
+
+cdr1's real outbound siblings are **plan.pdhc** (concept resolution),
+**ips.pdhc** (consent verdict) and **sso.pdhc** (token validation). Cambio is an
+external third party and is checked for configuration only — a smoke that pokes
+someone else's sandbox on every deploy gets switched off. `XLATE_BASE_URL` being
+unset is reported as *expected*, not failed: xlate is declared in compose and not
+running in production (CLAUDE.md §3), and a smoke that cries wolf teaches the
+operator to ignore it.
+
+Run it without a rebuild, which matters because cdr's deployed tree is known to
+sit behind local git:
+```
+ssh miserver 'docker exec -i cdr_pdhc_app python -' < cdr_app/deploy/smoke_siblings.py
+```
+8 checks. 6 green; **2 real findings on the first run**, which is the whole
+argument of #708.
+
+### Finding 1 — cdr1 cannot get a consent verdict for a service-shaped read
+`analysis-filter returned 401`. `_analysis_filter` attaches
+`Authorization: Bearer` **only if a flask session token exists**, and ips reads
+*only* that header (`X-API-Key` is silently ignored). cdr1 holds **no
+`IPS_API_KEY`**. So for any caller without an operator session — gateway,
+analyse, sim — the #664 consent gate cannot obtain a verdict and fails CLOSED.
+Safe, and non-functional: it refuses everything rather than filtering anything.
+Filed as its own ticket.
+
+### Finding 2 — 4 of 23 distinct `code_canonical` values can never resolve
+`urn:pdhc:concept/smoke-299-c`, `…/smoke-408x2-c`, `…/smoke-c-296`,
+`…/smoke3-c` — non-GUID tails, against Rule 18. Same smoke residue as the four
+`smoke-*-o` org guids found in `clinical_context` on 2026-10-01. Permanently
+un-canonicalisable rows.
+
+### Two wrong turns of mine, kept because the mechanism matters
+1. The plan check first took the **first** row with a `code_canonical`, which was
+   `urn:pdhc:concept/smoke-408x2-c` — so it failed on cdr's own junk without ever
+   reaching plan. It now scans for a usable one, and the residue gets its own
+   check. Two distinct facts, two lines.
+2. Worse: it used `parse_canonical_uri`, which parses a **termbank** URI, against
+   a stored canonical, which is **Path-B** `urn:pdhc:concept/<guid>`. Every row
+   returned None and the check reported *23/23 bad*. That number is what gave it
+   away — the data was fine and the parser was wrong. Stored canonicals resolve
+   through the guid-based door (`resolve_concept` / `lookup_display`). A check
+   that fails on 100% of real data is almost always the check.
+
+Now green: `0139525f… → https://plan.pdhc.se/ASTHMA-BREATH`.
+
+### Not deployed
+The file is committed but deliberately **not** pushed into the running image. It
+runs over stdin, and rebuilding a live patient-data service to add a diagnostic
+is not a trade worth making; it will ride into the image on cdr's next real
+deploy (#682's clip).
