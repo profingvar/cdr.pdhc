@@ -121,3 +121,9 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 
 ## 2026-10-02 — #708: cross-service smoke for cdr1
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/deploy/smoke_siblings.py — NEW. Read-only sibling smoke: plan.pdhc concept resolution against a canonical this CDR actually stores, ips.pdhc consent verdict for a service-shaped read, sso reachability + client-credential presence, Cambio config (deliberately NOT called — external third party), xlate absent-as-expected, and a Rule 18 check on stored code_canonical tails. Runs via stdin so no rebuild is needed.
+
+## 2026-10-02 — #732: remove the 2gate.pdhc ingest identity
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/auth.py — 2gate.pdhc dropped from the INGEST KNOWN_SERVICES; require_service_key now logs a named warning when an allowlisted caller's config key is unset, instead of refusing it indistinguishably from a wrong key.
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/__init__.py — TWOGATE_PDHC_SERVICE_KEY no longer read into config.
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_ingest.py — 3 new tests (two verified to fail with 2gate re-added); the cross-service isolation test repointed from 2gate.pdhc to sim.pdhc, keeping the coverage.
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/conftest.py — TWOGATE_PDHC_SERVICE_KEY dropped.

@@ -41,7 +41,9 @@ def create_app(config_override=None):
 
     # Service keys for inbound from gateways
     app.config["GATEWAY_PDHC_SERVICE_KEY"] = os.environ.get("GATEWAY_PDHC_SERVICE_KEY", "")
-    app.config["TWOGATE_PDHC_SERVICE_KEY"] = os.environ.get("TWOGATE_PDHC_SERVICE_KEY", "")
+    # TWOGATE_PDHC_SERVICE_KEY was read here until #732 removed the 2gate.pdhc
+    # ingest identity (never built). Nothing reads it now, so the variable is
+    # inert wherever it is still set; unset it on any instance that has it.
     app.config["SIM_PDHC_SERVICE_KEY"] = os.environ.get("SIM_PDHC_SERVICE_KEY", "")
     app.config["DASHBOARD_PDHC_SERVICE_KEY"] = os.environ.get("DASHBOARD_PDHC_SERVICE_KEY", "")
     # #541 — analyse.pdhc's read identity (extracted analyse-layer reader).

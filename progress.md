@@ -767,3 +767,60 @@ The file is committed but deliberately **not** pushed into the running image. It
 runs over stdin, and rebuilding a live patient-data service to add a diagnostic
 is not a trade worth making; it will ride into the image on cdr's next real
 deploy (#682's clip).
+
+## 2026-10-02 — #732: the 2gate.pdhc ingest identity is removed
+
+`2gate.pdhc` was a **planned second gateway that was never built** —
+`progress.md` 6.b is still an unchecked box, `readme.md:20` says "Later 2gateway
+will be added" — and it sat in `cdr_app/app/api/auth.py`'s `KNOWN_SERVICES`, the
+**INGEST (write)** allowlist, on five production CDRs.
+
+It was never exploitable, and that is worth stating precisely rather than
+softening: `TWOGATE_PDHC_SERVICE_KEY` was **empty (length 0)** in all five
+instances, and `require_service_key` refuses on `not expected`. Protection by
+accident. One populated `.env` — a template, a new instance script, a restored
+2026-04-28 `cdr_envs/` backup — and it would have been a live write identity
+with no owner and nothing to rotate.
+
+Removed from the dict and from `app/__init__.py`'s config reads.
+
+### The condition that let it hide, also fixed
+An allowlisted caller whose config key is unset was refused **identically** to
+one presenting a wrong key. So an entry that could *never* authenticate looked
+exactly like one nobody had tried yet. `require_service_key` now logs a named
+warning for that case before refusing:
+
+```
+service-key refused: 2gate.pdhc is allowlisted but TWOGATE_PDHC_SERVICE_KEY is
+unset in this instance's config — the entry can never authenticate, so it is
+either misconfigured or should be removed (#732)
+```
+
+### Tests: 181 pass (was 178)
+- `test_2gate_is_not_an_ingest_identity` — pins `KNOWN_SERVICES` to exactly
+  `{gateway.pdhc, sim.pdhc}`.
+- `test_an_unknown_source_service_is_refused` — 403 `unknown source service`.
+- `test_an_allowlisted_caller_with_no_configured_key_is_refused` — the empty-key
+  branch.
+
+Both of the first two verified to **fail** with `2gate.pdhc` re-added.
+
+`test_lookup_by_source_id_cross_service_isolation` used `2gate.pdhc` as a proxy
+for "another service". It now uses `sim.pdhc`: the test is about namespace
+isolation between two *distinct* source services and never needed that one
+specifically, so the coverage is kept rather than deleted with the identity.
+
+### A self-inflicted failure worth recording
+My first version of the empty-key test did `app.config["GATEWAY_PDHC_SERVICE_KEY"]
+= ""`. The `app` fixture is `scope="session"`, so that leaked for the rest of the
+run and 403'd **five entirely innocent provenance tests**. Now `monkeypatch.setitem`,
+which restores at teardown. Mutating a session-scoped fixture without undoing it
+is a test that breaks other tests, and the symptom points anywhere but at the
+cause.
+
+### NOT DEPLOYED — needs per-instance care
+This touches the ingest path of **five** production CDRs, and cdr prod is known
+to sit behind local git: a file-overwrite deploy on cdr2-5 has crash-looped
+before (missing `clinical_read_bp`). The deploy wants a divergence check per
+instance and surgical edits, not a copy. `TWOGATE_PDHC_SERVICE_KEY` should be
+dropped from each `.env` in the same pass — it is inert once this ships.

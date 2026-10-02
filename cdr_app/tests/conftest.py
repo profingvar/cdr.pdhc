@@ -26,10 +26,10 @@ def app():
         "CAMBIO_DELIVERY_ENABLED": False,
         # sim.pdhc is a KNOWN_FHIR_SERVICES entry, so writes authenticated with
         # this source + key pass _service_key_outcome (#436: the write 403s that
-        # emptied every read). gateway/twogate kept for other suites.
+        # emptied every read). TWOGATE_PDHC_SERVICE_KEY dropped with the
+        # 2gate.pdhc identity (#732).
         "SIM_PDHC_SERVICE_KEY": "test-sim-key",
         "GATEWAY_PDHC_SERVICE_KEY": "test-gateway-key",
-        "TWOGATE_PDHC_SERVICE_KEY": "test-twogate-key",
     })
     # Test-only header->blob shim. The read tests express Rule-24 scope via
     # X-Is-Admin / X-Org-Guids headers, but the production auth loader derives
