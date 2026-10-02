@@ -824,3 +824,57 @@ to sit behind local git: a file-overwrite deploy on cdr2-5 has crash-looped
 before (missing `clinical_read_bp`). The deploy wants a divergence check per
 instance and surgical edits, not a copy. `TWOGATE_PDHC_SERVICE_KEY` should be
 dropped from each `.env` in the same pass — it is inert once this ships.
+
+### 2026-10-02 — #732 DEPLOYED to cdr1 only (canary)
+
+Operator chose one instance first rather than all five.
+
+**The divergence check earned its keep.** cdr1's deployed
+`app/__init__.py` did **not** match local git — prod `138412a6…` vs local
+`c841ad85…`. A file-overwrite deploy would have been exactly the mistake the
+"CDR prod behind local git" note warns about. The diff turned out to be
+*cosmetic*: the `#541` `ANALYSE_PDHC_SERVICE_KEY` line sits in a different
+position with a different comment (applied on-server, later committed locally in
+a slightly different form). No functionality was at risk — but that was
+established by looking, not by assuming.
+
+So: `app/api/auth.py` was **copied** (byte-identical to local pre-change, so
+nothing on-server could be lost), and `app/__init__.py` was edited **in place**,
+removing only the one `TWOGATE_PDHC_SERVICE_KEY` config line and asserting that
+the `ANALYSE_` and `SIM_` lines survived. `TWOGATE_PDHC_SERVICE_KEY` also dropped
+from `.env` (47 lines → 46).
+
+Note for the next deploy: prod and local `app/__init__.py` **still differ
+cosmetically** by that line's position. That is deliberate — the surgical edit
+preserved prod's ordering. Do not "fix" it with a copy.
+
+Layout worth recording: cdr1 is **not** the release-symlink layout. It is a flat
+`/usr/local/www/cdr.pdhc/cdr_app/`, no `current` symlink, compose project rooted
+there. (`cdr_app.baremetal.bak.20260525/` beside it is the pre-container tree.)
+
+Backup: `~/backups/predeploy/cdr.pdhc/2026-10-02T05-43-27Z/` — `app` tarball,
+`.env` copy, rollback image `sha256:1b0de54dcede3821`.
+
+### Verified in the running container
+```
+INGEST KNOWN_SERVICES: {'gateway.pdhc': …, 'sim.pdhc': …}     2gate present: False
+TWOGATE in config: False
+kept: GATEWAY_ / ANALYSE_ / SIM_ / DASHBOARD_PDHC_SERVICE_KEY  all True
+/healthz 200, database connected
+```
+The discriminating check:
+- `X-Source-Service: 2gate.pdhc` → 403 **`unknown source service: 2gate.pdhc`**
+- `X-Source-Service: gateway.pdhc` + wrong key → 403 **`invalid service key`**
+
+Different messages, so the identity is *gone* rather than merely keyless. Before
+this, 2gate produced the second message — indistinguishable from an untried
+entry, which is precisely how it hid.
+
+**No positive ingest was attempted**: a successful write would have put a real
+row in a production CDR. The log check for gateway's 60s forwarder came back
+**inconclusive** — zero requests in the window, because the platform is quiet —
+so it is evidence of no errors, not evidence of working traffic.
+
+### cdr2-5 and cdr_6 NOT deployed
+Each needs its own divergence check; cdr1's was already a surprise. cdr_6 does
+not read `TWOGATE_PDHC_SERVICE_KEY` at all.
