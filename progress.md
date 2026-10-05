@@ -878,3 +878,46 @@ so it is evidence of no errors, not evidence of working traffic.
 ### cdr2-5 and cdr_6 NOT deployed
 Each needs its own divergence check; cdr1's was already a surprise. cdr_6 does
 not read `TWOGATE_PDHC_SERVICE_KEY` at all.
+
+### 2026-10-05 — #732 deployed to cdr2 and cdr3 (cdr4/cdr5 destroyed instead)
+
+cdr4 and cdr5 were destroyed the same day, so the remaining instances were two,
+not four.
+
+**The divergence check earned its keep again, and this time it would have broken
+federation.** cdr2 and cdr3's deployed `app/api/auth.py` carries an entry that
+**local git does not have**:
+
+```
+live:  ['analyse.pdhc', 'gateway.pdhc', 'sim.pdhc', '2gate.pdhc']
+local: ['gateway.pdhc', 'sim.pdhc']
+```
+
+`analyse.pdhc` is the #541 federation wiring — applied on the server and never
+committed. A file-copy deploy would have silently deleted analyse's read
+identity from both CDRs, and the federated analysis path would have stopped
+working with a 403 that looked like a key problem.
+
+So: **surgical in-place edit**, removing only the `2gate.pdhc` line, with
+assertions that `analyse.pdhc`, `gateway.pdhc` and `sim.pdhc` all survived, plus
+the `TWOGATE_PDHC_SERVICE_KEY` config read and the `.env` line (63 → 62 on both).
+
+Backups at `~/backups/predeploy/cdr{2,3}.pdhc/2026-10-05T…/` with rollback
+images `8e250b0b502ef70` (cdr2) and `3f6b84b7ee57c91` (cdr3).
+
+### Verified
+```
+cdr2  allowlist ['analyse.pdhc','gateway.pdhc','sim.pdhc']  2gate False  TWOGATE False  ANALYSE key kept True
+cdr3  allowlist ['analyse.pdhc','gateway.pdhc','sim.pdhc']  2gate False  TWOGATE False  ANALYSE key kept True
+healthz: cdr1 200, cdr2 200, cdr3 200, cdr6 200
+analyse sibling smoke: all 8 checks pass, mode=complete across three sources
+```
+
+### Known divergence, deliberately left
+cdr2 and cdr3 still differ from local git in two ways, and **should not be
+reconciled by copying**:
+1. `analyse.pdhc` in `KNOWN_SERVICES` (#541, deployed-only).
+2. They did **not** get the loud-warning-on-empty-key change that cdr1 received
+   with #732 — a surgical edit removed the identity without adding the new
+   branch. Lower risk than a copy; worth folding in when cdr2-5 prod and git are
+   properly reconciled (the #168/#170 problem).
