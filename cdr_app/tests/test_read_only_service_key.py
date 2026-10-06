@@ -45,6 +45,14 @@ def test_analyse_is_registered_read_only():
     assert "analyse.pdhc" in READ_ONLY_SERVICE_SOURCES
 
 
+def test_dashboard_is_registered_read_only():
+    """#762: all six of dashboard's fanout call sites pass method="GET", and
+    cdr1_client has a single transport built on requests.get. Its two POSTs go
+    to sso and ips, neither of which is a CDR."""
+    assert "dashboard.pdhc" in KNOWN_FHIR_SERVICES
+    assert "dashboard.pdhc" in READ_ONLY_SERVICE_SOURCES
+
+
 def test_sim_and_gateway_are_NOT_read_only():
     """They write by design; narrowing them would break ingest."""
     assert "sim.pdhc" not in READ_ONLY_SERVICE_SOURCES
@@ -106,3 +114,26 @@ def test_a_bad_key_still_reports_bad_credentials(svc_app):
         "/api/v1/fhir/Observation", headers=_hdr("analyse.pdhc", "wrong"))
     assert r.status_code == 403
     assert "Invalid service credentials" in r.get_data(as_text=True)
+
+
+def test_dashboards_key_cannot_write(svc_app):
+    """It held a live FHIR-write grant on all three CDRs until #762."""
+    import pytest
+    from app.auth import KNOWN_FHIR_SERVICES
+    svc_app.config["DASHBOARD_PDHC_SERVICE_KEY"] = "test-dash-key-762"
+    c = svc_app.test_client()
+    h = {"X-Source-Service": "dashboard.pdhc", "X-Service-Key": "test-dash-key-762"}
+    for call in (lambda: c.post("/api/v1/fhir/Observation", json={}, headers=h),
+                 lambda: c.put("/api/v1/fhir/Observation/x", json={}, headers=h),
+                 lambda: c.post("/api/v1/fhir/Bundle", json={}, headers=h)):
+        r = call()
+        assert r.status_code == 403
+        assert "read-only" in r.get_data(as_text=True)
+
+
+def test_dashboard_still_READS(svc_app):
+    """Narrowing must cost it nothing — it is an active reader."""
+    svc_app.config["DASHBOARD_PDHC_SERVICE_KEY"] = "test-dash-key-762"
+    r = svc_app.test_client().get("/api/v1/fhir/Observation", headers={
+        "X-Source-Service": "dashboard.pdhc", "X-Service-Key": "test-dash-key-762"})
+    assert r.status_code != 403, r.get_data(as_text=True)[:160]

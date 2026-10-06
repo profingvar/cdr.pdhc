@@ -1200,3 +1200,33 @@ The FK chain for deleting observation data is
 `fhir_resources <- openehr_compositions <- cambio_delivery_log`; the same chain
 aborted two of #731's delete attempts. Use the #769 flush script rather than
 hand-ordered DELETEs.
+
+## 2026-10-06 — #762 dashboard.pdhc narrowed to read-only
+
+#760 narrowed `analyse.pdhc` and left `dashboard.pdhc` alone, because it was not
+provably unused: #540 repointed its analyse-pull but it still carried
+`CDR_ENDPOINTS` and `CDR1_BASE_URL`.
+
+Traced, the same way analyse was settled:
+
+- all **six** `fanout()` call sites in `app/routes/nurse.py` pass `method="GET"`
+- `app/services/cdr1_client.py` has a **single** transport, `_get_json`, built on
+  `requests.get`; every public method goes through it
+- its only two POSTs are to **sso** (token exchange) and **ips** — neither is a CDR
+- no call site targets `/api/v1/ingest` or a FHIR write verb
+
+So dashboard is an **active reader**, not a writer. Narrowed rather than retired:
+#727 removed `monitor.pdhc` because it named nothing that existed, which is a
+different situation.
+
+Live on all three CDRs:
+
+    dashboard GET   -> ADMITTED
+    dashboard POST  -> WRITE REFUSED
+    dashboard PUT   -> WRITE REFUSED
+
+dashboard `/healthz` 200, 39 containers 0 unhealthy, 238 tests pass (was 235).
+
+With this, every service-key identity on the CDRs is either read-only
+(`analyse.pdhc`, `dashboard.pdhc`) or writes by design (`gateway.pdhc`,
+`sim.pdhc`). No identity holds a write grant it does not use.

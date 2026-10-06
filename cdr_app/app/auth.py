@@ -227,7 +227,13 @@ def _service_key_outcome(app):
 # analyse.pdhc was added for reads (#541) and issues GET on all nine of its CDR
 # call sites, so this costs it nothing. sim.pdhc and gateway.pdhc write by
 # design and are deliberately NOT listed here.
-READ_ONLY_SERVICE_SOURCES = frozenset({"analyse.pdhc"})
+#
+# dashboard.pdhc added by #762, on the same evidence: all six of its `fanout()`
+# call sites pass method="GET", and `services/cdr1_client.py` has a single
+# transport, `_get_json`, built on requests.get. Its only two POSTs go to sso
+# (token exchange) and ips — neither is a CDR. It is an active READER, so it is
+# narrowed rather than retired the way monitor.pdhc was (#727).
+READ_ONLY_SERVICE_SOURCES = frozenset({"analyse.pdhc", "dashboard.pdhc"})
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
