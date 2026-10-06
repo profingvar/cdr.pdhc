@@ -6,6 +6,7 @@ AUTH_MODE=sso  → OAuth against sso.pdhc (admin-only, analysis phase).
 from __future__ import annotations
 
 import hashlib
+import logging
 from types import SimpleNamespace
 from typing import Optional
 
@@ -15,6 +16,8 @@ from flask import current_app, g, request, session, redirect, url_for, abort
 
 from app import db
 from app.models import User
+
+logger = logging.getLogger(__name__)
 
 
 def _hash(pw: str) -> str:
@@ -137,6 +140,11 @@ KNOWN_FHIR_SERVICES = {
     # CDR2-6 group/population reads), taking over from dashboard.pdhc. Added
     # alongside (not replacing) dashboard.pdhc so the cutover is reversible;
     # dashboard's identity is retired at #543 once analyse serves live.
+    # cdr2-5 trusted it from 2026-08; cdr1 did not, so a federated read that
+    # worked on every other CDR failed only here — added to cdr1 2026-09-23 so
+    # the read wiring is identical across all CDRs. (That history was only in
+    # cdr1's deployed copy; recovered into git 2026-10-06 while doing #760.)
+    # READ only — see READ_ONLY_SERVICE_SOURCES below (#760).
     "analyse.pdhc":   "ANALYSE_PDHC_SERVICE_KEY",
     # gateway.pdhc is the ingestion gatekeeper; besides observations (via
     # /api/v1/ingest) it upserts the Patient FHIR resource so the care-delivery
@@ -195,8 +203,38 @@ def _service_key_outcome(app):
             and _is_read_path(request.path)
             and source not in _ANALYSE_READER_SOURCES):
         return False
+    if (source in READ_ONLY_SERVICE_SOURCES
+            and request.method not in _SAFE_METHODS):
+        logger.warning(
+            "service-key caller %s is read-only (#760) and attempted %s %s",
+            source, request.method, request.path)
+        return WRITE_REFUSED
     g.source_service = source
     return True
+
+
+# ---------------------------------------------------------------------------
+# #760 — a caller that only ever reads must not hold a write grant
+# ---------------------------------------------------------------------------
+#
+# Membership in KNOWN_FHIR_SERVICES is otherwise the WHOLE check: it gates
+# `POST /api/v1/fhir/<type>`, `PUT /api/v1/fhir/<type>/<guid>` and
+# `POST /api/v1/fhir/Bundle` alongside the GET searches, and the blob minted in
+# `_service_blob` below is SU-equivalent and organisation-blind. So "allowed to
+# GET /api/v1/fhir/Observation" has meant "allowed to overwrite any resource in
+# the repository", for every identity added for a read.
+#
+# analyse.pdhc was added for reads (#541) and issues GET on all nine of its CDR
+# call sites, so this costs it nothing. sim.pdhc and gateway.pdhc write by
+# design and are deliberately NOT listed here.
+READ_ONLY_SERVICE_SOURCES = frozenset({"analyse.pdhc"})
+
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+# A distinct outcome from "bad credentials". The credentials ARE valid; the verb
+# is not. Sharing the generic 403 would send whoever hits this to check a key
+# that was never the problem.
+WRITE_REFUSED = object()
 
 
 def _service_blob(source_service: str) -> dict:
@@ -227,6 +265,9 @@ def install_request_loader(app):
             g.access_blob = blob
             g.current_user = _blob_to_user(blob)
             return None
+        if sk is WRITE_REFUSED:
+            from flask import jsonify
+            return jsonify({"error": "this service key is read-only"}), 403
         if sk is False:
             from flask import jsonify
             return jsonify({"error": "Invalid service credentials"}), 403

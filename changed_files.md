@@ -131,3 +131,7 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 ## 2026-10-06 — #733 concept inventory
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/stats.py
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_concept_inventory.py
+
+## 2026-10-06 — #760 read-only service keys
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/auth.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_read_only_service_key.py

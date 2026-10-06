@@ -1021,3 +1021,73 @@ lines against local's 295 and overwriting it would have removed routes.
   next to a concept list totalling 5.18M.
 - cdr1's "Reliever (SABA) puffs in last 24h" carries two units: `doser` on 16 rows
   and `/d` on 1. Now visible with counts, which is what #752 needs.
+
+## 2026-10-06 — #760 a service key added for READS no longer carries a write grant
+
+Found while verifying #732 was actually deployed. Membership in
+`KNOWN_FHIR_SERVICES` was the entire check: it gates `POST /api/v1/fhir/<type>`,
+`PUT /api/v1/fhir/<type>/<guid>` and `POST /api/v1/fhir/Bundle` alongside the GET
+searches, and `_service_blob` mints an **SU-equivalent, organisation-blind**
+identity. So every service ever added so it could read was also able to overwrite
+any resource in the repository.
+
+Measured before the fix, on the deployed loaders:
+
+    cdr1  analyse POST /api/v1/fhir/Observation -> True      <-- could write
+    cdr2  analyse in BOTH allowlists, key live              <-- could write
+    cdr3  same as cdr2                                      <-- could write
+
+cdr1 holds the real multi-organisation data, and analyse does not even read from
+cdr1 (this coordinator does not federate it, #712) — the key was live there
+anyway.
+
+**The narrowing costs analyse nothing**, which is why it was safe to do without
+a soak: all nine of its CDR call sites issue `method="GET"`
+(`grep -o 'method="[A-Z]*"'` → `9 method="GET"`), and the paths it uses are
+`/api/v1/stats`, `/api/v1/concept-inventory` and `GET /api/v1/fhir/Observation`.
+
+Two changes:
+- `READ_ONLY_SERVICE_SOURCES = {"analyse.pdhc"}` + a safe-method check in
+  `_service_key_outcome`. `sim.pdhc` and `gateway.pdhc` write by design and are
+  deliberately absent.
+- A `WRITE_REFUSED` sentinel distinct from `False`, so the 403 says "this service
+  key is read-only" instead of "Invalid service credentials". The credentials ARE
+  valid; sharing the generic message would send whoever hits it to rotate a key
+  that was never the problem.
+
+On cdr2/cdr3 only, `analyse.pdhc` was also removed from
+`app/api/auth.py::KNOWN_SERVICES` — that dict gates the four ingest/provenance
+routes and analyse calls none of them. Local has no such entry.
+
+Tests: 201 pass (was 192). `tests/test_read_only_service_key.py` goes through the
+loader via real requests, because the defect was never in a predicate — it was in
+what the loader let past, and a test asserting on `READ_ONLY_SERVICE_SOURCES`
+would pass against the broken code. Verified: removing the gate fails exactly the
+three write tests.
+
+### Deploy notes
+LIVE on cdr1, cdr2, cdr3; 14 assertions green on each, gateway still writes to
+cdr1 (`POST/PUT -> True` before and after), platform 39 containers 0 unhealthy,
+analyse sibling smoke 8/8, analyse's merged inventory unchanged at 35 concepts.
+
+**cdr1's deployed `app/auth.py` had diverged from git** (709e7e71 vs local's
+feae56ad) — structurally only, same allowlist and same lockdown behaviour, but it
+carried a 2026-09-23 comment git never had. Recovered into the local file rather
+than overwritten. All three patches were built FROM the deployed file and
+dry-run inside the target container.
+
+### A mistake worth recording
+The first dry-run verified "sim is unaffected" by issuing a real
+`POST /api/v1/fhir/Observation` against **production cdr2**. It reached the INSERT
+and failed only on a NOT NULL constraint; the transaction rolled back and
+`observation` stayed at 2,629,300 with 0 rows created, confirmed. Verifying a
+write permission by exercising it is the wrong tool when the subject is 2.6M rows
+of production data — ask the loader for its decision in a
+`test_request_context` instead. The rewritten dry-run does that.
+
+### Still open on #760
+`dashboard.pdhc` holds a live `DASHBOARD_PDHC_SERVICE_KEY` in
+`KNOWN_FHIR_SERVICES` on all three CDRs. It was NOT narrowed: #540 repointed
+dashboard's analyse-pull but dashboard still carries CDR config, so whether it
+writes is not established. Needs its call path traced before the key is narrowed
+or removed.
