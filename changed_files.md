@@ -135,3 +135,8 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 ## 2026-10-06 — #760 read-only service keys
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/auth.py
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_read_only_service_key.py
+
+## 2026-10-06 — #769 datapoint context on the row
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/models/resources.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/migrations/versions/a7b8c9d0e1f2_datapoint_context_on_the_row.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_datapoint_context.py

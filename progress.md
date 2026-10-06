@@ -1091,3 +1091,68 @@ of production data — ask the loader for its decision in a
 dashboard's analyse-pull but dashboard still carries CDR config, so whether it
 writes is not established. Needs its call path traced before the key is narrowed
 or removed.
+
+## 2026-10-06 — #769 each datapoint carries its own context
+
+`clinical_context` is keyed on `ingest_raw_guid`; the per-type live tables key on
+the FHIR resource id. The two never joined — `observation.guid =
+clinical_context.ingest_raw_guid` matched **0 rows** while cdr1 held 7,415
+transaction GUIDs belonging to no reachable datapoint. A side table that cannot
+be joined is worse than a missing column, because it looks populated.
+
+Four columns on **every** per-type live and history table (10 + 10 = 20 tables,
+80 columns), not Observation-only — per-type special-casing is what produces the
+congruency problems #777 catalogues:
+
+| column | why |
+|---|---|
+| `ingest_raw_guid` | **the join.** The pipeline already had it in scope and discarded it |
+| `transaction_guid` | which step of the care plan the measurement answers |
+| `care_plan_guid` | the CarePlan instance — 0 % until #772 is decided |
+| `patient_org_guid` | the patient's ips organisation (#768), **not** the performer and **not** the requester |
+
+All nullable. The flush removes the legacy-row argument, but `patient_org_guid`
+still cannot be NOT NULL: its resolution is #774, blocked on #778, so requiring
+it would reject every ingest today. A test records that as a deliberate state to
+revisit, not an oversight.
+
+### The migration graph was already forked, and I nearly made it worse
+`grep down_revision | tail -3` listed files alphabetically and showed
+`f4a5b6c7d8e9` as the last one, so the first draft chained onto it. Building the
+actual graph showed the chain continues
+`f4a5b6c7d8e9 → a1b2c3d4e5f6 → b5c6d7e8f9a0`, and `b5c6d7e8f9a0` is both the
+single head and the revision live on all three CDRs. Corrected to chain from
+there. `test_the_migration_graph_has_exactly_one_head` now fails on a fork — a
+fork is invisible until a deploy applies one branch.
+
+### Flush
+Operator-authorised; the CDR contents were mock. **Kept**: `users` (the SU
+mirror — flushing breaks login), `alembic_version`, `service_keys`, and
+`audit_log` + `cdr_read_audit`. The audit tables record *who did what*, not the
+clinical data; deleting an audit trail is a different act from clearing mock
+data and nobody asked for it.
+
+Backups at `~/backups/predeploy/cdr-769-flush/20261006T152533Z/`: a **full**
+`pg_dump` of cdr1 (5.2 MB compressed — it held the only record that the
+Medituner, CambioCaregiver, Provider1 and 1177 onboardings ever delivered data),
+and **schema + row-count manifests only** for cdr2/cdr3. Those are 13 GB each of
+single-organisation synthetic rows whose `org_guid` is the nil UUID on 100 % of
+rows; a full dump would have added 26 GB to a host with 49 GB free and 10 GB of
+existing backups, for data reproducible by reseeding. Deliberate — and the
+`n_live_tup` manifest written first was a stale estimate reporting "1 table with
+rows", so it was redone with real counts.
+
+### Result
+All three CDRs identical: head `a7b8c9d0e1f2`, 38 tables, 88 context columns
+each. cdr2/cdr3 went 13 GB → 10 MB; the Colima volume went 52 G used → 26 G,
+**26 GB reclaimed**. `/healthz`, `/api/v1/stats` and `/api/v1/concept-inventory`
+all 200 and report zero, which is correct after a flush and is the thing that
+had to not break. analyse's fanout still answers (21 concepts, all cdr6 now).
+Gateway→CDR line untouched at delivered 354 / skipped 6. 39 containers, 0
+unhealthy. 225 tests pass, was 201.
+
+A test-isolation leak of my own: the new tests seeded an `IngestRaw` that
+`test_ingest.py::test_ingest_accepted` picked up via an unordered
+`IngestRaw.query.first()`. Passed alone, failed in the suite. Third time this
+session-scoped-fixture leak has appeared (#732, #733), so it is now a cleanup
+fixture rather than another one-off fix.

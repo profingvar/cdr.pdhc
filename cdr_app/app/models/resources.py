@@ -76,6 +76,28 @@ def _common_live_columns() -> list:
         db.Column("received_at", db.DateTime(timezone=True), default=_now, nullable=False),
         db.Column("created_at", db.DateTime(timezone=True), default=_now, nullable=False),
         db.Column("updated_at", db.DateTime(timezone=True), default=_now, onupdate=_now, nullable=False),
+        # ---- per-datapoint context (#769) ---------------------------------
+        # These four live ON THE ROW, deliberately, not in clinical_context.
+        # clinical_context is keyed on ingest_raw_guid while this table's guid
+        # is the FHIR resource id, so the two could not be joined at all:
+        # 0 rows matched, and cdr1 held 7,415 transaction GUIDs that belonged to
+        # no reachable datapoint. A side table that cannot be joined is worse
+        # than a missing column, because it looks populated.
+        #
+        # ingest_raw_guid is the repair: it is the provenance key the pipeline
+        # already had in scope and discarded.
+        db.Column("ingest_raw_guid", db.String(36), nullable=True),
+        db.Column("transaction_guid", db.String(36), nullable=True),
+        db.Column("care_plan_guid", db.String(36), nullable=True),
+        # The organisation the PATIENT was affiliated with in ips at request
+        # time (#768) — NOT the performer (that is org_guid, soon
+        # provider_org_guid) and NOT the requesting organisation. Three
+        # different organisations; see #777.
+        #
+        # Nullable for now: the resolution path is #774 and is blocked on #778,
+        # so a NOT NULL here would reject every ingest today. Tighten once #774
+        # lands and the conformance test (#775) can prove it is always set.
+        db.Column("patient_org_guid", db.String(36), nullable=True),
     ]
 
 
@@ -103,6 +125,14 @@ def _common_history_columns() -> list:
         db.Column("superseded_at", db.DateTime(timezone=True), default=_now, nullable=False),
         db.Column("superseded_by_request_id", db.String(64), nullable=True),
         db.PrimaryKeyConstraint("guid", "version_id", name=None),
+        # ---- per-datapoint context (#769) — mirrors the live table ---------
+        # A history row must carry the same context as the live row it
+        # supersedes, or a versioned read answers a different question from a
+        # current one.
+        db.Column("ingest_raw_guid", db.String(36), nullable=True),
+        db.Column("transaction_guid", db.String(36), nullable=True),
+        db.Column("care_plan_guid", db.String(36), nullable=True),
+        db.Column("patient_org_guid", db.String(36), nullable=True),
     ]
 
 
@@ -300,6 +330,10 @@ def _build_models():
         live_cols.append(db.Index(f"ix_{table_name}_sync_group", "sync_group_id"))
         live_cols.append(db.Index(f"ix_{table_name}_org", "org_guid"))
         live_cols.append(db.Index(f"ix_{table_name}_code", "code_canonical"))
+        # #769: ingest_raw_guid is THE join to provenance; patient_org_guid is
+        # what Rule 24 scoping will filter on once #768 repoints it.
+        live_cols.append(db.Index(f"ix_{table_name}_ingest_raw", "ingest_raw_guid"))
+        live_cols.append(db.Index(f"ix_{table_name}_patient_org", "patient_org_guid"))
 
         live_cls = type(
             fhir_name,
