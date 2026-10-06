@@ -10,6 +10,8 @@ import hashlib
 import json
 import uuid
 
+import pytest
+
 from app.models import db
 from app.models.resources import live_model
 
@@ -49,8 +51,26 @@ def _seed(app, canon, n_patients, obs_each=1, unit=None):
         db.session.commit()
 
 
+@pytest.fixture(autouse=True)
+def _clear_inventory_cache():
+    """#759's cache is module-global, so it outlives a test.
+
+    Without this, a test's first call is served from the PREVIOUS test's entry
+    and the assertions become order-dependent — the same class of leak as the
+    seeded rows above (#732, #733). Clearing is cheaper than reasoning about
+    execution order.
+    """
+    import app.api.stats as st
+    st._INVENTORY_CACHE.clear()
+    yield
+    st._INVENTORY_CACHE.clear()
+
+
 def _get(client):
-    r = client.get("/api/v1/concept-inventory")
+    # ?fresh=1 — these tests seed and then read, so a 60s TTL would serve them
+    # the previous test's answer. The cache (#759) still STORES on every call,
+    # so this exercises that path; the serving path has its own tests below.
+    r = client.get("/api/v1/concept-inventory?fresh=1")
     assert r.status_code == 200, r.data[:200]
     return r.get_json()
 
@@ -157,7 +177,7 @@ def test_inventory_answers_on_a_cdr_without_the_clinical_read_surface(
 
     builtins.__import__ = no_clinical_read
     try:
-        r = client.get("/api/v1/concept-inventory")
+        r = client.get("/api/v1/concept-inventory?fresh=1")
     finally:
         builtins.__import__ = real_import
 
@@ -254,3 +274,54 @@ def test_the_deprecated_key_is_not_silently_removed(client, app):
     additive first, removal later."""
     body = client.get("/api/v1/stats").get_json()
     assert "health_observations" in body and "observations" in body
+
+
+# ---------------------------------------------------------------------------
+# #759 — the cache
+#
+# The inventory is two full scans. 0.02s empty, 0.60s on cdr_6's 1.28M rows,
+# 3.9-10.2s on cdr2/cdr3's 2.6M before the flush — a 13.6s researcher landing.
+# The cost returns with the data, so the cache is kept even while the CDRs are
+# empty.
+# ---------------------------------------------------------------------------
+
+def test_a_second_call_is_served_from_cache(client, app):
+    _seed(app, canon("cache1"), n_patients=6)
+    first = client.get("/api/v1/concept-inventory").get_json()
+    second = client.get("/api/v1/concept-inventory").get_json()
+    assert not first.get("cached")
+    assert second.get("cached") is True
+    assert "cached_age_seconds" in second
+    assert second["distinct"] == first["distinct"]
+
+
+def test_fresh_bypasses_the_cache(client, app):
+    """An operator checking whether a reseed landed must be able to ask the
+    database, not the cache."""
+    client.get("/api/v1/concept-inventory")
+    assert client.get("/api/v1/concept-inventory?fresh=1").get_json().get("cached") is None
+
+
+def test_a_zero_ttl_disables_it(client, app, monkeypatch):
+    monkeypatch.setitem(app.config, "CONCEPT_INVENTORY_TTL_SECONDS", 0)
+    client.get("/api/v1/concept-inventory")
+    assert client.get("/api/v1/concept-inventory").get_json().get("cached") is None
+
+
+def test_a_cache_entry_is_never_served_under_a_DIFFERENT_k(client, app, monkeypatch):
+    """The k-floor is part of the answer. Serving a body computed under k=5 to a
+    caller asking with k=20 would publish counts below that caller's floor — a
+    disclosure, not merely a stale number."""
+    client.get("/api/v1/concept-inventory")
+    monkeypatch.setitem(app.config, "CONCEPT_INVENTORY_K", 20)
+    body = client.get("/api/v1/concept-inventory").get_json()
+    assert body.get("cached") is None
+    assert body["k_min"] == 20
+
+
+def test_an_expired_entry_is_recomputed(client, app, monkeypatch):
+    import app.api.stats as st
+    client.get("/api/v1/concept-inventory")
+    at, body = st._INVENTORY_CACHE["inventory"]
+    st._INVENTORY_CACHE["inventory"] = (at - 10_000, body)   # far past any TTL
+    assert client.get("/api/v1/concept-inventory").get_json().get("cached") is None

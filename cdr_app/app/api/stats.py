@@ -1,5 +1,6 @@
 """Dashboard stats API."""
 import re
+import time
 from flask import Blueprint, current_app, jsonify, request
 from app import db
 from app.models import IngestRaw, FhirResource, OpenEhrComposition, HealthObservation, DedupeRegistry
@@ -162,6 +163,49 @@ def recent_observations():
     return jsonify({"items": items, "count": len(items)}), 200
 
 
+# ---------------------------------------------------------------------------
+# #759 — a short-TTL cache for the concept inventory
+# ---------------------------------------------------------------------------
+#
+# The inventory is two full scans of the observation table. Measured 2026-10-06:
+# 0.02s on an empty CDR, 0.60s on cdr_6's 1.28M rows, and 3.9-10.2s on
+# cdr2/cdr3's 2.6M before #769 flushed them — which made analyse's researcher
+# landing a 13.6s page. The cost comes back with the data.
+#
+# Cached HERE, per CDR, and deliberately NOT as the merged result in analyse. A
+# merged cache would hide a CDR that has gone quiet behind a stale entry, and
+# #733's whole point is that an absent source must not be silent: the fanout
+# still runs on every request, so an unreachable CDR is still reported as
+# unreachable.
+#
+# An inventory changes when data is INGESTED, not per request, so a short TTL
+# costs nothing in accuracy that a researcher would notice. `?fresh=1` bypasses
+# it for an operator checking whether a reseed landed.
+_INVENTORY_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def _inventory_cached(k: int):
+    ttl = float(current_app.config.get("CONCEPT_INVENTORY_TTL_SECONDS", 60))
+    if ttl <= 0 or request.args.get("fresh") in ("1", "true", "yes"):
+        return None
+    hit = _INVENTORY_CACHE.get("inventory")
+    if not hit:
+        return None
+    at, body = hit
+    if time.monotonic() - at > ttl:
+        return None
+    # The floor is part of the answer; a cache served under a different k would
+    # be a disclosure, not a stale number.
+    if body.get("k_min") != k:
+        return None
+    return dict(body, cached=True, cached_age_seconds=round(time.monotonic() - at, 1))
+
+
+def _inventory_store(body: dict) -> dict:
+    _INVENTORY_CACHE["inventory"] = (time.monotonic(), body)
+    return body
+
+
 @bp.get("/concept-inventory")
 def concept_inventory():
     """What concepts this CDR actually holds — #733.
@@ -196,6 +240,9 @@ def concept_inventory():
 
     canon_guid, resolve_display = _concept_helpers()
     k = int(current_app.config.get("CONCEPT_INVENTORY_K", 5))
+    cached = _inventory_cached(k)
+    if cached is not None:
+        return jsonify(cached), 200
     Obs = live_model("Observation")
     if Obs is None:
         return jsonify({"concepts": [], "unresolved": [], "distinct": 0,
@@ -294,7 +341,7 @@ def concept_inventory():
         concepts.append(entry)
 
     concepts.sort(key=lambda c: -c["observations"])
-    return jsonify({
+    return jsonify(_inventory_store({
         "concepts": concepts,
         "unresolved": unresolved,
         "distinct": len(concepts) + len(unresolved),
@@ -302,4 +349,4 @@ def concept_inventory():
                             if c["binding"] == b)
                      for b in ("plan_concept", "external_code", "unbound")},
         "k_min": k,
-    }), 200
+    })), 200
