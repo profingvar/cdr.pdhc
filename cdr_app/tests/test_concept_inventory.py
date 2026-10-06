@@ -230,3 +230,27 @@ def test_the_unit_column_is_used_when_raw_json_has_none(client, app):
         db.session.commit()
     c = [x for x in _get(client)["concepts"] if x["code_canonical"] == key][0]
     assert c["units"] == {"cm": 6}
+
+
+# ---------------------------------------------------------------------------
+# #756 — /stats must report what the CDR actually holds
+# ---------------------------------------------------------------------------
+
+def test_stats_reports_the_LIVE_observation_count(client, app):
+    """`health_observations` counts a legacy table that is empty on every CDR,
+    so analyse's landing showed 0 observations beside a concept list totalling
+    millions. `observations` is the real figure, and the key cdr_6 has always
+    returned — so the two now answer the same question."""
+    _seed(app, canon("statscount"), n_patients=6, obs_each=2)
+    body = client.get("/api/v1/stats").get_json()
+    assert "observations" in body
+    assert body["observations"] >= 12
+    # back-compat kept, and still the legacy table
+    assert "health_observations" in body
+
+
+def test_the_deprecated_key_is_not_silently_removed(client, app):
+    """Removing it would break any reader that has not migrated. Deprecation is
+    additive first, removal later."""
+    body = client.get("/api/v1/stats").get_json()
+    assert "health_observations" in body and "observations" in body

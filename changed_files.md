@@ -141,3 +141,4 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/migrations/versions/a7b8c9d0e1f2_datapoint_context_on_the_row.py
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_datapoint_context.py
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/ingest_pipeline.py (#773)
+- cdr_app/app/api/stats.py (#756 — add the `observations` key)

@@ -100,6 +100,16 @@ def stats():
         "ingest_raw": IngestRaw.query.count(),
         "fhir_resources": FhirResource.query.count() + fhir_per_type,
         "openehr_compositions": OpenEhrComposition.query.count(),
+        # #756: `observations` is what the platform actually holds — the live
+        # per-type table. cdr_6's /stats has always returned this key; cdr1/2/3
+        # returned only `health_observations`, which counts the LEGACY table and
+        # is empty on every CDR. analyse's researcher landing therefore asked
+        # every CDR a question only some could answer, and showed 0 observations
+        # beside a concept list totalling millions.
+        "observations": (live_model("Observation").query.count()
+                         if live_model("Observation") is not None else 0),
+        # Kept for back-compat. DEPRECATED: it counts `health_observations`,
+        # which is empty platform-wide. Readers should move to `observations`.
         "health_observations": HealthObservation.query.count(),
         "dedupe_registry": DedupeRegistry.query.count(),
         "patients": patients,
