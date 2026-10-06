@@ -966,3 +966,58 @@ the 2026-10-02 dump predated the #732 deploy.
 `bad_org_guids` is now 0. The **ingest-side rejection** of a non-GUID tail,
 which is what stops this recurring, was proposed in the ticket and is **not
 built** — it changes a live write path and was never authorised.
+
+## 2026-10-06 — #733 `GET /api/v1/concept-inventory` (cdr1, cdr2, cdr3)
+
+What a researcher can ask about, not just how much data there is. Aggregate
+only; the per-concept patient count goes through a k-floor (`CONCEPT_INVENTORY_K`,
+default 5) and reports `<5` below it, because a concept named and counted for two
+patients is a smaller crowd to hide in than any analysis the platform publishes.
+
+Three things cost more than the endpoint itself:
+
+1. **`clinical_read` is not deployed on cdr2-cdr5.** They run this codebase as a
+   pure analysis repository with no clinical read surface, so the first version's
+   module-level `from app.api.clinical_read import ...` made the endpoint a 500 on
+   exactly the CDRs holding the most data (2.6M observations each). `_concept_helpers()`
+   now degrades: the guid parse is pure and always available, the plan.pdhc display
+   lookup is cosmetic and absent where the module is.
+
+2. **Codes are not all Path-B.** cdr1 stores `urn:pdhc:concept/<guid>`; cdr2 and
+   cdr3 store termbank CodeSystem URIs (LOINC) for all 2.6M of their rows. The
+   first classifier had two buckets — "a plan.pdhc GUID" and "unresolvable" — which
+   filed every concept those two CDRs hold under the second. analyse merges only
+   the first, so the two largest sources read as EMPTY. A LOINC code is a stronger
+   binding than a local GUID, not a weaker one. Now three kinds: `plan_concept`,
+   `external_code`, `unbound`, and only the third is a defect.
+
+3. **Units are columnar, mostly.** Reading them from `raw_json::jsonb` costs 8.2s
+   on a 2.6M-row CDR; the `value_unit` column costs 2.8s for the same answer. But
+   cdr1 has ~7000 rows whose `value_unit` is NULL while the body carries the unit,
+   so the column alone hides the unit of its busiest concept. Two independent
+   passes: the column, then `raw_json` only `WHERE value_unit IS NULL` — zero rows
+   on cdr2/cdr3, so the expensive path never runs there. They are independent on
+   purpose; when they shared one try/except a failure in the second re-ran the
+   first inside the fallback and every unit was counted twice.
+
+Tests: 192 pass (was 181). `tests/test_concept_inventory.py` covers the k-floor,
+the degraded import through the ROUTE (it was a 500 before the fix — asserting on
+the helper alone would not have caught it), and that the fallback parser agrees
+with `clinical_read`'s on a table of canonicals. The `canon()` helper was also
+interpolating the test tag into the first GUID segment (`mix-0000-...`, not hex),
+so every test that believed it seeded a resolvable concept seeded an unbound one.
+
+LIVE on cdr1 (19 concepts, all plan_concept, 0.08s), cdr2 (14, all external_code,
+3.9s) and cdr3 (same, 10.2s cold). Predeploy backups under
+`~/backups/predeploy/{cdr.pdhc,cdr2.pdhc,cdr3.pdhc}/` on miserver with rollback
+image ids. cdr2/cdr3 were patched surgically — their deployed `stats.py` is 28
+lines against local's 295 and overwriting it would have removed routes.
+
+### Found while doing it, filed not fixed
+- `/stats` reports `health_observations: 0` on EVERY CDR. That key counts the
+  legacy `HealthObservation` table, which is empty platform-wide; the data is in
+  the live per-type `observation` table (cdr1 7,415 / cdr2 2,629,300 /
+  cdr3 2,629,300). The researcher landing page therefore shows "0 observations"
+  next to a concept list totalling 5.18M.
+- cdr1's "Reliever (SABA) puffs in last 24h" carries two units: `doser` on 16 rows
+  and `/d` on 1. Now visible with counts, which is what #752 needs.
