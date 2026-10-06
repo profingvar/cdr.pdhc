@@ -1156,3 +1156,47 @@ A test-isolation leak of my own: the new tests seeded an `IngestRaw` that
 `IngestRaw.query.first()`. Passed alone, failed in the suite. Third time this
 session-scoped-fixture leak has appeared (#732, #733), so it is now a cleanup
 fixture rather than another one-off fix.
+
+## 2026-10-06 — #773 ingest writes the context onto the row
+
+`build_live_observation_row` **already took `ingest_raw_guid` as a parameter** —
+and used it only as a fallback for the row's own guid, never storing it. That is
+precisely why `clinical_context`, which keys on it, could not be joined to the
+observation table. One assignment closed it.
+
+`transaction_guid` and `care_plan_guid` are read from the producer's context
+block, accepting the same `activity_guid` / `careplan_guid` aliases
+`ClinicalContext` accepts (#302) — otherwise a producer mid-way through the #294
+deprecation window would populate the context table and leave the row empty, and
+the two would disagree.
+
+**`patient_org_guid` is deliberately NOT read from the producer.** It is the
+patient's ips affiliation and only ips can answer it (#768/#774). A producer's
+idea of "the organisation" is the performer or the requester, and both already
+have their own columns — writing either here is the exact conflation #768
+documents. A test asserts the field stays NULL even when a producer sends
+`patient_org_guid` or `org_guid` in the context block.
+
+Live on cdr1, through the real ingest endpoint:
+
+    observation.guid           630d0c55-…
+    ingest_raw_guid            302272c2-…     <- the join
+    transaction_guid           tx-verify
+    care_plan_guid             cp-verify
+    patient_org_guid           None           <- correct until #774
+    org_guid (performer)       performer-org-773
+    ctx.plan_definition_guid   pd-verify      <- arriving since #776
+    ctx.requesting_org_guid    requester-verify
+
+228 tests pass (was 225); the three new ones fail against the pre-#773 code.
+
+### Two things found while testing
+`SAMPLE_FHIR_OBSERVATION` has no `id`, and the live-row path is gated on
+`fhir_resource.get("id")` — so an ingest without one creates **no datapoint row
+at all**, silently. Gateway always sets an id, so production is fine, but the
+shared fixture does not exercise this path.
+
+The FK chain for deleting observation data is
+`fhir_resources <- openehr_compositions <- cambio_delivery_log`; the same chain
+aborted two of #731's delete attempts. Use the #769 flush script rather than
+hand-ordered DELETEs.

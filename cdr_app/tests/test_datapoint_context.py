@@ -140,3 +140,113 @@ def test_the_migration_graph_has_exactly_one_head():
     downs = set(nodes.values())
     heads = [r for r in nodes if r not in downs]
     assert len(heads) == 1, f"migration graph forked: {heads}"
+
+
+# ---- #773: ingest actually WRITES the context onto the row ----------------
+
+def test_ingest_stores_the_join_key_and_context_on_the_row(client, app, clean_rows):
+    """#769 added the columns; this is what makes them real. Before #773,
+    `ingest_raw_guid` was already a PARAMETER of build_live_observation_row —
+    used only as a fallback for the row's guid and never stored — which is why
+    clinical_context, keyed on it, could not be joined to this table."""
+    from tests.conftest import SAMPLE_INGEST_BODY, SAMPLE_FHIR_OBSERVATION
+    body = dict(SAMPLE_INGEST_BODY)
+    # The live-row path requires fhir_resource["id"] — gateway always sets one
+    # (build_live_observation_row falls back to ingest_raw_guid only when it is
+    # absent), but the shared sample has none, so an ingest of it creates no
+    # datapoint row at all.
+    body["fhir_resource"] = dict(SAMPLE_FHIR_OBSERVATION, id=str(uuid.uuid4()))
+    body["clinical_context"] = {
+        "service_request_guid": "sr-773",
+        "transaction_guid": "tx-773",
+        "care_plan_guid": "cp-773",
+        "provider_org_guid": "performer-773",
+        "requesting_org_guid": "requester-773",
+    }
+    r = client.post("/api/v1/ingest", json=body, headers={
+        "X-Service-Key": "test-gateway-key", "X-Source-Service": "gateway.pdhc"})
+    assert r.status_code == 202, r.get_data(as_text=True)[:200]
+    raw_guid = r.get_json()["ingest_raw_guid"]
+
+    Obs = live_model("Observation")
+    from app.models import IngestRaw
+    with app.app_context():
+        obs = db.session.query(Obs).filter_by(ingest_raw_guid=raw_guid).one()
+        assert obs.transaction_guid == "tx-773"
+        assert obs.care_plan_guid == "cp-773"
+        # the one join that used to return 0 rows, now with real values
+        joined = (db.session.query(Obs, IngestRaw)
+                  .join(IngestRaw, IngestRaw.guid == Obs.ingest_raw_guid)
+                  .filter(Obs.ingest_raw_guid == raw_guid).one())
+        assert joined[1].guid == raw_guid
+
+        # the row and the context table must agree, not diverge
+        from app.models import ClinicalContext
+        cc = db.session.query(ClinicalContext).filter_by(
+            ingest_raw_guid=raw_guid).one()
+        assert cc.transaction_guid == obs.transaction_guid
+        assert cc.care_plan_guid == obs.care_plan_guid
+
+        db.session.query(Obs).filter_by(ingest_raw_guid=raw_guid).delete()
+        db.session.query(ClinicalContext).filter_by(
+            ingest_raw_guid=raw_guid).delete()
+        db.session.query(IngestRaw).filter_by(guid=raw_guid).delete()
+        db.session.commit()
+
+
+def test_ingest_does_NOT_write_patient_org_guid_from_the_producer(
+        client, app, clean_rows):
+    """patient_org_guid is the patient's ips affiliation and only ips can
+    answer it (#768/#774). A producer's idea of "the organisation" is the
+    performer or the requester — both already have their own columns. Writing
+    either here is the exact conflation #768 documents."""
+    from tests.conftest import SAMPLE_INGEST_BODY, SAMPLE_FHIR_OBSERVATION
+    body = dict(SAMPLE_INGEST_BODY)
+    # The live-row path requires fhir_resource["id"] — gateway always sets one
+    # (build_live_observation_row falls back to ingest_raw_guid only when it is
+    # absent), but the shared sample has none, so an ingest of it creates no
+    # datapoint row at all.
+    body["fhir_resource"] = dict(SAMPLE_FHIR_OBSERVATION, id=str(uuid.uuid4()))
+    body["clinical_context"] = {
+        "provider_org_guid": "performer-x",
+        "requesting_org_guid": "requester-x",
+        "patient_org_guid": "a-producer-should-not-decide-this",
+        "org_guid": "nor-this",
+    }
+    r = client.post("/api/v1/ingest", json=body, headers={
+        "X-Service-Key": "test-gateway-key", "X-Source-Service": "gateway.pdhc"})
+    assert r.status_code == 202
+    raw_guid = r.get_json()["ingest_raw_guid"]
+    Obs = live_model("Observation")
+    with app.app_context():
+        obs = db.session.query(Obs).filter_by(ingest_raw_guid=raw_guid).one()
+        assert obs.patient_org_guid is None
+        db.session.query(Obs).filter_by(ingest_raw_guid=raw_guid).delete()
+        db.session.commit()
+
+
+def test_the_deprecated_aliases_still_land_on_the_row(client, app, clean_rows):
+    """ClinicalContext accepts careplan_guid/activity_guid during the #294
+    window (#302). The row must accept the same, or a producer mid-migration
+    populates the context table and leaves the row empty — which is how the
+    two could disagree."""
+    from tests.conftest import SAMPLE_INGEST_BODY, SAMPLE_FHIR_OBSERVATION
+    body = dict(SAMPLE_INGEST_BODY)
+    # The live-row path requires fhir_resource["id"] — gateway always sets one
+    # (build_live_observation_row falls back to ingest_raw_guid only when it is
+    # absent), but the shared sample has none, so an ingest of it creates no
+    # datapoint row at all.
+    body["fhir_resource"] = dict(SAMPLE_FHIR_OBSERVATION, id=str(uuid.uuid4()))
+    body["clinical_context"] = {"activity_guid": "tx-alias",
+                                "careplan_guid": "cp-alias"}
+    r = client.post("/api/v1/ingest", json=body, headers={
+        "X-Service-Key": "test-gateway-key", "X-Source-Service": "gateway.pdhc"})
+    assert r.status_code == 202
+    raw_guid = r.get_json()["ingest_raw_guid"]
+    Obs = live_model("Observation")
+    with app.app_context():
+        obs = db.session.query(Obs).filter_by(ingest_raw_guid=raw_guid).one()
+        assert obs.transaction_guid == "tx-alias"
+        assert obs.care_plan_guid == "cp-alias"
+        db.session.query(Obs).filter_by(ingest_raw_guid=raw_guid).delete()
+        db.session.commit()

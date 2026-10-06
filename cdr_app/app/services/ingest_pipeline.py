@@ -102,6 +102,7 @@ class IngestPipeline:
                         source_service=source_service,
                         ingest_raw_guid=raw.guid,
                         received_at=raw.received_at,
+                        context=context,
                     )
                     if live_row is not None:
                         db.session.add(live_row)
@@ -362,7 +363,8 @@ def _primary_canonical_uri(fhir_resource):
 
 
 def build_live_observation_row(fhir_resource, *, patient_guid, source_service,
-                                ingest_raw_guid=None, received_at=None):
+                                ingest_raw_guid=None, received_at=None,
+                                context=None):
     """Build a Live Observation ORM row from a FHIR R5 Observation dict.
 
     Mirrors the column layout of `public.observation` (per migration 0001).
@@ -401,10 +403,32 @@ def build_live_observation_row(fhir_resource, *, patient_guid, source_service,
     value_code = ((fhir_resource.get("valueCodeableConcept") or {})
                   .get("coding") or [{}])[0].get("code")
 
+    # #773/#769: the datapoint's own context, ON the row.
+    #
+    # ingest_raw_guid was already a parameter here — used only as a fallback for
+    # the row's guid and never stored — so `clinical_context`, which keys on it,
+    # could not be joined to this table at all. Storing it is the repair.
+    #
+    # The others are read from the context block the producer sends, with the
+    # same legacy aliases ClinicalContext accepts (#302), so a producer mid-way
+    # through the deprecation window populates the row and the context table
+    # identically rather than one of them.
+    ctx = context or {}
     return LiveObservation(
         guid=guid,
         patient_guid=patient_guid,
         org_guid=org_guid,
+        ingest_raw_guid=ingest_raw_guid,
+        transaction_guid=(ctx.get("transaction_guid")
+                          or ctx.get("activity_guid")),
+        care_plan_guid=(ctx.get("care_plan_guid")
+                        or ctx.get("careplan_guid")),
+        # patient_org_guid is NOT read from the producer: it is the patient's
+        # ips affiliation, which only ips can answer (#768). Writing whatever a
+        # producer called "the organisation" here is exactly the conflation
+        # #768 documents — org_guid already holds the performer and
+        # requesting_org_guid the requester. Left NULL until #774 resolves it
+        # from ips at request time.
         code_canonical=code_canonical,
         effective_at=effective_at,
         raw_json=fhir_resource,
