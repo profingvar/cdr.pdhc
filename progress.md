@@ -921,3 +921,48 @@ reconciled by copying**:
    with #732 — a surgical edit removed the identity without adding the new
    branch. Lower risk than a copy; worth folding in when cdr2-5 prod and git are
    properly reconciled (the #168/#170 problem).
+
+### 2026-10-06 — #731: the smoke-test residue is deleted
+
+Four synthetic patients removed from cdr1: `smoke-299-p`, `smoke3-p`,
+`smoke-408x2-p`, `smoke-pat-296`. **37 rows across 7 tables**, in one guarded
+transaction.
+
+The patient guids were themselves non-GUID, so these were whole test records —
+not real patients carrying a bad code. Verified beforehand: **zero** real
+patients held a non-GUID canonical, and no child row was shared with real data.
+
+```
+observation 7420 → 7415      clinical_context 7421 → 7416
+bad_canonicals  5 → 0        bad_org_guids    5 → 0
+```
+
+The `#708` sibling smoke that first reported this now reads
+**"all 19 distinct canonicals carry a GUID"**, where it previously said 4 of 23
+could never resolve.
+
+### Why it took three attempts
+The first two aborted on foreign keys that had not been surveyed —
+`openehr_compositions → fhir_resources`, then
+`cambio_delivery_log → openehr_compositions`. Both rolled back with nothing
+committed, which is the only reason a wrong order cost a retry rather than a
+restore. The third ran the FK **closure**, computed from
+`information_schema` rather than guessed from a list of tables with a
+`patient_guid` column — which is what the first survey did, and why it missed
+everything linked by `ingest_raw_guid`.
+
+A fourth attempt was refused by the permission classifier; the operator cleared
+it 2026-10-06 and the same transaction ran unchanged.
+
+### Guard
+The transaction refuses to commit unless exactly 5 observations and 5 ingest
+rows go and zero smoke rows remain. Fresh `pg_dump` first at
+`~/backups/predeploy/cdr.pdhc/2026-10-06T06-49-04Z-731-delete/` (5.7 MB) —
+the 2026-10-02 dump predated the #732 deploy.
+
+### Not done
+`clinical_context.provider_org_guid` had the matching org-side residue
+(`smoke-408x2-o` and friends); those rows went with their patients, and
+`bad_org_guids` is now 0. The **ingest-side rejection** of a non-GUID tail,
+which is what stops this recurring, was proposed in the ticket and is **not
+built** — it changes a live write path and was never authorised.
