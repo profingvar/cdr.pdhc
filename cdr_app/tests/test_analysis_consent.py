@@ -177,3 +177,139 @@ def test_operator_read_fails_closed_when_ips_down(client, fake_canon):
     with patch.object(ac, "_analysis_filter", side_effect=_boom):
         r = client.get("/api/v1/fhir/Observation", headers=DOCTOR)
     assert r.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# #730 — the Authorization header _analysis_filter actually sends
+#
+# Every test above patches `_analysis_filter` itself, so the header-building
+# code in it was never exercised by any of them. That is why this defect
+# survived: for a service-shaped read the request went out with NO
+# Authorization header, ips answered 401, and the gate refused the whole read
+# instead of filtering it. These tests patch `requests.post` one level lower
+# and assert the header on the wire.
+# ---------------------------------------------------------------------------
+
+class _Resp:
+    status_code = 200
+
+    def __init__(self, allowed=(), excluded=()):
+        self._b = {"allowed": list(allowed), "excluded": list(excluded)}
+
+    def json(self):
+        return self._b
+
+
+# conftest's `_consent_allow_all` is AUTOUSE and replaces `_analysis_filter`
+# with a lambda for the whole suite, so no test in this file can reach the real
+# header-building code through the module attribute — which is precisely why
+# #730 survived. Capture the real function at import time, before any fixture
+# runs, and call that.
+_REAL_ANALYSIS_FILTER = ac._analysis_filter
+
+
+def test_the_autouse_stub_is_what_hid_this(app):
+    """Guard the guard: if conftest ever stops stubbing `_analysis_filter`, the
+    capture above becomes pointless indirection and should be removed. If it
+    starts stubbing something else, these tests go quiet again."""
+    assert ac._analysis_filter is not _REAL_ANALYSIS_FILTER, (
+        "conftest no longer stubs _analysis_filter — simplify these tests")
+
+
+def _capture_post(app, *, api_key=None, sso_token=None, allowed=("p1",)):
+    """Call the REAL _analysis_filter and return the headers it sent."""
+    seen = {}
+
+    def _post(url, **kw):
+        seen["url"] = url
+        seen["headers"] = kw.get("headers") or {}
+        return _Resp(allowed=allowed)
+
+    prev_key = app.config.get("IPS_API_KEY")
+    prev_base = app.config.get("IPS_BASE_URL")
+    app.config["IPS_API_KEY"] = api_key
+    app.config["IPS_BASE_URL"] = "https://ips.example"
+    try:
+        with app.test_request_context("/api/v1/fhir/Observation"):
+            if sso_token is not None:
+                from flask import session
+                session["sso_token"] = sso_token
+            with patch("app.services.analysis_consent.requests.post",
+                       side_effect=_post):
+                _REAL_ANALYSIS_FILTER(["p1"], "care", [])
+    finally:
+        app.config["IPS_API_KEY"] = prev_key
+        app.config["IPS_BASE_URL"] = prev_base
+    return seen
+
+
+def test_a_service_shaped_read_sends_its_own_ApiKey(app):
+    """No operator session + a configured key => Authorization: ApiKey <key>.
+
+    This is the whole fix. gateway, analyse and sim all reach the consent gate
+    without a session, and before #730 they sent nothing.
+    """
+    seen = _capture_post(app, api_key="k-cdr1-secret")
+    assert seen["headers"].get("Authorization") == "ApiKey k-cdr1-secret"
+    assert seen["url"].endswith("/api/v1/patients/analysis-filter")
+
+
+def test_an_operator_session_still_sends_its_bearer(app):
+    """The operator path is unchanged — the ApiKey is a fallback, not a
+    replacement. A service key standing in for a human would lose the
+    per-reader purpose the #422 model derives from their affiliation."""
+    seen = _capture_post(app, api_key="k-cdr1-secret", sso_token="tok-abc")
+    assert seen["headers"].get("Authorization") == "Bearer tok-abc"
+
+
+def test_the_request_is_NEVER_sent_unauthenticated(app):
+    """The regression guard, stated as the invariant rather than as a case.
+
+    ips's require_auth reads ONLY the Authorization header and silently ignores
+    X-API-Key, so an absent header is indistinguishable from a bad credential —
+    it is a 401 either way, and that 401 was being reported as an ips outage.
+    """
+    for kwargs in ({"api_key": "k"}, {"api_key": "k", "sso_token": "t"}):
+        seen = _capture_post(app, **kwargs)
+        auth = seen["headers"].get("Authorization", "")
+        assert auth, f"no Authorization header for {kwargs}"
+        assert auth.startswith(("ApiKey ", "Bearer ")), auth
+
+
+def test_a_missing_key_fails_closed_and_blames_the_credential_not_ips(app):
+    """Still fails closed with no key — that is correct. What changes is that
+    the message names the missing piece, instead of a bare 401 surfacing as
+    IpsUnreachable and reading like the sibling being down."""
+    def _post(url, **kw):           # must not be reached
+        raise AssertionError("ips was called without a credential")
+
+    with app.test_request_context("/api/v1/fhir/Observation"):
+        prev_key = app.config.get("IPS_API_KEY")
+        prev_base = app.config.get("IPS_BASE_URL")
+        app.config["IPS_API_KEY"] = ""
+        app.config["IPS_BASE_URL"] = "https://ips.example"
+        try:
+            with patch("app.services.analysis_consent.requests.post",
+                       side_effect=_post):
+                with pytest.raises(ac.IpsUnreachable) as ei:
+                    _REAL_ANALYSIS_FILTER(["p1"], "care", [])
+        finally:
+            app.config["IPS_API_KEY"] = prev_key
+            app.config["IPS_BASE_URL"] = prev_base
+
+    msg = str(ei.value)
+    assert "IPS_API_KEY" in msg
+    assert "NOT an ips outage" in msg
+
+
+def test_the_session_header_does_not_clobber_the_credential(app):
+    """outbound_session_headers() is merged AFTER the Authorization header, so
+    a future field named Authorization there would silently un-authenticate
+    every one of these calls."""
+    with patch("app.services.analysis_consent.outbound_session_headers"
+               if hasattr(ac, "outbound_session_headers") else
+               "app.services.session_headers.outbound_session_headers",
+               return_value={"X-Operator-Session-Id": "sid-1"}):
+        seen = _capture_post(app, api_key="k-cdr1-secret")
+    assert seen["headers"].get("Authorization") == "ApiKey k-cdr1-secret"
+    assert seen["headers"].get("X-Operator-Session-Id") == "sid-1"

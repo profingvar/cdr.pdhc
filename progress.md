@@ -1230,3 +1230,101 @@ dashboard `/healthz` 200, 39 containers 0 unhealthy, 238 tests pass (was 235).
 With this, every service-key identity on the CDRs is either read-only
 (`analyse.pdhc`, `dashboard.pdhc`) or writes by design (`gateway.pdhc`,
 `sim.pdhc`). No identity holds a write grant it does not use.
+
+## 2026-10-07 — #730 FIXED and DEPLOYED: the consent gate could not get a verdict
+
+`_analysis_filter` attached `Authorization: Bearer <token>` only when a flask
+session held one. A service-shaped read — gateway, analyse, sim — has no
+session, so the request went out with **no Authorization header at all**. ips's
+`require_auth` reads only that header (`X-API-Key` is silently ignored), so it
+answered 401, `_analysis_filter` raised `IpsUnreachable`, and `_fail_closed`
+excluded every patient.
+
+The #664 gate is meant to **filter** a read down to the patients who consented.
+It was refusing the whole read instead — not applying consent, denying access,
+and surfacing as though ips were down. `declared_service_purpose()` in the same
+module shows service callers were always expected here, so this had never worked
+for them.
+
+**Fix:** fall back to `Authorization: ApiKey <key>` from the service's own
+`IPS_API_KEY`, the same remedy #719 took for analyse. A missing key still fails
+closed — correct — but the message now names the missing credential instead of
+leaving a bare 401 to be misread as an outage.
+
+### A second defect, in ips, found by fixing the first
+
+With the key in place the 401 became a **500**:
+`badly formed hexadecimal UUID string`. `PatientIndex.guid` is a UUID column, so
+`/analysis-filter`'s `IN` clause raised at the driver whenever a guid was not a
+well-formed UUID — and the smoke's probe guid deliberately is not one.
+
+A 500 is the worst answer a consent gate can give: the caller sees an exception
+rather than a verdict, and it is indistinguishable from ips being down, so cdr
+fail-closed the **whole cohort** and blamed the wrong service. One malformed
+guid anywhere denied everything.
+
+ips now treats a malformed guid as **unknown**: it fails closed for that patient
+alone and is named in `excluded` with `reason: malformed_guid`, so a caller can
+tell it sent something unusable. Per-patient fail-closed beats per-request, and
+neither should be a 500.
+
+### Tests — and what they cannot do
+
+Every pre-existing test in `test_analysis_consent.py` patches
+`_analysis_filter` itself, and conftest's **autouse** `_consent_allow_all`
+replaces it suite-wide. So the header-building code was unreachable from any
+test in the file. That is why this survived. New tests capture the real function
+at import time and patch `requests.post` one level lower, asserting the header
+on the wire; one of them guards the guard, failing if conftest ever stops
+stubbing.
+
+    cdr_app: 244 passed
+    ips:     401 passed, 1 failed (pre-existing, unrelated — a Swedish
+             legal-review banner in test_patient_portal_html; verified against
+             the untouched tree)
+
+Proven, not assumed: with the fix stashed, 4 of the new cdr tests fail and 2 of
+the 3 new ips tests fail. **The ips 500 itself is not reproducible in the unit
+suite** — the test DB is SQLite, which does not coerce UUIDs. The tests pin the
+new contract; only Postgres reproduces the bug, so the production smoke is the
+real verification.
+
+### Deployed to all three CDRs + ips
+
+Each `analysis_consent.py` was diffed against the local pre-change baseline
+first — **all three identical**, so a file copy applied this diff and nothing
+else (the rule from `infra_cdr_prod_behind_local_git`). Same for ips's
+`patient_routes.py`.
+
+Each CDR was issued its **own** ips ApiKey (prefixes `PmipxjGj`, `D3LjQGa3`,
+`0lRKHoVZ`), minted through ips's own `/api/v1/auth/keys`. `docker-compose up -d
+--build` throughout, because `docker restart` keeps create-time env and would
+not have seen the new `.env`.
+
+Verified in-container on all three:
+
+    cdr_pdhc_app     VERDICT OK  allowed=0 excluded=1  reasons=['malformed_guid']
+    cdr_pdhc_2_app   VERDICT OK  allowed=0 excluded=1  reasons=['malformed_guid']
+    cdr_pdhc_3_app   VERDICT OK  allowed=0 excluded=1  reasons=['malformed_guid']
+
+and cdr1's sibling smoke now reports
+`✓ ips: a consent verdict is obtainable for a service-shaped read`.
+
+Backups: `~/backups/predeploy/{cdr,cdr2,cdr3}.pdhc/...` and
+`~/backups/predeploy/ips.pdhc/20261007T092918Z/`.
+
+### Noticed in passing, NOT fixed — operator call
+
+cdr1's compose project is **`cdr_app`** (the directory name), not the
+`COMPOSE_PROJECT_NAME=cdr_pdhc` pinned in its `.env`. The live data volume is
+still `cdr_pdhc_pgdata` and the db container dates from 2026-06-27, so **my
+app-only rebuild did not touch it** — this predates today. There is also an
+orphan volume `cdr_app_pgdata` from 2026-04-10, mounted by nothing. Same shape
+as the dashboard #113 incident. Volume removal is operator-only.
+
+### Still failing in the smoke, correctly
+
+`plan: a real code_canonical from this CDR resolves` — there are 0 observations
+after the #769 flush, so there is nothing to resolve. The check reports
+inconclusive **as a failure** so it cannot be mistaken for proof. It goes green
+when data flows.

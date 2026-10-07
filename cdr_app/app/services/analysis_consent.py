@@ -150,6 +150,32 @@ def _analysis_filter(patient_guids: list, purpose: str, projects: list) -> dict:
         token = None
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    else:
+        # #730: a service-shaped read has no operator session, so before this
+        # the request went out with NO Authorization header at all. ips's
+        # require_auth reads ONLY that header — `X-API-Key` is silently ignored
+        # — so it answered 401, this function raised IpsUnreachable, and
+        # _fail_closed excluded every patient.
+        #
+        # The gate is meant to FILTER a read down to the patients who
+        # consented. Refusing the whole read is not the same thing: it was not
+        # applying consent, it was denying access, and it surfaced as though
+        # ips were down. declared_service_purpose() in this module shows
+        # service callers were always expected here, so this had never worked
+        # for gateway, analyse or sim.
+        #
+        # Same remedy as #719 took for analyse: the service holds its own ips
+        # ApiKey. Missing key still fails closed — that is correct, and the
+        # message below says which piece is absent rather than leaving a bare
+        # 401 to be misread as an outage.
+        api_key = (current_app.config.get("IPS_API_KEY")
+                   or os.environ.get("IPS_API_KEY", ""))
+        if not api_key:
+            raise IpsUnreachable(
+                "IPS_API_KEY is not configured, and this read has no operator "
+                "session, so ips cannot be asked for a consent verdict. This "
+                "is a missing credential on this service, NOT an ips outage.")
+        headers["Authorization"] = f"ApiKey {api_key}"
     headers.update(outbound_session_headers())
     try:
         r = requests.post(

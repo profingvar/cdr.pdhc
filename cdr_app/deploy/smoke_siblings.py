@@ -62,6 +62,11 @@ RESET, RED, GRN, YEL, BOLD = "\033[0m", "\033[31m", "\033[32m", "\033[33m", "\03
 
 results: list[dict] = []
 SMOKE_PATIENT = "smoke-not-a-real-patient"
+# Deliberately NOT a well-formed UUID. ips's PatientIndex.guid is a UUID
+# column, so this value made /analysis-filter raise at the driver and answer
+# 500 — which cdr turned into IpsUnreachable and reported as an ips outage
+# (#730). ips now treats a malformed guid as unknown and excludes it by name,
+# so keeping this value here keeps that path covered.
 CONCEPT_PREFIX = "urn:pdhc:concept/"
 
 
@@ -195,9 +200,9 @@ def main(as_json: bool = False) -> int:
                 out = _analysis_filter([SMOKE_PATIENT], "research", [])
             except IpsUnreachable as e:
                 return False, (f"{e} — the gate fails CLOSED, which is safe but "
-                               f"means a service-key caller reads NOTHING. cdr1 "
-                               f"holds no IPS_API_KEY, so it can only authenticate "
-                               f"by forwarding an operator's bearer.")
+                               f"means a service-key caller reads NOTHING. Since "
+                               f"#730 this service holds its own IPS_API_KEY, so "
+                               f"check that it is set before suspecting ips.")
             if not isinstance(out, dict) or "allowed" not in out:
                 return False, f"unexpected analysis-filter shape: {out!r}"
             return True, (f"allowed={len(out['allowed'])} "
