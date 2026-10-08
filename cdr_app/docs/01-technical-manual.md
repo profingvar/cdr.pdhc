@@ -384,5 +384,3 @@ the app listens on `9046` and Postgres on `5432`.
 | CDR 1 | 9046 | 9045 (local-dev default 9047) |
 | CDR 2 | 9146 | 9145 |
 | CDR 3 | 9246 | 9245 |
-| CDR 4 | 9346 | 9345 |
-| CDR 5 | 9446 | 9445 |
