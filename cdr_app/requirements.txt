@@ -1,10 +1,43 @@
-Flask>=3.1.0
-Flask-SQLAlchemy>=3.1.1
-Flask-Migrate>=4.1.0
-psycopg2-binary>=2.9.10
-python-dotenv>=1.0.1
-gunicorn>=23.0.0
-requests>=2.32.0
-pytest>=8.3.4
-pytest-flask>=1.3.0
-APScheduler>=3.10.4
+# ---------------------------------------------------------------------------
+# PINNED (#785) 2026-10-08 — frozen at what the RUNNING container had installed,
+# not at a fresh resolve. The point is to make the working state reproducible,
+# not to adopt newer versions: choosing versions is a separate, reviewable
+# decision.
+#
+# Why: `docker-compose up -d --build` is mandatory wherever the Dockerfile does
+# `COPY . .`, and on an unpinned service that same command silently
+# re-resolves every dependency. A four-file template deploy to sso.pdhc did
+# exactly that and moved bcrypt 4.x -> 5.0.0 — a major bump that, had its hash
+# format changed, would have presented as "wrong password" platform-wide rather
+# than as a failed deploy.
+#
+# LIMIT, stated: these are the DIRECT dependencies. Transitive ones still
+# float, so a rebuild is reproducible for everything named here and not beyond
+# it. A full `pip freeze` or a constraints file is the next step if that
+# matters.
+#
+# To change a version, change it here deliberately and redeploy — do not
+# loosen a pin to let a rebuild pick something newer.
+# ---------------------------------------------------------------------------
+Flask==3.1.3
+Flask-SQLAlchemy==3.1.1
+Flask-Migrate==4.1.0
+psycopg2-binary==2.9.13
+python-dotenv==1.2.4
+gunicorn==26.2.0
+requests==2.34.2
+pytest==9.1.1
+pytest-flask==1.3.0
+APScheduler==3.11.3
+
+# #785: SQLAlchemy is pinned here EXPLICITLY even though it is a transitive
+# dependency (via Flask-SQLAlchemy). The direct-deps-only limit documented
+# above left it free to move, and SQLAlchemy 2.1 is the release #711 was
+# raised about: it flips the default postgres driver to psycopg v3 and
+# crash-loops on rebuild unless the URL says `+psycopg2`. That mitigation is
+# in place, which is precisely why nobody would notice the version moving
+# until something else depended on it.
+#
+# Pinned at the version this service is ACTUALLY running. The rest of the
+# transitive closure is still loose; this is the one with a known hazard.
+SQLAlchemy==2.1.3
