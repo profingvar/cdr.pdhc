@@ -182,6 +182,19 @@ class ClinicalContext(db.Model):
     requester_user_guid = db.Column(db.String(36), nullable=True)
     received_at = db.Column(db.DateTime(timezone=True), nullable=True)
     source_service = db.Column(db.String(64), nullable=True)
+    # #817: which sim.pdhc generation run produced this row.
+    #
+    # `source_service` already says sim.pdhc WROTE it. This says WHICH RUN —
+    # a different and stronger claim, and the marker that makes a cohort
+    # traceable to one generation and purgeable as a unit, the way cdr_6 has
+    # always been able to. Without it a promoted cohort keeps its writer and
+    # loses its run identity.
+    #
+    # Here rather than on `observation` because this is where the rest of the
+    # provenance lives, and `observation.ingest_raw_guid` joins to it (#769:
+    # that column is THE join to provenance), so "every row from run X" stays
+    # answerable.
+    sim_run_id = db.Column(db.String(64), nullable=True, index=True)
 
     # --- bag-of-fields for unmapped extras + ops -----------------------------
     resolved_context_json = db.Column(db.JSON, nullable=True)

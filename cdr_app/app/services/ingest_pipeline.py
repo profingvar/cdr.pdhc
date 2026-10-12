@@ -22,6 +22,10 @@ _CONTEXT_KEYS = (
     "contract_guid", "requesting_org_guid", "provider_org_guid",
     "requester_user_guid", "author_org_guid", "patient_org_guid",
     "resolved_context_json", "source_service",
+    # #817: which sim run produced the row. sim and cdr_6 emit it at the top
+    # level like the rest; absent from this list it would be dropped from
+    # every flat payload, which is the defect #816 existed to fix.
+    "sim_run_id",
 )
 
 #: Wire aliases still accepted during the #294 deprecation window.
@@ -256,6 +260,9 @@ class IngestPipeline:
                 requester_user_guid=context.get("requester_user_guid"),
                 received_at=raw.received_at,
                 source_service=context.get("source_service") or source_service,
+                # #817: the generation run, so a promoted cohort keeps its
+                # run identity and not only its writer.
+                sim_run_id=context.get("sim_run_id"),
                 resolved_context_json=context.get("resolved_context_json"),
             ))
 

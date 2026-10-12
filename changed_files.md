@@ -150,3 +150,7 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 - 2026-10-12 cdr_app/app/models/__init__.py — ClinicalContext.plan_activity_guid (#816)
 - 2026-10-12 cdr_app/migrations/versions/a5b6c7d8e9f0_clinical_context_plan_activity.py (NEW, APPLIED to cdr1+cdr2+cdr3)
 - 2026-10-12 cdr_app/tests/test_flat_context_ingest.py (NEW)
+- 2026-10-12 cdr_app/app/models/__init__.py — ClinicalContext.sim_run_id (#817)
+- 2026-10-12 cdr_app/app/services/ingest_pipeline.py — sim_run_id in _CONTEXT_KEYS + stored on the insert (#817)
+- 2026-10-12 cdr_app/migrations/versions/b6c7d8e9f0a1_clinical_context_sim_run_id.py (NEW, APPLIED to cdr1+cdr2+cdr3)
+- 2026-10-12 cdr_app/tests/test_flat_context_ingest.py — 5 sim_run_id tests

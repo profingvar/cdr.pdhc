@@ -136,3 +136,48 @@ def test_the_insert_stores_the_visit():
     src = inspect.getsource(ip.IngestPipeline.process)
     assert 'plan_activity_guid=context.get("plan_activity_guid")' in src, (
         "the ClinicalContext insert does not store the visit")
+
+
+# ---------------------------------------------------------------------------
+# #817 — which RUN, not just which writer
+# ---------------------------------------------------------------------------
+
+def test_sim_run_id_is_extracted_from_a_flat_payload():
+    """`source_service` says sim.pdhc wrote the row; `sim_run_id` says which
+    generation produced it. A promoted cohort kept the writer and lost the
+    run, so "these 300 rows came from that run" was unanswerable."""
+    ctx = _clinical_context_from(dict(FLAT, sim_run_id="sim-20261012T0558Z-5"))
+    assert ctx["sim_run_id"] == "sim-20261012T0558Z-5"
+
+
+def test_sim_run_id_is_in_the_canonical_key_list():
+    """Absent from `_CONTEXT_KEYS` it is silently dropped from every flat
+    payload — the exact defect #816 existed to fix."""
+    assert "sim_run_id" in _CONTEXT_KEYS
+
+
+def test_the_insert_stores_the_run_id():
+    import inspect
+    from app.services import ingest_pipeline as ip
+    src = inspect.getsource(ip.IngestPipeline.process)
+    assert 'sim_run_id=context.get("sim_run_id")' in src, (
+        "the ClinicalContext insert does not store the run id")
+
+
+def test_the_model_holds_a_run_id_that_is_NOT_a_guid():
+    """A sim run id is `sim-<ISO>-<8 hex>` (29 chars today) and synthea's is
+    longer. String(36) would fit but leave no headroom; this must not be
+    sized as though it were a GUID."""
+    from app.models import ClinicalContext
+    col = ClinicalContext.__table__.c["sim_run_id"]
+    assert col.type.length >= 64, (
+        f"sim_run_id is String({col.type.length}); run ids are not GUIDs")
+    assert col.nullable, "rows that predate this cannot be attributed to a run"
+
+
+def test_a_payload_with_only_a_run_id_still_yields_a_context():
+    """sim stamps the run id on every row even when nothing else is set, so a
+    bare run id must not be discarded."""
+    ctx = _clinical_context_from({"patient_guid": "p", "value": "1",
+                                  "sim_run_id": "sim-x"})
+    assert ctx is not None and ctx["sim_run_id"] == "sim-x"

@@ -1432,3 +1432,70 @@ dispatched (nothing has ever left `pending`, and the 60s APScheduler logs no
 start line), but they were synthetic rows aimed at an external system. Audit
 rows (`audit_log`, `cdr_read_audit`) deliberately kept: they record that the
 ingests happened, which is true.
+
+---
+
+## 2026-10-12 — #817: which RUN, not just which writer
+
+Operator: "add sim_run_id to cdr1 2 and 3".
+
+`source_service = sim.pdhc` says who **wrote** a row. `sim_run_id` says which
+**generation** produced it — a different and stronger claim, and the one that
+makes a cohort traceable and purgeable as a unit, which is what cdr_6 has
+always been able to do (`DELETE /api/v1/runs/<id>`). A cohort promoted out of
+cdr_6 kept its writer and lost its run identity, so "these 300 rows came from
+that run" had no answer short of matching effective dates and hoping.
+
+### Two deliberate choices
+
+**On `clinical_context`, not `observation`.** That is where the rest of a row's
+provenance lives, and `observation.ingest_raw_guid` joins to it — #769 records
+that column as THE join to provenance. Putting it on both would be two places
+to keep in step. The query that matters stays one join:
+
+```sql
+select cc.sim_run_id, count(o.guid)
+from clinical_context cc join observation o on o.ingest_raw_guid = cc.ingest_raw_guid
+group by cc.sim_run_id;
+```
+
+**`String(64)`, not `String(36)`.** A run id is not a GUID:
+`sim-20261012T060311Z-00000331` is 29 characters and
+`synthea-20260603T141456Z-fd45c6` is another live shape. 36 would fit today
+with no headroom, and sizing it like a GUID invites someone to "tidy" it.
+A test asserts the width.
+
+Nullable with no backfill: a row written before this cannot be attributed to a
+run, and inferring one from timestamps would invent provenance. NULL means
+"not recorded" — and for anything gateway wrote, "not from sim", which is the
+honest answer.
+
+### Verified against all four
+
+```
+  cdr_6 -> cdr1   accepted=20 rejected=0 verified=True
+  cdr_6 -> cdr2   accepted=20 rejected=0 verified=True
+  cdr_6 -> cdr3   accepted=20 rejected=0 verified=True
+
+  clinical_context in each:
+    20 rows, sim_run_id=20, distinct=1, visit=20, contract=20
+
+  the join, on cdr1:
+    sim-20261012T060311Z-00000331  ->  20 observations, 2 patients
+```
+
+A promoted cohort now carries three levels of identity: the writer
+(`source_service`), the generation (`sim_run_id`), and the authority
+(`contract_guid` + `plan_activity_guid`).
+
+### Deploy
+
+Same shape as #816. `ingest_pipeline.py` was byte-identical across all three
+and matched local HEAD, so it was copied; `models/__init__.py` diverges on
+cdr2/cdr3 so it was patched **in place by anchor**. The anchor is the
+`received_at` + `source_service` PAIR — the `source_service` line alone
+appears six times in that module, and the patcher refuses rather than guessing
+when an anchor is not unique. Both files `py_compile`d before any restart; all
+three migrated to `b6c7d8e9f0a1`.
+
+259 tests pass. Test data purged from all four; no unhealthy container.
