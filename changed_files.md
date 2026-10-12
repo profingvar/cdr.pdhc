@@ -146,3 +146,7 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 - cdr_app/.env.example
 - cdr_app/tests/test_analysis_consent.py
 - cdr_app/deploy/smoke_siblings.py
+- 2026-10-12 cdr_app/app/services/ingest_pipeline.py — _clinical_context_from: accept the FLAT canonical shape, not only a nested block (#816); store plan_activity_guid
+- 2026-10-12 cdr_app/app/models/__init__.py — ClinicalContext.plan_activity_guid (#816)
+- 2026-10-12 cdr_app/migrations/versions/a5b6c7d8e9f0_clinical_context_plan_activity.py (NEW, APPLIED to cdr1+cdr2+cdr3)
+- 2026-10-12 cdr_app/tests/test_flat_context_ingest.py (NEW)

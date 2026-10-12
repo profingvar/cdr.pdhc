@@ -12,6 +12,66 @@ from .transformer import FhirOpenEhrTransformer
 logger = logging.getLogger(__name__)
 
 
+
+#: The canonical clinical-context fields, as `plans/pdhc_data_shapes.md`
+#: defines them. Named here so the flat and nested payload shapes cannot
+#: drift apart silently.
+_CONTEXT_KEYS = (
+    "service_request_guid", "transaction_guid", "concept_guid",
+    "plan_definition_guid", "plan_activity_guid", "care_plan_guid",
+    "contract_guid", "requesting_org_guid", "provider_org_guid",
+    "requester_user_guid", "author_org_guid", "patient_org_guid",
+    "resolved_context_json", "source_service",
+)
+
+#: Wire aliases still accepted during the #294 deprecation window.
+_CONTEXT_ALIASES = {
+    "plandef_guid": "plan_definition_guid",
+    "careplan_guid": "care_plan_guid",
+    "activity_guid": "transaction_guid",
+    "requester_org_guid": "requesting_org_guid",
+}
+
+
+def _clinical_context_from(body: dict) -> dict | None:
+    """The clinical context, from EITHER payload shape (#816).
+
+    This used to be `body.get("clinical_context")` and nothing else, so a
+    producer that put the canonical fields at the TOP LEVEL got no
+    `ClinicalContext` row at all — silently, because the insert is guarded by
+    `if context:`.
+
+    That is not a hypothetical: cdr_6's own ingest reads these keys at the top
+    level, so a cohort transferred out of cdr_6 into cdr1/cdr2/cdr3 arrived
+    with its contract, plandef, visit and transaction dropped, while the
+    transfer reported `verified: true` (it verifies the row COUNT). Measured
+    2026-10-11: 30 of 30 rows, every context field empty. One canonical
+    context, two payload contracts, and the mismatch cost the annotation.
+
+    Nested wins when present, because an explicit block is a deliberate
+    statement; top-level keys are the fallback. Returns None when neither
+    carries anything, so the `if context:` guard still means "nothing was
+    said about this row".
+    """
+    nested = body.get("clinical_context")
+    if isinstance(nested, dict) and any(nested.get(k) for k in _CONTEXT_KEYS):
+        return nested
+    flat = {}
+    for key in _CONTEXT_KEYS:
+        v = body.get(key)
+        if v not in (None, ""):
+            flat[key] = v
+    for alias, canonical in _CONTEXT_ALIASES.items():
+        v = body.get(alias)
+        if v not in (None, "") and canonical not in flat:
+            flat[canonical] = v
+    if not flat:
+        # Preserve a nested block that exists but is entirely empty, so a
+        # caller that sent one explicitly is not second-guessed.
+        return nested if isinstance(nested, dict) else None
+    return flat
+
+
 class IngestPipeline:
 
     @staticmethod
@@ -56,7 +116,7 @@ class IngestPipeline:
         fhir_resource = body.get("fhir_resource")
         openehr_comp = body.get("openehr_composition")
         canonical = body.get("canonical")
-        context = body.get("clinical_context")
+        context = _clinical_context_from(body)
 
         fhir_row = None
         openehr_row = None
@@ -181,6 +241,8 @@ class IngestPipeline:
                 concept_guid=context.get("concept_guid") or concept_guid,
                 plan_definition_guid=(context.get("plan_definition_guid")
                                       or context.get("plandef_guid")),
+                # #816: the VISIT. See the column's note in models.
+                plan_activity_guid=context.get("plan_activity_guid"),
                 care_plan_guid=(context.get("care_plan_guid")
                                 or context.get("careplan_guid")),
                 contract_guid=context.get("contract_guid"),

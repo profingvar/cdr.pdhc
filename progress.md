@@ -1328,3 +1328,107 @@ as the dashboard #113 incident. Volume removal is operator-only.
 after the #769 flush, so there is nothing to resolve. The check reports
 inconclusive **as a failure** so it cannot be mistaken for proof. It goes green
 when data flows.
+
+---
+
+## 2026-10-12 — #816: the contract and the visit now reach every CDR
+
+Operator: "Since I have chosen the contract it is strange that the contract
+guid is not registered in the CDRs, also plan activity guid should be part of
+all CDRs."
+
+Both right. A contract the operator picks, that then isn't recorded, makes the
+gate decorative.
+
+### I was wrong about the cause yesterday
+
+I reported that "cdr2 has no contract_guid column". That was true of
+`observation` and **wrong about the database**: `contract_guid` and
+`plan_definition_guid` have been in `clinical_context` on **all three** CDRs all
+along. Schemas verified column-by-column — cdr1, cdr2 and cdr3 are identical.
+
+The real cause was one line:
+
+```python
+context = body.get("clinical_context")      # nested block, or nothing
+```
+
+cdr_6 and sim emit the canonical 12-field context at the **TOP LEVEL** — that
+is what cdr_6's own ingest reads. So for every flat producer `context` was
+`None`, and the `ClinicalContext` insert, guarded by `if context:`, was skipped
+**silently**. One canonical context, two payload contracts.
+
+`plan_activity_guid` was the genuinely missing piece, and missing from all
+three, exactly as the operator said.
+
+### The fix
+
+`_clinical_context_from(body)` accepts either shape — nested wins when present
+(an explicit block is a deliberate statement), top-level is the fallback,
+`None` only when neither says anything so the `if context:` guard keeps its
+meaning. #294's wire aliases still map (`plandef_guid`, `careplan_guid`,
+`activity_guid` → *transaction*, never the visit).
+
+`ClinicalContext.plan_activity_guid` + migration `a5b6c7d8e9f0`, applied to
+cdr1, cdr2 and cdr3 (all were at `a7b8c9d0e1f2`, its parent).
+
+### Two defects that were hiding each other
+
+Deploying to cdr3 made every flat ingest **500**:
+
+```
+TypeError: 'author_org_guid' is an invalid keyword argument for ClinicalContext
+```
+
+cdr2/cdr3 never received #665, so their model does not declare
+`author_org_guid` — **though the column exists in their databases**. It had
+never mattered, because `context` was always `None` and the insert never ran.
+Fixing the extraction turned a latent incompatibility into an outage. Patched
+in place (model-only; the column was already there).
+
+### Deployed, per-CDR
+
+`ingest_pipeline.py` was **byte-identical** across all three and matched local
+HEAD, so a file copy was safe everywhere. `models/__init__.py` diverges
+(cdr2/cdr3 lack #665), so there it was **patched in place** by anchor, never
+overwritten — `infra_cdr_prod_behind_local_git`. Both files `py_compile`d
+before any restart.
+
+### Verified against the real services
+
+```
+  transfer 20 rows cdr_6 -> cdr3   accepted=20 rejected=0 verified=True
+  transfer 20 rows cdr_6 -> cdr2   accepted=20 rejected=0 verified=True
+
+  clinical_context after:
+    cdr2   20 rows: contract=20 visit=20 plandef=20 txn=20
+    cdr3   20 rows: contract=20 visit=20 plandef=20 txn=20
+```
+
+cdr1 cannot be transferred to — it has no `SIM_PDHC_SERVICE_KEY` — so its path
+was exercised in-container instead: `_clinical_context_from` on a flat payload
+plus the `ClinicalContext(...)` construction, both fine, contract and visit
+preserved.
+
+Gateway (which writes to cdr1 live) stayed healthy; no unhealthy container on
+the box.
+
+### A test that failed to fail
+
+My first tests imported `_clinical_context_from` directly, so reverting the
+**call site** left all eight green — the exact bug they were written for.
+`test_THE_PIPELINE_ACTUALLY_CALLS_THE_EXTRACTOR` asserts the call site, and
+goes red when it is reverted. Also: my migration first chained onto
+`f4a5b6c7d8e9` and forked the graph; the real head was `a7b8c9d0e1f2`, caught
+by the repo's own one-head test.
+
+254 tests pass.
+
+### Cleaned up
+
+Test data purged from cdr_6, cdr2 and cdr3. Including **140 pending
+`cambio_delivery_log` rows** my transfers queued for outbound delivery — never
+dispatched (nothing has ever left `pending`, and the 60s APScheduler logs no
+start line), but they were synthetic rows aimed at an external system. Audit
+rows (`audit_log`, `cdr_read_audit`) deliberately kept: they record that the
+ingests happened, which is true.

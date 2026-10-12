@@ -154,6 +154,19 @@ class ClinicalContext(db.Model):
     transaction_guid = db.Column(db.String(36), nullable=True)
     concept_guid = db.Column(db.String(36), nullable=True, index=True)
     plan_definition_guid = db.Column(db.String(36), nullable=True)
+    # The PlanDefinition ACTION — the VISIT (#816).
+    #
+    # PDHC's plan model is PlanDefinition -> Activity -> Transaction: the
+    # Activity is FHIR `PlanDefinition.action` and carries the title,
+    # performer_type and timing, so it is the visit; the Transaction is one
+    # measurement within it. This row already referenced the first and the
+    # third, so "which visit produced this reading" had no answer here either.
+    #
+    # Named `plan_activity_guid`, never `activity_guid`: cdr_6 has a column of
+    # that name which is the deprecated #305 alias of `transaction_guid`, and
+    # its ingest maps that key ONTO transaction_guid. Reusing the name would
+    # replace a transaction reference with a visit one, both opaque String(36).
+    plan_activity_guid = db.Column(db.String(36), nullable=True, index=True)
     care_plan_guid = db.Column(db.String(36), nullable=True)
     contract_guid = db.Column(db.String(36), nullable=True)
     requesting_org_guid = db.Column(db.String(36), nullable=True)
