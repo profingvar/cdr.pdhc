@@ -492,12 +492,39 @@ def build_live_observation_row(fhir_resource, *, patient_guid, source_service,
                           or ctx.get("activity_guid")),
         care_plan_guid=(ctx.get("care_plan_guid")
                         or ctx.get("careplan_guid")),
-        # patient_org_guid is NOT read from the producer: it is the patient's
-        # ips affiliation, which only ips can answer (#768). Writing whatever a
-        # producer called "the organisation" here is exactly the conflation
-        # #768 documents — org_guid already holds the performer and
-        # requesting_org_guid the requester. Left NULL until #774 resolves it
-        # from ips at request time.
+        # The organisation the PATIENT was affiliated with in ips at request
+        # time (#768) — NOT the performer (that is org_guid) and NOT the
+        # requester (requesting_org_guid). Three different organisations.
+        #
+        # #809: this is read from the SR context, and the old comment that
+        # refused it has been removed rather than edited, because its stated
+        # reason expired. It said "Left NULL until #774 resolves it from ips at
+        # request time" — #774 COMPLETED (39a58f1) and nothing replaced this
+        # line, so the column was NULL on every row in cdr1/cdr2/cdr3.
+        #
+        # The worry the old comment encoded was right but aimed at a different
+        # case. It refused a PRODUCER-ASSERTED organisation, and that refusal
+        # still stands: writing whatever a producer called "the organisation"
+        # here is exactly the conflation #768 documents. The value arriving
+        # here is not that. request.pdhc resolves it from ips and SNAPSHOTS it
+        # onto the service_request at creation; gateway forwards that SR
+        # payload verbatim (`dict(self._data)`, which is why gateway has no
+        # textual hit for the field). And every route that reaches this
+        # function is @require_service_key — so the only callers are
+        # gateway.pdhc and sim.pdhc, never an arbitrary producer.
+        #
+        # Deliberately NOT inferred from anything else when the context omits
+        # it. The column fills FORWARD ONLY: ips's patient_clinic_assignments
+        # has `assigned_at` and no end timestamp, so asking ips later returns
+        # TODAY's answer for an old request. NULL correctly means "nobody
+        # recorded it", and that is why `flask backfill-live-observations`
+        # passes no context and still writes NULL — a historical row whose
+        # affiliation was never captured must stay unscopable rather than
+        # acquire a plausible guess.
+        #
+        # The generic FHIR write path (services/resource_writer.py) still
+        # leaves this NULL on purpose; see the #809 response on the board.
+        patient_org_guid=ctx.get("patient_org_guid"),
         code_canonical=code_canonical,
         effective_at=effective_at,
         raw_json=fhir_resource,

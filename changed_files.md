@@ -154,3 +154,5 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 - 2026-10-12 cdr_app/app/services/ingest_pipeline.py — sim_run_id in _CONTEXT_KEYS + stored on the insert (#817)
 - 2026-10-12 cdr_app/migrations/versions/b6c7d8e9f0a1_clinical_context_sim_run_id.py (NEW, APPLIED to cdr1+cdr2+cdr3)
 - 2026-10-12 cdr_app/tests/test_flat_context_ingest.py — 5 sim_run_id tests
+- 2026-10-13 cdr_app/app/services/ingest_pipeline.py — #809: build_live_observation_row stores patient_org_guid from the SR context; stale #774 comment replaced
+- 2026-10-13 cdr_app/tests/test_datapoint_context.py — #809: superseded test_ingest_does_NOT_write_patient_org_guid_from_the_producer replaced by 3 cases (stores-from-context, absent-stays-NULL, backfill-does-not-invent)
