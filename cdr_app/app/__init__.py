@@ -39,6 +39,33 @@ def create_app(config_override=None):
     app.config["SSO_CLIENT_SECRET"] = os.environ.get("SSO_CLIENT_SECRET", "")
     app.config["SSO_CALLBACK_URL"] = os.environ.get("SSO_CALLBACK_URL", "")
 
+    # ---- #816: session cookie hardening ------------------------------
+    # This cookie carries the SSO token and the access blob, on a service
+    # that holds clinical data. nginx terminates TLS and proxies plain HTTP
+    # to gunicorn, so Flask sees an http request and cannot infer Secure; it
+    # has to be set deliberately. The vhost's `return 301 https://` does not
+    # close the gap — a browser holding a non-Secure cookie attaches it to
+    # the cleartext request and only THEN gets the redirect. HSTS prevents
+    # that first request and is absent from cdr.pdhc.se.conf (operator-only,
+    # #816 Part B).
+    #
+    # This file is the codebase of cdr1, cdr2 AND cdr3, so one edit covers
+    # all three.
+    #
+    # SESSION_COOKIE_SECURE in the environment overrides it, for debugging a
+    # logged-in page on 127.0.0.1:9046 through an ssh forward, which is plain
+    # HTTP. An EMPTY value counts as unset, not false.
+    _cookie_secure = os.environ.get("SESSION_COOKIE_SECURE", "").strip()
+    app.config["SESSION_COOKIE_SECURE"] = (
+        _cookie_secure.lower() in ("1", "true", "yes") if _cookie_secure
+        else app.config["AUTH_MODE"] != "off")
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    # 'Lax', NOT 'Strict', and load-bearing: SSO login finishes with a
+    # top-level GET redirect from sso.pdhc.se back to SSO_CALLBACK_URL
+    # above. Lax sends the cookie on a top-level navigation; Strict
+    # withholds it and breaks login with no error anyone can read.
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
     # Service keys for inbound from gateways
     app.config["GATEWAY_PDHC_SERVICE_KEY"] = os.environ.get("GATEWAY_PDHC_SERVICE_KEY", "")
     # TWOGATE_PDHC_SERVICE_KEY was read here until #732 removed the 2gate.pdhc
