@@ -1,4 +1,4 @@
-"""#817: which sim generation run produced a row, on cdr1/cdr2/cdr3.
+"""#821: which sim generation run produced a row, on cdr1/cdr2/cdr3.
 
 `source_service` already records that `sim.pdhc` WROTE a row. This records
 WHICH RUN, which is a different and stronger claim:

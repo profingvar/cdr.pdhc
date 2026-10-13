@@ -154,7 +154,7 @@ class ClinicalContext(db.Model):
     transaction_guid = db.Column(db.String(36), nullable=True)
     concept_guid = db.Column(db.String(36), nullable=True, index=True)
     plan_definition_guid = db.Column(db.String(36), nullable=True)
-    # The PlanDefinition ACTION — the VISIT (#816).
+    # The PlanDefinition ACTION — the VISIT (#820).
     #
     # PDHC's plan model is PlanDefinition -> Activity -> Transaction: the
     # Activity is FHIR `PlanDefinition.action` and carries the title,
@@ -182,7 +182,7 @@ class ClinicalContext(db.Model):
     requester_user_guid = db.Column(db.String(36), nullable=True)
     received_at = db.Column(db.DateTime(timezone=True), nullable=True)
     source_service = db.Column(db.String(64), nullable=True)
-    # #817: which sim.pdhc generation run produced this row.
+    # #821: which sim.pdhc generation run produced this row.
     #
     # `source_service` already says sim.pdhc WROTE it. This says WHICH RUN —
     # a different and stronger claim, and the marker that makes a cohort

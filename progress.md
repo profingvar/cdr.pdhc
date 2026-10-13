@@ -1331,7 +1331,7 @@ when data flows.
 
 ---
 
-## 2026-10-12 — #816: the contract and the visit now reach every CDR
+## 2026-10-12 — #820: the contract and the visit now reach every CDR
 
 Operator: "Since I have chosen the contract it is strange that the contract
 guid is not registered in the CDRs, also plan activity guid should be part of
@@ -1435,7 +1435,7 @@ ingests happened, which is true.
 
 ---
 
-## 2026-10-12 — #817: which RUN, not just which writer
+## 2026-10-12 — #821: which RUN, not just which writer
 
 Operator: "add sim_run_id to cdr1 2 and 3".
 
@@ -1490,7 +1490,7 @@ A promoted cohort now carries three levels of identity: the writer
 
 ### Deploy
 
-Same shape as #816. `ingest_pipeline.py` was byte-identical across all three
+Same shape as #820. `ingest_pipeline.py` was byte-identical across all three
 and matched local HEAD, so it was copied; `models/__init__.py` diverges on
 cdr2/cdr3 so it was patched **in place by anchor**. The anchor is the
 `received_at` + `source_service` PAIR — the `source_service` line alone

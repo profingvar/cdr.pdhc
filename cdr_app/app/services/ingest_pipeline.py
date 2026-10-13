@@ -22,9 +22,9 @@ _CONTEXT_KEYS = (
     "contract_guid", "requesting_org_guid", "provider_org_guid",
     "requester_user_guid", "author_org_guid", "patient_org_guid",
     "resolved_context_json", "source_service",
-    # #817: which sim run produced the row. sim and cdr_6 emit it at the top
+    # #821: which sim run produced the row. sim and cdr_6 emit it at the top
     # level like the rest; absent from this list it would be dropped from
-    # every flat payload, which is the defect #816 existed to fix.
+    # every flat payload, which is the defect #820 existed to fix.
     "sim_run_id",
 )
 
@@ -38,7 +38,7 @@ _CONTEXT_ALIASES = {
 
 
 def _clinical_context_from(body: dict) -> dict | None:
-    """The clinical context, from EITHER payload shape (#816).
+    """The clinical context, from EITHER payload shape (#820).
 
     This used to be `body.get("clinical_context")` and nothing else, so a
     producer that put the canonical fields at the TOP LEVEL got no
@@ -245,7 +245,7 @@ class IngestPipeline:
                 concept_guid=context.get("concept_guid") or concept_guid,
                 plan_definition_guid=(context.get("plan_definition_guid")
                                       or context.get("plandef_guid")),
-                # #816: the VISIT. See the column's note in models.
+                # #820: the VISIT. See the column's note in models.
                 plan_activity_guid=context.get("plan_activity_guid"),
                 care_plan_guid=(context.get("care_plan_guid")
                                 or context.get("careplan_guid")),
@@ -260,7 +260,7 @@ class IngestPipeline:
                 requester_user_guid=context.get("requester_user_guid"),
                 received_at=raw.received_at,
                 source_service=context.get("source_service") or source_service,
-                # #817: the generation run, so a promoted cohort keeps its
+                # #821: the generation run, so a promoted cohort keeps its
                 # run identity and not only its writer.
                 sim_run_id=context.get("sim_run_id"),
                 resolved_context_json=context.get("resolved_context_json"),

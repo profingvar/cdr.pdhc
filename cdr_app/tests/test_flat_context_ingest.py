@@ -1,4 +1,4 @@
-"""#816 — the flat payload shape, and the visit.
+"""#820 — the flat payload shape, and the visit.
 
 Two faults, one symptom. A cohort transferred out of cdr_6 into cdr1/2/3
 arrived with its contract, plandef, visit and transaction **all missing**,
@@ -139,7 +139,7 @@ def test_the_insert_stores_the_visit():
 
 
 # ---------------------------------------------------------------------------
-# #817 — which RUN, not just which writer
+# #821 — which RUN, not just which writer
 # ---------------------------------------------------------------------------
 
 def test_sim_run_id_is_extracted_from_a_flat_payload():
@@ -152,7 +152,7 @@ def test_sim_run_id_is_extracted_from_a_flat_payload():
 
 def test_sim_run_id_is_in_the_canonical_key_list():
     """Absent from `_CONTEXT_KEYS` it is silently dropped from every flat
-    payload — the exact defect #816 existed to fix."""
+    payload — the exact defect #820 existed to fix."""
     assert "sim_run_id" in _CONTEXT_KEYS
 
 
