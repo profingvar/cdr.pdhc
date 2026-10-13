@@ -157,3 +157,5 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 - 2026-10-13 cdr_app/app/services/ingest_pipeline.py — #809: build_live_observation_row stores patient_org_guid from the SR context; stale #774 comment replaced
 - 2026-10-13 cdr_app/tests/test_datapoint_context.py — #809: superseded test_ingest_does_NOT_write_patient_org_guid_from_the_producer replaced by 3 cases (stores-from-context, absent-stays-NULL, backfill-does-not-invent)
 - 2026-10-13 cdr_app/app/__init__.py — #816: SESSION_COOKIE_SECURE/HTTPONLY/SAMESITE
+- 2026-10-13 cdr_app/app/services/ingest_pipeline.py — #787.2: _primary_canonical_uri prefers urn:pdhc:concept explicitly (two passes); legacy plan.pdhc URL still accepted
+- 2026-10-13 cdr_app/tests/test_concept_canonical_spelling.py (NEW)

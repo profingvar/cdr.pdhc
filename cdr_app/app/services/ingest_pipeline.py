@@ -418,16 +418,55 @@ _CANONICAL_CODE_SYSTEMS = (
 )
 
 
+#: The PDHC concept system, in its CANONICAL spelling (#787).
+_CONCEPT_SYSTEM_CANONICAL = "urn:pdhc:concept"
+#: The same identifier, spelled as a plan.pdhc URL. **Legacy, read-only.**
+#: gateway dual-emits both (`fhir_observation_builder.py`, the #294 alias
+#: window), so this cannot be dropped from the accepted set yet — but it must
+#: never be what gets WRITTEN when the canonical spelling is also present.
+_CONCEPT_SYSTEM_LEGACY = "https://plan.pdhc.se/api/v1/concepts"
+
+
 def _primary_canonical_uri(fhir_resource):
-    """Return `<system>/<code>` for the first canonical-system coding, else None.
+    """Return `<system>/<code>` for the preferred canonical coding, else None.
 
     Mirrors the shape resource_writer._primary_code_canonical produces so
     cdr_app/app/api/fhir_read.py:_filter_by_code can equality-match it.
+
+    #787: the choice between the two PDHC spellings is now EXPLICIT, in two
+    passes, instead of falling out of the producer's array order.
+
+    It used to return the first coding whose system was in
+    `_CANONICAL_CODE_SYSTEMS` — a membership test, so the tuple's order meant
+    nothing and the winner was whichever coding the producer happened to put
+    first. gateway puts `urn:pdhc:concept` before
+    `https://plan.pdhc.se/api/v1/concepts`, so in practice the urn won and all
+    40,941 rows measured on cdr1/2/3 on 2026-10-13 carry it (100%, zero of the
+    other form).
+
+    That was luck, not a decision, and the failure mode is quiet: reorder
+    gateway's two codings and cdr starts writing the other spelling for the
+    same concept. `fhir_read._filter_by_code` EQUALITY-matches this column, so
+    every row written before the reorder would stop matching queries built
+    after it. Same concept, two strings, no error.
+
+    LOINC is deliberately left on the old footing. It is a real external code
+    system rather than a second spelling of ours, so which of LOINC-vs-PDHC
+    wins still follows the producer's array order, exactly as before — this
+    change settles only the one-identifier-two-serialisations question #787
+    asked about, and does not quietly re-rank anything else.
     """
-    for coding in ((fhir_resource.get("code") or {}).get("coding") or []):
+    codings = (fhir_resource.get("code") or {}).get("coding") or []
+    # Pass 1: anything but the legacy alias, in producer order.
+    for coding in codings:
         sys = coding.get("system")
-        if sys in _CANONICAL_CODE_SYSTEMS and coding.get("code"):
+        if (sys in _CANONICAL_CODE_SYSTEMS
+                and sys != _CONCEPT_SYSTEM_LEGACY and coding.get("code")):
             return f"{sys.rstrip('/')}/{coding['code']}"
+    # Pass 2: the legacy spelling, only when nothing canonical was offered.
+    for coding in codings:
+        if coding.get("system") == _CONCEPT_SYSTEM_LEGACY and coding.get("code"):
+            return f"{_CONCEPT_SYSTEM_LEGACY.rstrip('/')}/{coding['code']}"
     return None
 
 
