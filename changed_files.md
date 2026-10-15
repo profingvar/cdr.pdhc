@@ -159,3 +159,5 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 - 2026-10-13 cdr_app/app/__init__.py — #816: SESSION_COOKIE_SECURE/HTTPONLY/SAMESITE
 - 2026-10-13 cdr_app/app/services/ingest_pipeline.py — #787.2: _primary_canonical_uri prefers urn:pdhc:concept explicitly (two passes); legacy plan.pdhc URL still accepted
 - 2026-10-13 cdr_app/tests/test_concept_canonical_spelling.py (NEW)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_read.py (#831 cap)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_fhir_read.py (#831 cap)

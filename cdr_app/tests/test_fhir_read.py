@@ -620,8 +620,59 @@ def test_an_oversized_allowlist_is_refused_with_a_reason(client, fake_canon):
     """A URL cannot carry an unbounded cohort. Refused with a number to
     batch by, rather than silently truncated — a truncated allow-list would
     quietly analyse fewer patients than the node asked about."""
-    many = ",".join(f"guid-{i}" for i in range(501))
+    from app.api.fhir_read import MAX_PATIENT_ALLOWLIST
+    many = ",".join(f"guid-{i}" for i in range(MAX_PATIENT_ALLOWLIST + 1))
     r = client.get(f"/api/v1/fhir/Observation?patient={many}",
                    headers=ORG_HEADERS)
     assert r.status_code == 400
-    assert "batch" in r.get_json()["issue"][0]["details"]["text"]
+    text = r.get_json()["issue"][0]["details"]["text"]
+    assert "batch" in text
+    # The number must be the real one, or a caller batches by a figure that
+    # does not work. This previously said 500, which was unreachable (#831).
+    assert str(MAX_PATIENT_ALLOWLIST) in text
+
+
+def test_exactly_the_cap_is_ACCEPTED(client, fake_canon):
+    """The boundary, because a node batches at exactly this number. An
+    off-by-one here 400s every cohort read at the documented size."""
+    from app.api.fhir_read import MAX_PATIENT_ALLOWLIST
+    _seed_patients(client)
+    guids = [PATIENT_GUID] + [f"guid-{i}" for i in range(MAX_PATIENT_ALLOWLIST - 1)]
+    r = client.get("/api/v1/fhir/Observation?patient=" + ",".join(guids),
+                   headers=ORG_HEADERS)
+    assert r.status_code == 200
+    assert r.get_json()["total"] == 1       # only the seeded one exists
+
+
+def test_the_cap_FITS_in_gunicorns_request_line(client, fake_canon):
+    """#831 — the cap has to be reachable, and until 2026-10-15 it was not.
+
+    `MAX_PATIENT_ALLOWLIST` was 500 on the reasoning that a guid plus its
+    separator is 37 bytes and a few hundred fit inside "the usual ~8 KB
+    request line". 8 KB is nginx's `large_client_header_buffers` default.
+    Gunicorn answers first, and its `limit_request_line` default is **4094**.
+    Bisected against production cdr1: n=105 -> 200, n=110 -> 400 "Request
+    Line is too large", from gunicorn, before Flask sees the request.
+
+    So the refusal above was dead code and a caller past the limit got an
+    HTML error naming neither the parameter nor the cap.
+
+    **No request-level test could have caught it**: Flask's test client has no
+    request-line limit at all, so the oversized-allowlist test passed on a cap
+    that could never be used. This asserts the BYTE LENGTH instead, which is
+    the thing that actually breaks, and leaves room for the other search
+    parameters that share the same line.
+    """
+    from app.api.fhir_read import MAX_PATIENT_ALLOWLIST
+    GUNICORN_LIMIT_REQUEST_LINE = 4094      # gunicorn's default, unset on every CDR
+    guid_len = 36 + 1                       # uuid + separator
+    line = (len("GET /api/v1/fhir/Observation?patient= HTTP/1.1")
+            + MAX_PATIENT_ALLOWLIST * guid_len
+            + len("&_count=30000&code=urn:pdhc:concept|")
+            + 36                            # a concept guid
+            + len("&value-quantity=ge999&date=ge2026-01-01&date=le2026-12-31"))
+    assert line < GUNICORN_LIMIT_REQUEST_LINE, (
+        f"a full allow-list request is {line} bytes, over gunicorn's "
+        f"{GUNICORN_LIMIT_REQUEST_LINE} limit: the cap of "
+        f"{MAX_PATIENT_ALLOWLIST} cannot be used, and the 400 above is dead "
+        f"code (#831)")

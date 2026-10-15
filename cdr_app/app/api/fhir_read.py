@@ -444,10 +444,35 @@ def _apply_date_filter(q, Live, date_arg: str):
 
 
 
-#: A URL cannot carry an unbounded allow-list. A guid plus its separator is
-#: 37 bytes, so a few hundred fit comfortably inside the usual ~8 KB request
-#: line. A caller with a larger cohort batches; the node is expected to.
-MAX_PATIENT_ALLOWLIST = 500
+#: A URL cannot carry an unbounded allow-list.
+#:
+#: Was 500 on the reasoning that a guid plus its separator is 37 bytes and "a
+#: few hundred fit comfortably inside the usual ~8 KB request line". The 8 KB
+#: figure was the wrong limit: it is nginx's `large_client_header_buffers`
+#: default, and gunicorn — which answers first, being the server this app
+#: actually runs under — defaults `limit_request_line` to **4094**.
+#:
+#: So 500 was unreachable, and the 400 below was dead code: a caller past the
+#: limit got gunicorn's HTML "Request Line is too large", which names neither
+#: the parameter nor the cap. Bisected against cdr1, 2026-10-15 (#831):
+#:
+#:     n=105  ->  200
+#:     n=110  ->  400  "Request Line is too large"   (gunicorn, before Flask)
+#:
+#: 100 instead, so a request WITHIN the documented cap always works and the
+#: message below is reachable. It is deliberately not 105: the measured edge
+#: is where the patient list alone sits, and `code`, `date` and
+#: `value-quantity` share that same request line.
+#:
+#: Raising this means raising `--limit-request-line` on every CDR and on the
+#: reverse proxy too — see #831, which also records the alternative worth
+#: preferring if cohorts ever outgrow a few hundred: FHIR's
+#: `POST /Observation/_search` with form-encoded parameters, which removes the
+#: ceiling rather than negotiating with it.
+#:
+#: A caller with a larger cohort batches; the node is expected to, and
+#: `analyse.pdhc`'s `PATIENTS_PER_REQUEST` is 100 for this reason.
+MAX_PATIENT_ALLOWLIST = 100
 
 
 def _requested_patients() -> list[str]:
