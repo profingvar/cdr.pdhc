@@ -1499,3 +1499,75 @@ when an anchor is not unique. Both files `py_compile`d before any restart; all
 three migrated to `b6c7d8e9f0a1`.
 
 259 tests pass. Test data purged from all four; no unhealthy container.
+
+---
+
+## #826 — #701's patient allowlist DEPLOYED to all four CDRs (2026-10-15)
+
+`fhir_read._requested_patients` had been in this tree since #701 and deployed
+nowhere. The deployed `search()` matched the whole comma string as one guid, so
+`patient=<a>,<b>` queried `patient_guid = "<a>,<b>"` and returned **200 with an
+empty Bundle** — no error, no hint. An empty answer from a federation member is
+indistinguishable from "this CDR holds none of your cohort", which is why the
+first #823 fix read zero rows from every production CDR and looked plausible
+doing it.
+
+### What made the deploy safe, measured rather than assumed
+`infra_cdr_prod_behind_local_git` warns never to file-overwrite deployed cdr2-5
+source, because cdr2/cdr3 lack `app/api/clinical_read.py` and carry a 28-line
+`stats.py` against this tree's 295. That warning does not apply to **this**
+file: `app/api/fhir_read.py` was **byte-identical on cdr1, cdr2 and cdr3**
+(`451bd1c3650bac63`, 27743 bytes, 713 lines), and the local-vs-deployed diff
+was exactly two hunks, both purely #701, with `_SearchParamError` and
+`_operation_outcome` already present. So the patched result equals this tree's
+file byte-for-byte.
+
+It was still applied as two asserted hunks rather than a copy: the patch script
+refuses unless the target hashes to the value it was built against, re-checks
+the result hash, and compiles to a temp file before writing, so a SyntaxError
+cannot reach a running service even momentarily. Per CDR: backup, patch, pin,
+rebuild, health, auto-rollback on any failure.
+
+### cdr2/cdr3 were UNPINNED, and a --build is a dependency upgrade
+0 of 10 pinned, against cdr1's 11 of 11. Both were frozen to cdr1's pinned set
+first — which matched their installed versions exactly, so zero runtime change
+(#785). After the rebuild one transitive package moved: `iniconfig`
+2.3.0 -> 2.3.1, a pytest-only dependency. That is the documented
+direct-deps-only limit behaving as described, not a surprise.
+
+### cdr_6 needed its own patch
+analyse's `CDR_ENDPOINTS` is cdr2, cdr3 **and cdr6**. cdr_6 is a different
+codebase (`federation_api.fhir_observation_search`) and was single-valued.
+Patching three and leaving it would have put the defect on exactly one member
+of the federation — worse than all three, because the pooled figure would still
+look reasonable with a third of the cohort missing. Done in cdr_6.pdhc
+`024522c` with 12 tests.
+
+### Verified on production by SUBJECTS, never counts
+On cdr1, cdr2 and cdr3: single guid returns only that patient; the comma form
+returns the UNION of both; the repeated parameter likewise; a patient the CDR
+holds but was not asked for is absent; `Patient/<guid>` works inside a list.
+Then the real `NodeReader`, batched, against the live federation: 30 patients in
+ONE request returned 19490 rows / 30 distinct patients from cdr2 and 19509 / 30
+from cdr3, with nothing outside the allowlist.
+
+A count could not have shown any of this: with `_count` at the cap an honoured
+filter and a silently ignored one return the same number of rows. That is how
+the comma defect survived two passes.
+
+### A cap that cannot be reached — #831
+`MAX_PATIENT_ALLOWLIST = 500` is unreachable. All four CDRs run gunicorn at the
+default `limit_request_line = 4094` and a guid plus separator is 37 bytes;
+bisected on cdr1, n=105 answers 200 and n=110 answers 400 "Request Line is too
+large" — from gunicorn, with an HTML body, before Flask sees it. So the app's
+own "batch a larger cohort" message is dead code. Filed as **#831** with three
+options (lower the constant, raise the gunicorn limit, or accept the allowlist
+in a `POST _search` body).
+
+This also nearly fooled the verification: the first cap check asserted
+`status == 400` and reported PASS on gunicorn's refusal. Asserting a status
+without asserting the reason is the same class of mistake as verifying a filter
+by counting rows.
+
+Rollback per CDR: `~/backups/predeploy/<cdr>/fhir_read.py.pre826.<ts>` plus the
+matching `requirements.txt.pre826.<ts>`.
