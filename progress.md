@@ -1571,3 +1571,38 @@ by counting rows.
 
 Rollback per CDR: `~/backups/predeploy/<cdr>/fhir_read.py.pre826.<ts>` plus the
 matching `requirements.txt.pre826.<ts>`.
+
+### #831 — the cap is now reachable (2026-10-15)
+
+`MAX_PATIENT_ALLOWLIST` 500 -> **100** on cdr1, cdr2, cdr3 and cdr_6.
+
+500 was justified by "the usual ~8 KB request line" — that is nginx's
+`large_client_header_buffers` default. Gunicorn answers first and defaults
+`limit_request_line` to **4094**, unset on every CDR. So the cap was
+unreachable and the 400 beside it was dead code.
+
+Verified on all four after the change:
+
+    n=100 (the cap)            -> 200
+    n=100 + code + date + value-quantity -> 200
+    n=101                      -> 400  APP: "at most 100 may be named in one
+                                              request; batch a larger cohort"
+    n=500                      -> 400  gunicorn HTML, no reason given
+
+The last line is expected and now documented rather than surprising: far above
+the server's limit the request never reaches Flask. What changed is that a
+request *within* the documented cap always works, and the first refusal a
+caller meets carries the number to batch by.
+
+**No request-level test could have caught the original**: Flask's test client
+has no request-line limit, so the oversized-allowlist test passed on a cap that
+could never be used. The new tests assert the BYTE LENGTH of a full request —
+3875 bytes at 100 against 18675 at 500 — because the constant is only a proxy
+for the thing that breaks.
+
+Also generalised the patch tool while doing this: its `_requested_patients`
+tripwire was hardcoded from #826, where finding that string with a mismatched
+hash meant the file had been patched by something else. For #831 the string is
+legitimately present, so the tripwire is now named by the hunks file and the
+second hunk is optional. The guard refusing to write on the first attempt was
+the tool working, not failing.
