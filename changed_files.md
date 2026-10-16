@@ -161,3 +161,4 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 - 2026-10-13 cdr_app/tests/test_concept_canonical_spelling.py (NEW)
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_read.py (#831 cap)
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_fhir_read.py (#831 cap)
+/Users/martiningvar/T7_sidewinder/cdr.pdhc/deploy/smoke_siblings.py  (#708/#830: sibling smoke for cdr1/cdr2/cdr3)
