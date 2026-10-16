@@ -29,6 +29,19 @@ sends one: the PATH gets a liveness probe (a GET must be refused, not 404), and
 the CREDENTIAL is tested separately on an ips GET route. Those are two different
 questions and a single check could not answer both without writing.
 
+## Why there is an xlate check but no xlate service
+
+xlate.pdhc is declared in CLAUDE.md §3 and is deployed nowhere — no release
+directory, nothing listening on 9016 or 9017. Its own ``.env.example`` sets
+``APP_PORT=9017`` and ``DB_PORT=9016``, so §3's "9016 declared" records the
+database port as the service port; the cdr client's ``:9017`` was right.
+
+The check therefore asserts a REFUSAL, not a connection: a foreign coding must
+come back 422 ``xlate_not_configured`` (terminal) rather than 503 ``transient``
+(retry me). cdr1 left ``XLATE_BASE_URL`` unset and cdr2/cdr3 pointed it at
+``host.docker.internal:9017``; both were unreachable and both 503'd, so this
+was never a URL-form problem (#833).
+
 ## What the sso check CANNOT tell you — measured 2026-10-16
 
 ``/api/auth/me/service`` is ``@require_auth`` decorated, and the decorator runs
@@ -346,6 +359,60 @@ def main(as_json: bool = False) -> int:
                                "filter fails OPEN, which returns every patient")
             finally:
                 current_app.config["IPS_BASE_URL"] = saved
+
+        # ---------------------------------------------------------------- xlate
+        @check("xlate: unconfigured is TERMINAL, not transient (#833)")
+        def _():
+            # xlate.pdhc is not deployed anywhere on the platform: no
+            # release directory, nothing on 9016 or 9017. Until #833 the
+            # client fell back to http://127.0.0.1:9017 and a foreign
+            # coding came back 503 "transient" — so a producer would
+            # retry forever against a service that does not exist.
+            #
+            # Assert the two exceptions BY NAME and assert the status the
+            # canonicaliser derives. No POST: the client refuses before
+            # the socket when unconfigured, so this costs no network.
+            from app.services import xlate_client as xc
+            from app.services.canonicalisation import Canonicaliser
+
+            for name in ("XlateNotConfigured", "XlateUnavailable"):
+                if not hasattr(xc, name):
+                    return False, (f"{name} is gone — the permanent and "
+                                   "transient states have been re-merged, "
+                                   "and an undeployed xlate 503s again")
+            if hasattr(xc, "DEFAULT_BASE_URL"):
+                return False, ("DEFAULT_BASE_URL is back: an unset "
+                               "XLATE_BASE_URL again looks configured")
+
+            unconfigured = xc.XlateClient(base_url=None)
+            if unconfigured.configured:
+                # Something in the environment IS pointing xlate somewhere.
+                return False, (f"XLATE_BASE_URL={unconfigured.base_url} — set, "
+                               "but no xlate service is deployed on this "
+                               "platform, so writes will 503 and be retried")
+
+            class _PlanMustNotBeAsked:
+                def __getattr__(self, _n):
+                    def _boom(*a, **kw):
+                        raise AssertionError("plan consulted before xlate")
+                    return _boom
+
+            result = Canonicaliser(
+                xlate=unconfigured, plan=_PlanMustNotBeAsked()
+            ).canonicalise({
+                "resourceType": "Observation", "status": "final",
+                "subject": {"reference": f"Patient/{NOBODY}"},
+                "code": {"coding": [{"system": "http://loinc.org",
+                                     "code": "4548-4"}]},
+                "effectiveDateTime": "2026-04-01T10:00:00Z",
+            })
+            if result.status == "transient":
+                return False, ("a foreign coding still reports 'transient' "
+                               "-> 503, which invites an endless retry")
+            if result.status != "xlate_not_configured":
+                return False, f"unexpected status {result.status!r}"
+            return True, ("unset -> xlate_not_configured -> 422 terminal "
+                          "(foreign codings refused, not retried)")
 
         # ----------------------------------------------------------------- plan
         @check("plan: the terminology edge is live")

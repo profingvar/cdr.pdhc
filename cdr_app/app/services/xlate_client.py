@@ -12,6 +12,23 @@ xlate.pdhc itself.
 Network errors are NOT cached as misses; a transient blip should not
 lock us into a minute of false ``xlate_miss`` 422s. Known 404s and
 explicit ``result: false`` responses are cached.
+
+**Two failure states, deliberately distinct** (#833). "We could not
+reach xlate" and "there is no xlate to reach" need different answers,
+because only one of them is worth retrying:
+
+  - ``XLATE_BASE_URL`` unset  -> ``XlateNotConfigured``, permanent.
+    The caller must reject terminally (422), because no amount of
+    retrying will conjure the service into existence.
+  - ``XLATE_BASE_URL`` set, call failed -> ``XlateUnavailable``,
+    transient. The caller returns 503 and the producer may retry.
+
+There is deliberately **no default base URL**. A fallback of
+``http://127.0.0.1:9017`` (which this module carried until #833) is
+indistinguishable from a real configuration to every caller, resolves
+inside the app container to the container itself, and so turned "nobody
+wired xlate up" into an endless 503 retry loop. An unset variable must
+read as unset.
 """
 from __future__ import annotations
 
@@ -27,17 +44,44 @@ import requests
 log = logging.getLogger(__name__)
 
 
-DEFAULT_BASE_URL = "http://127.0.0.1:9017"
+# No DEFAULT_BASE_URL on purpose — see the module docstring (#833).
 DEFAULT_TIMEOUT_SECONDS = 5.0
 DEFAULT_CACHE_TTL_SECONDS = 60.0
 
 
 class XlateUnreachable(Exception):
-    """xlate.pdhc could not be reached on this attempt.
+    """Base: xlate.pdhc did not answer, so no mapping decision was made.
 
-    Raised explicitly so the writer can return a ``transient_error`` /
-    503 to the caller rather than mis-attributing the failure to a
-    missing mapping.
+    Raised explicitly so the writer never mis-attributes a reachability
+    failure to a missing mapping. **Never raised directly** — catch one
+    of the two subclasses below, which differ in whether a retry can
+    ever succeed. Kept as the base class so an older
+    ``except XlateUnreachable`` still catches both.
+    """
+
+
+class XlateNotConfigured(XlateUnreachable):
+    """PERMANENT: no ``XLATE_BASE_URL``, so this CDR has no xlate at all.
+
+    A foreign coding cannot be translated here and never will be until
+    someone configures the service. The caller must reject terminally
+    (422 + ``xlate_not_configured``) rather than return a retryable 503
+    — a producer that retries a 503 forever is the live defect #833 was
+    filed for.
+    """
+
+    def __init__(self, message: str, *, system: str | None = None,
+                 code: str | None = None) -> None:
+        super().__init__(message)
+        self.system = system
+        self.code = code
+
+
+class XlateUnavailable(XlateUnreachable):
+    """TRANSIENT: xlate is configured but did not answer this attempt.
+
+    Someone wired a base URL up, so a blip is plausible and a retry may
+    well succeed. The caller returns 503 + ``transient``.
     """
 
 
@@ -52,20 +96,42 @@ class XlateClient:
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         cache_ttl: float = DEFAULT_CACHE_TTL_SECONDS,
     ) -> None:
+        # Empty string and unset both mean "not configured" — normalise
+        # to None so `configured` is a single honest predicate.
         self.base_url = (
-            base_url or os.environ.get("XLATE_BASE_URL", DEFAULT_BASE_URL)
-        ).rstrip("/")
+            base_url or os.environ.get("XLATE_BASE_URL") or ""
+        ).rstrip("/") or None
         self.timeout = timeout
         self.cache_ttl = cache_ttl
         self._cache: dict[tuple, tuple[float, Any]] = {}
         self._lock = Lock()
 
+    @property
+    def configured(self) -> bool:
+        """True when an xlate base URL was actually supplied.
+
+        Lets a smoke test or a health endpoint state which of the two
+        failure modes this deployment is in without issuing a write.
+        """
+        return self.base_url is not None
+
     def translate(self, system: str, code: str) -> dict | None:
         """Return a dict ``{canonical_uri, mapping_quality, via}`` on a hit,
         or ``None`` on a clean miss (xlate said ``result: false``).
 
-        Raises ``XlateUnreachable`` if xlate.pdhc cannot be reached at all.
+        Raises ``XlateNotConfigured`` (permanent, caller 422s) when no
+        ``XLATE_BASE_URL`` is set, or ``XlateUnavailable`` (transient,
+        caller 503s) when it is set but the call failed.
         """
+        if not self.configured:
+            # Refuse before the network call: there is nothing to call,
+            # and a 5s connect timeout per coding would be a slow lie.
+            raise XlateNotConfigured(
+                "XLATE_BASE_URL is not set, so this CDR cannot translate "
+                f"foreign coding system={system!r} code={code!r}",
+                system=system, code=code,
+            )
+
         key = ("translate", system, code)
         cached = self._get_cached(key)
         if cached is not self._MISS:
@@ -79,8 +145,8 @@ class XlateClient:
                 headers=outbound_session_headers(), timeout=self.timeout
             )
         except requests.RequestException as e:
-            log.warning("xlate.pdhc unreachable: %s", e)
-            raise XlateUnreachable(str(e)) from e
+            log.warning("xlate.pdhc unreachable at %s: %s", self.base_url, e)
+            raise XlateUnavailable(str(e)) from e
 
         if resp.status_code != 200:
             log.warning("xlate.pdhc /translate returned %s for %s/%s",

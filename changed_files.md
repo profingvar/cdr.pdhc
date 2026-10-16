@@ -162,3 +162,13 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_read.py (#831 cap)
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_fhir_read.py (#831 cap)
 /Users/martiningvar/T7_sidewinder/cdr.pdhc/deploy/smoke_siblings.py  (#708/#830: sibling smoke for cdr1/cdr2/cdr3)
+
+## #833 — xlate: a permanent condition reported as transient (2026-10-16)
+
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/xlate_client.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/canonicalisation.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_write.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_xlate_client.py (new)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_canonicaliser_xlate_not_configured.py (new)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/.env.example
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/deploy/smoke_siblings.py

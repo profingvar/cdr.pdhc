@@ -16,6 +16,10 @@ Every write goes through:
 Errors:
   - 422 + ``xlate_miss`` OperationOutcome   (§1.2.d.i)
   - 422 + ``plan_miss`` OperationOutcome    (§1.2.d.ii)
+  - 422 + ``xlate_not_configured``          when this CDR has no xlate
+    service at all, so the coding can never be translated here (#833).
+    Terminal on purpose — distinct from the 503 below, which invites a
+    retry.
   - 412 Precondition Failed on stale If-Match (§1.2.h)
   - 503 + ``transient`` OperationOutcome   when xlate or plan unreachable
   - 400 / 404 / 405 for malformed bodies / unknown types / wrong verb
@@ -33,6 +37,7 @@ from app.services.canonicalisation import (
     operation_outcome_plan_miss,
     operation_outcome_transient,
     operation_outcome_xlate_miss,
+    operation_outcome_xlate_not_configured,
     record_plan_miss,
 )
 from app.services.plan_client import PlanClient
@@ -117,6 +122,15 @@ def _write_one(fhir: dict, ctx: WriteContext, *,
         return operation_outcome_transient(
             result.transient_reason or "upstream service unreachable"
         ), 503, {}
+
+    if result.status == "xlate_not_configured":
+        # 422, not 503: xlate does not exist on this deployment, so a
+        # retry can never succeed (#833). Logged at error level because
+        # it means a producer is sending codings this CDR cannot accept.
+        log.error(
+            "xlate_not_configured: refusing %s write, XLATE_BASE_URL unset", rt
+        )
+        return operation_outcome_xlate_not_configured(result.misses), 422, {}
 
     if result.status == "xlate_miss":
         return operation_outcome_xlate_miss(result.misses), 422, {}

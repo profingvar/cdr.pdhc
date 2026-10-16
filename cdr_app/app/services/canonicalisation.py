@@ -18,7 +18,12 @@ Outcome possibilities for a single CodeableConcept:
     confirm adoption. Caller rejects with 422 + plan_miss
     OperationOutcome AND writes a ``cdr_audit_plan_miss`` row
     (§1.2.d.ii).
-  - ``transient`` — xlate or plan unreachable; caller returns 503.
+  - ``xlate_not_configured`` — this CDR has no ``XLATE_BASE_URL``, so a
+    foreign coding can never be translated here. Caller rejects with
+    422 + ``xlate_not_configured`` (#833). Distinct from ``transient``
+    because retrying cannot help.
+  - ``transient`` — xlate or plan configured but unreachable on this
+    attempt; caller returns 503 and the producer may retry.
 
 A coding whose system already starts with ``https://termbank.pdhc.se/``
 is considered already-canonical and short-circuits to ``ok`` without an
@@ -36,7 +41,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from app.services.xlate_client import XlateClient, XlateUnreachable
+from app.services.xlate_client import (
+    XlateClient,
+    XlateNotConfigured,
+    XlateUnavailable,
+    XlateUnreachable,
+)
 from app.services.plan_client import PlanClient, PlanUnreachable, parse_canonical_uri
 
 
@@ -52,7 +62,7 @@ class CodeMiss:
     foreign code it concerns. Used to build the OperationOutcome and the
     plan-miss audit row."""
 
-    kind: str  # 'xlate_miss' | 'plan_miss'
+    kind: str  # 'xlate_miss' | 'plan_miss' | 'xlate_not_configured'
     location: str  # FHIR-path-ish: e.g. "Observation.code.coding[0]"
     foreign_system: str | None = None
     foreign_code: str | None = None
@@ -66,7 +76,7 @@ class CanonicalisationResult:
     """Return value of the canonicaliser.
 
     ``status`` is one of:
-        ok | xlate_miss | plan_miss | transient
+        ok | xlate_miss | plan_miss | xlate_not_configured | transient
     ``rewritten`` is the FHIR resource dict (possibly with rewritten
     codings); only meaningful when ``status == "ok"``.
     """
@@ -135,7 +145,23 @@ class Canonicaliser:
                 new_cc, canonical_uri, path_misses = self._canonicalise_codeable_concept(
                     cc, location=f"{rt}.{path}"
                 )
+            except XlateNotConfigured as e:
+                # ORDER MATTERS: this is a subclass of XlateUnreachable,
+                # so it must be caught before the clause below or a
+                # permanent condition gets reported as a retryable one
+                # (#833 — the whole point of the split).
+                return CanonicalisationResult(
+                    status="xlate_not_configured",
+                    misses=[CodeMiss(
+                        kind="xlate_not_configured",
+                        location=f"{rt}.{path}",
+                        foreign_system=getattr(e, "system", None),
+                        foreign_code=getattr(e, "code", None),
+                    )],
+                )
             except XlateUnreachable as e:
+                # XlateUnavailable, plus any future sibling — a write
+                # path should degrade to "retry later", never to a 500.
                 return CanonicalisationResult(
                     status="transient",
                     transient_reason=f"xlate.pdhc unreachable: {e}",
@@ -360,6 +386,49 @@ def operation_outcome_xlate_miss(misses: list[CodeMiss]) -> dict:
             "code": "code-invalid",
             "details": {"text": "xlate_miss"},
             "diagnostics": "xlate_miss",
+        })
+    return {"resourceType": "OperationOutcome", "issue": issues}
+
+
+def operation_outcome_xlate_not_configured(misses: list[CodeMiss]) -> dict:
+    """Build the 422 body for a CDR that has no xlate service at all (#833).
+
+    Terminal by design, and worded so the producer knows what to send
+    instead rather than queueing the same resource forever. ``issue.code``
+    is ``not-supported`` — the honest FHIR issue type: the coding is not
+    invalid, this repository simply cannot translate it.
+    """
+    issues = []
+    for m in misses:
+        if m.kind != "xlate_not_configured":
+            continue
+        if m.foreign_system:
+            what = (f"Foreign coding system={m.foreign_system!r} "
+                    f"code={m.foreign_code!r} requires translation, but ")
+        else:
+            what = "This resource requires code translation, but "
+        issues.append({
+            "severity": "error",
+            "code": "not-supported",
+            "details": {
+                "text": (
+                    what
+                    + "xlate.pdhc is not configured on this CDR "
+                      "(XLATE_BASE_URL is unset). Do not retry — send a "
+                      "coding whose system is https://plan.pdhc.se/Concept "
+                      "or https://termbank.pdhc.se/, which need no "
+                      "translation."
+                ),
+            },
+            "diagnostics": "xlate_not_configured",
+            "location": [m.location],
+        })
+    if not issues:
+        issues.append({
+            "severity": "error",
+            "code": "not-supported",
+            "details": {"text": "xlate_not_configured"},
+            "diagnostics": "xlate_not_configured",
         })
     return {"resourceType": "OperationOutcome", "issue": issues}
 
