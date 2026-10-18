@@ -172,3 +172,8 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_canonicaliser_xlate_not_configured.py (new)
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/.env.example
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/deploy/smoke_siblings.py
+
+## #836 — consolidate the two sibling smokes (2026-10-18)
+
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/deploy/smoke_siblings.py (absorbed four checks; 14 -> 18)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/deploy/smoke_siblings.py (DELETED)

@@ -1726,3 +1726,62 @@ constraint answered that, and they say no.
 
 #833 is closed and the board has no edit or reopen, so the incorrect claim
 stands in its response. This entry is the correction of record.
+
+## #836 — two sibling smokes, consolidated to one (2026-10-18)
+
+`cdr_app/deploy/smoke_siblings.py` (the #708 original, commit 01b31f9, updated
+by 3cf1ba4 for #730) and `deploy/smoke_siblings.py` (c35fa88, 2026-10-16) both
+claimed the same job. Only the second was deployed — `find / -name
+smoke_siblings.py` inside all three CDR containers returned exactly one copy
+each, at `/app/deploy/`. I wrote the second without finding the first, because a
+root-level `grep` skips service repo contents: grep here is ugrep and the root
+`.gitignore` is a whitelist. **An empty result is not absence.**
+
+**The old file was NOT redundant**, which is why it was read before deletion
+rather than after. Four of its nine checks had no equivalent in the live file:
+
+| ported check | why it mattered |
+|---|---|
+| `plan: a REAL code_canonical from this CDR resolves` | the live file only probed `$validate-code` with an invented code. This takes a canonical off a live row and resolves it, so it tests the actual contract — the probe-only version could pass while every stored row was unresolvable |
+| `data: every stored code_canonical carries a GUID (Rule 18)` | a canonical with a non-GUID tail can never resolve, so the row is permanently un-canonicalisable. No equivalent anywhere |
+| `ips: a consent verdict IS obtainable for a service-shaped read` (#730) | the complement of the fail-closed check. That one proves the gate cannot fail OPEN; this proves it does not fail CLOSED in normal operation — the failure that looks like safety and silently returns nothing |
+| `cambio: delivery config is coherent (not called)` | catches "delivery enabled but credentials missing". No equivalent |
+
+Its `xlate: absent as expected` check was genuinely superseded by #833's, and
+its four config/sso checks are covered better in the live file. Those were
+dropped.
+
+**All four ported checks were negative-tested** — a check that cannot go red is
+worse than no check:
+
+- `PLAN_BASE_URL=http://127.0.0.1:1` → both plan checks go red
+- `IPS_BASE_URL=http://127.0.0.1:1` → the verdict check goes red while
+  fail-closed goes green, confirming they are complementary and not redundant
+- `concept_guid()` returns None for a LOINC tail, an empty tail, the termbank
+  URI form and None — so the Rule 18 check would genuinely catch bad data
+- cambio: enabled-with-a-blank-value goes red
+
+**One mistake worth recording.** My first attempt to negative-test cambio set
+`CAMBIO_DELIVERY_ENABLED=true` and ran `create_app()` inside the production
+container. `app/__init__.py:134` starts the real APScheduler delivery worker on
+that flag, against live Cambio sandbox credentials. Nothing was delivered —
+the trigger is `interval, seconds=60` so the first fire is *after* a minute and
+the smoke process exits in under a second; `cambio_delivery_log` shows 0 rows
+today, latest 2026-10-13. But it was harmless by a 60-second margin, not by
+design. The check's logic is now a module-level pure function,
+`cambio_verdict(cfg)`, taking a mapping, so the enabled-but-incomplete branch
+is testable with a dict and nobody has to enable a delivery flag to test it.
+
+**Repo-wide sweep** (`git ls-files | grep smoke_siblings` per repo, since grep
+cannot be trusted here): cdr.pdhc was the only genuine duplicate. contract.pdhc
+has three matching files but they are a smoke, a legitimate `.sh` runner that
+execs it inside `contract-api-1`, and a test about it. All other repos have
+exactly one.
+
+Deployed: 18/18 green on cdr1, cdr2, cdr3, installed to both the release dir
+and the container, then `up -d --build` on each so the image carries it too —
+leaving a cp-only container ahead of its image is the drift that #833's own
+step-0 guard exists to catch. Verified after the rebuild: pip freeze unchanged
+(29 packages each), healthz 200, row counts unchanged (1,942 / 19,490 /
+19,509), the #833 split still intact, 39 containers none unhealthy. Prior
+copies saved to `~/backups/predeploy/cdr{1,2,3}/smoke_siblings_pre836_*.py`.

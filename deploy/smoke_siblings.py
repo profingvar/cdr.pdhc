@@ -29,6 +29,20 @@ sends one: the PATH gets a liveness probe (a GET must be refused, not 404), and
 the CREDENTIAL is tested separately on an ips GET route. Those are two different
 questions and a single check could not answer both without writing.
 
+## This file absorbed the original #708 smoke (#836)
+
+There were two of these for ten days: this one, and
+``cdr_app/deploy/smoke_siblings.py`` from #708/#730, which was deployed in no
+container. I wrote this one without finding that one — a root-level ``grep``
+skips service repo contents, because grep here is ugrep and the root
+``.gitignore`` is a whitelist. An empty result is not absence.
+
+The older file was NOT redundant, which is why it was read before being
+deleted rather than after. Four of its checks had no equivalent here and were
+carried over: the real-``code_canonical`` plan resolution, the Rule 18 canonical
+shape check, the cambio config check, and the positive consent verdict (#730).
+Its own ``xlate: absent as expected`` check was superseded by the one below.
+
 ## Why there is an xlate check but no xlate service
 
 xlate.pdhc is declared in CLAUDE.md §3 and is deployed nowhere — no release
@@ -96,6 +110,17 @@ NOBODY = "00000000-0000-4000-8000-000000000000"
 #: and a missing variable would look like plan being down. Assert against it.
 PLAN_FALLBACK_TRAP = "127.0.0.1:9030"
 
+# A deliberately MALFORMED guid, kept from the #708/#730 smoke this file
+# absorbed (#836). ips's PatientIndex.guid is a UUID column, so this value once
+# made /analysis-filter raise at the driver and answer 500 — which cdr turned
+# into IpsUnreachable and reported as an ips outage (#730). ips now treats a
+# malformed guid as unknown and excludes it by name, so keeping this value
+# keeps that path covered. NOBODY above is well-formed and covers the other
+# half: a valid guid that is simply nobody.
+SMOKE_PATIENT = "smoke-not-a-real-patient"
+
+CONCEPT_PREFIX = "urn:pdhc:concept/"
+
 RESET, RED, GRN, YEL, BOLD = "\033[0m", "\033[31m", "\033[32m", "\033[33m", "\033[1m"
 
 results: list[dict] = []
@@ -112,6 +137,54 @@ def check(name: str):
                         "ms": int((time.time() - started) * 1000)})
         return ok
     return wrap
+
+
+CAMBIO_REQUIRED = ("CAMBIO_BASE_URL", "CAMBIO_TOKEN_URL",
+                   "CAMBIO_CLIENT_ID", "CAMBIO_CLIENT_SECRET")
+
+
+def cambio_verdict(cfg) -> tuple[bool, str]:
+    """Is cambio delivery configuration coherent? Pure, so it is testable.
+
+    Deliberately a module-level function taking a mapping rather than a
+    closure over ``current_app.config``. The only way to exercise the
+    enabled-but-incomplete branch otherwise is to set
+    ``CAMBIO_DELIVERY_ENABLED=true`` and call ``create_app()``, which starts
+    the real APScheduler delivery worker (``app/__init__.py``) against live
+    Cambio sandbox credentials. That is not a test, it is an outbound
+    delivery with a 60-second fuse. Pass a dict instead.
+    """
+    enabled = bool(cfg.get("CAMBIO_DELIVERY_ENABLED"))
+    missing = [k for k in CAMBIO_REQUIRED if not cfg.get(k)]
+    if not enabled:
+        return True, ("delivery disabled; "
+                      + ("config present" if not missing
+                         else f"{len(missing)} value(s) unset — fine "
+                              "while disabled"))
+    return not missing, ("enabled, config complete" if not missing
+                         else f"ENABLED but missing {', '.join(missing)}")
+
+
+def concept_guid(code_canonical: str) -> str | None:
+    """GUID out of a stored ``code_canonical``, or None if it is not one.
+
+    cdr stores Path-B: ``urn:pdhc:concept/<guid>`` — NOT a termbank URI. This
+    matters because ``plan_client.parse_canonical_uri`` parses the *termbank*
+    form, so pointing it at a stored canonical returns None for EVERY row. The
+    first version of the #708 smoke did exactly that and reported 23/23 "bad",
+    which is how an obviously wrong check announces itself: the data was fine
+    and the test was using the wrong parser. The guid-based resolvers
+    (``resolve_concept``, ``lookup_display``) are the right door for this shape.
+    """
+    import uuid
+    if not code_canonical or not code_canonical.startswith(CONCEPT_PREFIX):
+        return None
+    tail = code_canonical[len(CONCEPT_PREFIX):]
+    try:
+        uuid.UUID(tail)
+    except (ValueError, AttributeError, TypeError):
+        return None
+    return tail
 
 
 def _repo_root() -> pathlib.Path:
@@ -360,6 +433,35 @@ def main(as_json: bool = False) -> int:
             finally:
                 current_app.config["IPS_BASE_URL"] = saved
 
+        @check("ips: a consent verdict IS obtainable for a service-shaped read")
+        def _():
+            # The complement of the fail-closed check above. That one proves the
+            # gate cannot fail OPEN; this one proves it does not fail CLOSED in
+            # normal operation, which is the failure that looks like safety and
+            # silently returns nothing. #730 was exactly that.
+            #
+            # No flask session here, which is the shape of a service-key caller
+            # (gateway, analyse, sim). _analysis_filter only attaches
+            # Authorization: Bearer when a session token exists, and ips reads
+            # ONLY that header. So this answers the question the unit tests mock
+            # away: with no operator bearer, does cdr get a verdict at all?
+            from app.services.analysis_consent import (
+                _analysis_filter, IpsUnreachable,
+            )
+            if not ips:
+                return False, "IPS_BASE_URL not set"
+            try:
+                out = _analysis_filter([SMOKE_PATIENT], "research", [])
+            except IpsUnreachable as e:
+                return False, (f"{str(e)[:70]} — the gate fails CLOSED, which is "
+                               "safe but means a service-key caller reads "
+                               "NOTHING. Since #730 this service holds its own "
+                               "IPS_API_KEY; check that before suspecting ips")
+            if not isinstance(out, dict) or "allowed" not in out:
+                return False, f"unexpected analysis-filter shape: {out!r}"
+            return True, (f"allowed={len(out['allowed'])} "
+                          f"excluded={len(out['excluded'])} for a malformed guid")
+
         # ---------------------------------------------------------------- xlate
         @check("xlate: unconfigured is TERMINAL, not transient (#833)")
         def _():
@@ -424,6 +526,78 @@ def main(as_json: bool = False) -> int:
                                         "code": "nope"})
             ok, note = _path_is_live(code)
             return ok, f"{note} {body[:50]}"
+
+        @check("plan: a REAL code_canonical from this CDR resolves")
+        def _():
+            # The check above proves the path answers. This one proves the
+            # contract holds for data this CDR actually stored — a canonical
+            # taken off a live row, not one invented here. Absorbed from the
+            # #708 smoke (#836); the probe-only version could pass while every
+            # stored row was unresolvable.
+            from app.models.resources import live_model
+            from app.services.plan_client import PlanClient, PlanUnreachable
+            if not plan:
+                return False, "PLAN_BASE_URL not set"
+            Observation = live_model("Observation")
+            if Observation is None:
+                return False, "no Observation model registered"
+            guid = uri = None
+            for (cand,) in (Observation.query
+                            .with_entities(Observation.code_canonical)
+                            .filter(Observation.code_canonical.isnot(None))
+                            .distinct().limit(200)):
+                g = concept_guid(cand)
+                if g:
+                    guid, uri = g, cand
+                    break
+            if guid is None:
+                return False, ("no stored code_canonical carries a valid concept "
+                               "guid — inconclusive, reported as a failure so it "
+                               "is not mistaken for proof")
+            try:
+                resolved = PlanClient(base_url=plan).resolve_concept(guid)
+            except PlanUnreachable as e:
+                return False, f"plan.pdhc unreachable: {str(e)[:60]}"
+            if not resolved:
+                return False, (f"plan has no canonical binding for a concept this "
+                               f"CDR stores on live rows: {uri}")
+            return True, (f"{guid[:8]}… → "
+                          f"{resolved.get('canonical_uri') or resolved.get('display')}")
+
+        # ----------------------------------------------------------------- data
+        @check("data: every stored code_canonical carries a GUID (Rule 18)")
+        def _():
+            # Not a sibling call, but it is about the contract cdr sends to
+            # plan: a canonical with a non-GUID tail can never be resolved, so
+            # the row is permanently un-canonicalisable. Rule 18 is GUID-only.
+            from app.models.resources import live_model
+            Observation = live_model("Observation")
+            if Observation is None:
+                return False, "no Observation model registered"
+            bad, total = [], 0
+            for (cand,) in (Observation.query
+                            .with_entities(Observation.code_canonical)
+                            .filter(Observation.code_canonical.isnot(None))
+                            .distinct()):
+                total += 1
+                if concept_guid(cand) is None:
+                    bad.append(cand)
+            if bad:
+                shown = ", ".join(sorted(bad)[:4])
+                more = f" (+{len(bad) - 4} more)" if len(bad) > 4 else ""
+                return False, (f"{len(bad)}/{total} distinct canonicals have a "
+                               f"non-GUID tail and can never resolve: "
+                               f"{shown}{more}")
+            return True, f"all {total} distinct canonicals carry a GUID"
+
+        # --------------------------------------------------------------- cambio
+        @check("cambio: delivery config is coherent (not called)")
+        def _():
+            # Configuration only, deliberately never called: cambio is an
+            # external sandbox and a smoke must not generate traffic there.
+            # Logic lives in cambio_verdict() so the enabled-but-incomplete
+            # branch can be tested without starting the delivery worker.
+            return cambio_verdict(cfg)
 
     # ------------------------------------------------------------------- report
     if as_json:
