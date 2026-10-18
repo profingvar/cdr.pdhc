@@ -1606,3 +1606,83 @@ hash meant the file had been patched by something else. For #831 the string is
 legitimately present, so the tripwire is now named by the hunks file and the
 second hunk is optional. The guard refusing to write on the first attempt was
 the tool working, not failing.
+
+## #833 — xlate: a permanent condition reported as transient (2026-10-18, DEPLOYED cdr1+cdr2+cdr3)
+
+**The defect.** xlate.pdhc is declared in CLAUDE.md §3 and deployed nowhere.
+A foreign coding on the ingest path raised `XlateUnreachable`, which the
+canonicaliser relabelled `transient` and the writer turned into a 503.
+`503 + transient` tells a producer to retry, so a permanent condition was
+advertised as a temporary one: any emitter sending a foreign coding would have
+retried forever against a service that does not exist.
+
+**It failed CLOSED, so no data is wrong**, and the path had never been reached.
+All rows on all three CDRs arrived from sim.pdhc as `plan.pdhc/Concept`
+codings, which resolve at tier 1 and return before the xlate hop. Zero xlate
+mentions in any of the three logs; zero `xlate_not_configured` events since the
+deploy, which is the expected quiet.
+
+**The fix** mirrors #828 — refuse by name, and let the name carry the prognosis:
+
+| state | exception | result |
+|---|---|---|
+| `XLATE_BASE_URL` unset | `XlateNotConfigured` | 422 `xlate_not_configured`, terminal |
+| set, call failed | `XlateUnavailable` | 503 `transient`, unchanged |
+
+Both still subclass `XlateUnreachable` so an older catch-all keeps working; the
+catch site orders the permanent clause first, because a subclass swallowed by
+the general clause is exactly the bug.
+
+`DEFAULT_BASE_URL = "http://127.0.0.1:9017"` is **deleted**. That fallback was
+the mechanism: it manufactured a configured-looking URL out of an unset
+variable and resolved, inside the container, to the container itself. A test
+guards its return.
+
+**Corrections this work forced:**
+
+- My own #833 ticket body claimed cdr1 and cdr2/cdr3 were on different ingest
+  behaviour. They were not. cdr1 fell back to `127.0.0.1:9017`, cdr2/cdr3 used
+  `host.docker.internal:9017`; both unreachable, both the same 503. Never a
+  URL-form problem.
+- CLAUDE.md §3's "xlate 9016 declared" is its **database** port. `APP_PORT=9017`,
+  `DB_PORT=9016`, compose maps `"9016:5432"`. The client's `:9017` was right.
+- `cdr_app/.env.example` never mentioned `XLATE_BASE_URL` at all (Rule 23 gap),
+  while cdr2/cdr3 production set it. Now documented, with why blank is correct.
+- `tests/test_fhir_write.py` has advertised `test_xlate_client.py` since Phase 1.
+  It did not exist. It does now.
+
+**cdr_6 is the real asymmetry, and it is NOT addressed here.** It has no
+`xlate_client` and no `canonicalisation` module at all, so a foreign coding is
+stored unconverted there while cdr1/2/3 refuse it. That matters because Synthea
+Shape B pushes LOINC — a foreign system — to cdr_6. Needs its own ticket.
+
+**Deployed** 2026-10-18 with `~/deploy833.sh <cdr>`, one CDR per run. Each run:
+baseline-hash assert (disk == container == expected) → baseline smoke green →
+tarball + `:pre833` image tag → asserted install → `up -d --build` → verify the
+new bytes are in the container, `pip freeze` unchanged, single alembic head,
+smoke grew and stayed green → in-process assert of the terminal status.
+Auto-rollback on any red.
+
+| | files | pip freeze | alembic | smoke | behaviour | healthz |
+|---|---|---|---|---|---|---|
+| cdr1 | 4/4 | 29 pkgs, 0 changes | `b6c7d8e9f0a1` single | 13 → **14/14** | 422 TERMINAL | 200 |
+| cdr2 | 4/4 | 29 pkgs, 0 changes | `b6c7d8e9f0a1` single | 13 → **14/14** | 422 TERMINAL | 200 |
+| cdr3 | 4/4 | 29 pkgs, 0 changes | `b6c7d8e9f0a1` single | 13 → **14/14** | 422 TERMINAL | 200 |
+
+cdr2/cdr3 also had `XLATE_BASE_URL=http://host.docker.internal:9017` blanked in
+their `.env` — without it the code fix does not bite, because a set-but-dead URL
+is `XlateUnavailable` by design. The edit resolved the `current` symlink first
+so it rewrote the real release file rather than replacing the link (§7 trap),
+asserted exactly one matching line, and kept mode 600.
+
+Data verified untouched: cdr1 1,942 rows / 3 subjects / 10 codes; cdr2 19,490 /
+30 / 10; cdr3 19,509 / 30 / 10. Platform 39 containers, none unhealthy,
+TIME_WAIT 1. The #830 loopback ledger drops **7 → 5** (termbank ×4, cdr_6 ×1).
+
+Rollback windows open: `~/backups/predeploy/cdr{1,2,3}/pre833_*.tgz`, images
+`cdr_app-app:pre833`, `cdr_pdhc_2-app:pre833`, `cdr_pdhc_3-app:pre833`, and
+`~/backups/predeploy/cdr{2,3}/env_pre833_*`.
+
+**Open follow-up:** `cdr_app/deploy/smoke_siblings.py` (the original #708 file,
+commit 01b31f9) is still tracked and is deployed in no container; the live smoke
+is `deploy/smoke_siblings.py`. Two files claim the same job. Consolidate.
