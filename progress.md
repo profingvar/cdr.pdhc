@@ -1686,3 +1686,43 @@ Rollback windows open: `~/backups/predeploy/cdr{1,2,3}/pre833_*.tgz`, images
 **Open follow-up:** `cdr_app/deploy/smoke_siblings.py` (the original #708 file,
 commit 01b31f9) is still tracked and is deployed in no container; the live smoke
 is `deploy/smoke_siblings.py`. Two files claim the same job. Consolidate.
+
+### CORRECTION to the #833 entry above — cdr_6 is NOT an asymmetry (2026-10-18)
+
+The entry above, and the response posted on #833, say cdr_6 "has no
+`xlate_client` and no `canonicalisation` module at all, so a foreign coding is
+stored unconverted there while cdr1/2/3 refuse it", and call that "the real
+asymmetry". **That is wrong.** I filed it from the absence of two files without
+checking what cdr_6's ingest contract actually is. Verified afterwards:
+
+- **cdr_6 has no FHIR write path.** Its url_map holds `POST /api/v1/ingest`,
+  `POST /api/v1/ingest/batch` and `POST /api/v1/transfer`. There is no
+  `POST /api/v1/fhir/<Type>` and no `POST /api/v1/fhir/Bundle` — only
+  `GET /api/v1/fhir/Observation`, a read projection. The canonicaliser has no
+  write path to be absent from; cdr_6 is a different ingest contract, not a
+  CDR missing a module.
+- **`cdr_6_observations.concept_guid` is `NOT NULL`.** The schema is flat and
+  keyed on a plan.pdhc Concept GUID, mirroring
+  `gateway.pdhc/inbound_observations`. A LOINC-only payload carries no concept
+  GUID and cannot land silently.
+- **The absence is deliberate and documented**, in cdr_6's own
+  `app/models/observation.py:8-10`: "Resolution / validation statuses are kept
+  for parity with gateway but default to `synthetic` since the canonicalisation
+  pipeline doesn't run here — cdr_6 trusts sim's emissions verbatim."
+
+So there is nothing to fix and no ticket to file. The Synthea Shape B concern
+also dissolves: sim maps LOINC to plan concepts before pushing (which is what
+makes its coverage concept-curation bound), so what reaches cdr_6 is a concept
+GUID, not a foreign coding.
+
+**The #833 fix itself is unaffected** — it was verified on cdr1/cdr2/cdr3 by
+measurement, not by this reasoning. What was wrong was only the leftover item
+about cdr_6.
+
+The lesson is one already in this repo's history (#804): *searching for a
+symbol is not checking for a capability.* Two absent filenames told me nothing
+about whether cdr_6 can accept a foreign coding; its url_map and its NOT NULL
+constraint answered that, and they say no.
+
+#833 is closed and the board has no edit or reopen, so the incorrect claim
+stands in its response. This entry is the correction of record.
