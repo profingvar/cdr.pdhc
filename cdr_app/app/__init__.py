@@ -15,7 +15,7 @@ def create_app(config_override=None):
     app = Flask(__name__)
 
     app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
-        "DATABASE_URL", "postgresql://cdr_user:cdr_pass@localhost:9047/cdr_db"
+        "DATABASE_URL", "postgresql://cdr_user:change-me-in-production@localhost:9047/cdr_db"
     )
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY", "dev-secret")

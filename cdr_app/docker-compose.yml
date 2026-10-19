@@ -23,7 +23,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-cdr_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cdr_pass}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_DB: ${POSTGRES_DB:-cdr_db}
     ports:
       - "127.0.0.1:${DB_PORT:-9047}:5432"
@@ -41,7 +41,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-cdr_user}:${POSTGRES_PASSWORD:-cdr_pass}@db:5432/${POSTGRES_DB:-cdr_db}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cdr_user}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-cdr_db}
     ports:
       - "127.0.0.1:${APP_PORT:-9046}:9046"
     depends_on:
