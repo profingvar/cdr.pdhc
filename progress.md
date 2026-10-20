@@ -1785,3 +1785,62 @@ step-0 guard exists to catch. Verified after the rebuild: pip freeze unchanged
 (29 packages each), healthz 200, row counts unchanged (1,942 / 19,490 /
 19,509), the #833 split still intact, 39 containers none unhealthy. Prior
 copies saved to `~/backups/predeploy/cdr{1,2,3}/smoke_siblings_pre836_*.py`.
+
+## #818 — Rule 24 scopes on the patient's org (2026-10-20, DEPLOYED)
+
+Repointed `_org_filter` from `org_guid` (the PERFORMER) to `patient_org_guid`
+at all three sites, including the fail-closed sentinel. Deployed to cdr1, cdr2
+and cdr3.
+
+**The ticket's premise was wrong, in our favour.** It expected access to move
+both ways, with performer-affiliated readers losing ~95% of cdr1. It moved in
+one direction only, because the old filter compared two **disjoint identifier
+spaces** and matched nothing:
+
+| | holds |
+|---|---|
+| `scope_org_guids(blob)` | `affiliations[].care_unit_guid` — all 10 rows in sso's `affiliations` are care-unit/organisation guids |
+| `observation.org_guid` | the ips **clinic** guid |
+
+No clinic's `care_unit_guid` equals any performer value, so Rule 24 was failing
+**closed** for every non-admin reader. Measured in-container before the change
+on cdr1: a reader scoped to UAS's care unit `7d55624c` saw **0** of 1942 rows.
+After: 1942, and the clinic-guid reader sees 0.
+
+**cdr2 is the verification the ticket said was impossible**, because it now
+holds two organisations:
+
+    patient-org 560fcbe4 (KS)  -> 32641   (exactly KS's rows)
+    patient-org 7d55624c (UAS) -> 19490   (exactly UAS's rows)
+    PERFORMER   02b83b6b       -> 0
+    PERFORMER   880d2fe5       -> 0
+
+Scoping was verified by calling `_org_filter` with a fake access blob inside a
+`test_request_context` in the running container — never by issuing an
+authenticated read, because a service-key blob is SU-equivalent and would
+bypass the filter under test (#760's lesson).
+
+**Second half, surfaced by the test suite.** `POST /api/v1/fhir/<Type>` never
+set `patient_org_guid` — `WriteContext` had no such field and `resource_writer`
+no reference — so every row written through the FHIR API would have become
+admin-only after the repoint. Latent, not live: all 73,582 rows across the
+three CDRs came from sim through the ingest pipeline, which sets it, and 0 are
+NULL. `WriteContext` carries it now, stamped on both live-row inserts, sourced
+from an `X-Patient-Org-Guid` header or the body's clinical context in either
+payload shape (#820's both-shapes rule).
+
+**The fixtures had been hiding this.** They used ONE value for performer and
+patient org, so a filter on either column passed identically. `PATIENT_ORG` is
+now deliberately distinct from `ORG`, and the new test asserting a
+performer-org reader sees NOTHING fails with `0 != 1` if the filter is
+reverted — verified by doing exactly that.
+
+**Known asymmetry, left open:** `/api/v1/fhir/events` still scopes on
+`change_feed.org_guid`, because that table has no `patient_org_guid` column. A
+reader can therefore see feed events for rows they cannot read. Recorded in
+`tests/test_fhir_read.py` (`FEED_HEADERS`) rather than papered over; closing it
+needs a migration.
+
+293 tests green; cdr1/cdr2/cdr3 sibling smokes 18/18 each; row counts and NULL
+counts unchanged on all three; 41 containers, 0 unhealthy. Backups:
+`backups/predeploy/cdr.pdhc/818_cdr{1,2,3}_20261020T1246-1247Z`.
