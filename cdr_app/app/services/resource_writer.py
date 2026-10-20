@@ -86,7 +86,16 @@ class WriteContext:
     """Per-request context the writer needs in addition to the resource body."""
 
     org_guid: str
-    source: str  # calling service (e.g. "gateway.pdhc")
+    #: #818 — the PATIENT's organisation, which Rule 24 scopes reads on. The
+    #: writer never carried it, so every row created through
+    #: `POST /api/v1/fhir/<Type>` had a NULL in the scoping column while the
+    #: ingest pipeline set it properly. Latent rather than live — all 73,582
+    #: rows across cdr1/2/3 came from sim via ingest — but it would have made
+    #: gateway-written rows invisible to every non-admin reader the moment the
+    #: read filter repointed. Fills FORWARD ONLY (#782): ips keeps no
+    #: assignment history, so a row written without it cannot be repaired.
+    patient_org_guid: str | None = None
+    source: str = "unknown"  # calling service (e.g. "gateway.pdhc")
     source_request_id: str | None = None
     sim_run_id: str | None = None
     if_match_etag: str | None = None  # request header value, if provided
@@ -506,6 +515,7 @@ def _insert(Live, fhir: dict, ctx: WriteContext, *,
         guid=guid,
         patient_guid=patient_guid,
         org_guid=ctx.org_guid,
+        patient_org_guid=ctx.patient_org_guid,
         code_canonical=code_canonical,
         effective_at=effective_at,
         raw_json=persisted,
@@ -595,6 +605,7 @@ def _update_with_history(Live, Hist, existing, fhir: dict, ctx: WriteContext, *,
     new_cols = dict(
         patient_guid=patient_guid,
         org_guid=ctx.org_guid,
+        patient_org_guid=ctx.patient_org_guid,
         code_canonical=code_canonical,
         effective_at=effective_at,
         raw_json=persisted,

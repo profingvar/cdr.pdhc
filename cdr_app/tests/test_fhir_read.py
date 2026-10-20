@@ -77,8 +77,22 @@ def clean_tables(app):
 # ---------------------------------------------------------------------------
 
 ORG = "org-aaaa"
+#: #818 — the PATIENT's organisation, deliberately DIFFERENT from the performer
+#: `ORG`. Rule 24 scopes on patient_org_guid; these fixtures used one value for
+#: both, so a filter on the performer column passed exactly as happily as a
+#: filter on the patient column, and the live mismatch (performer holds the ips
+#: CLINIC guid while the access blob holds the care_unit guid, two disjoint
+#: spaces) was invisible here. Keep these apart or the tests stop
+#: discriminating.
+PATIENT_ORG = "patient-org-bbbb"
 ADMIN_HEADERS = {"X-Is-Admin": "1"}
-ORG_HEADERS = {"X-Org-Guids": ORG}
+ORG_HEADERS = {"X-Org-Guids": PATIENT_ORG}
+#: The change feed is still scoped on the PERFORMER (`change_feed.org_guid`),
+#: because that table has no patient_org_guid column — so #818 repointed the
+#: resource reads and could not repoint the feed. A reader can therefore see
+#: feed events for rows they cannot read, and vice versa. Recorded here rather
+#: than papered over; the events tests ask in the performer space deliberately.
+FEED_HEADERS = {"X-Org-Guids": ORG}
 # Writes authenticate as a known FHIR service (sim.pdhc) with its service key;
 # X-Org-Guid tags the stored row's org. (#436: was source "test" with no key,
 # which _service_key_outcome rejected → 403.)
@@ -100,6 +114,7 @@ def _post(client, path, body, *, request_id=None):
 
 def _hba1c(value=6.4, eff="2026-04-01T10:00:00Z", patient=PATIENT_GUID, code="4548-4"):
     return {
+        "patient_org_guid": PATIENT_ORG,
         "resourceType": "Observation",
         "status": "final",
         "subject": {"reference": f"Patient/{patient}"},
@@ -126,6 +141,7 @@ def _create_patient(client, guid=PATIENT_GUID, ident_value="19121212-1212"):
 
 def _patient_body(guid=PATIENT_GUID, ident_value="19121212-1212"):
     return {
+        "patient_org_guid": PATIENT_ORG,
         "resourceType": "Patient",
         "id": guid,
         "active": True,
@@ -143,6 +159,7 @@ def _condition_body(patient=PATIENT_GUID, code="44054006",
                     onset="2020-01-15"):
     """Minimal Condition body."""
     return {
+        "patient_org_guid": PATIENT_ORG,
         "resourceType": "Condition",
         "subject": {"reference": f"Patient/{patient}"},
         "code": {
@@ -411,7 +428,7 @@ def test_events_returns_change_feed_rows(client, fake_canon):
     _post(client, "/api/v1/fhir/Observation", _hba1c())
     _post(client, "/api/v1/fhir/Observation",
           _hba1c(value=7.0, eff="2026-04-15T10:00:00Z"))
-    resp = client.get("/api/v1/fhir/events?since=0", headers=ORG_HEADERS)
+    resp = client.get("/api/v1/fhir/events?since=0", headers=FEED_HEADERS)
     assert resp.status_code == 200
     body = resp.get_json()
     assert body["count"] == 2
@@ -420,13 +437,13 @@ def test_events_returns_change_feed_rows(client, fake_canon):
 
 def test_events_since_advances(client, fake_canon):
     _post(client, "/api/v1/fhir/Observation", _hba1c())
-    r1 = client.get("/api/v1/fhir/events?since=0", headers=ORG_HEADERS).get_json()
+    r1 = client.get("/api/v1/fhir/events?since=0", headers=FEED_HEADERS).get_json()
     next_since = r1["next_since"]
 
     _post(client, "/api/v1/fhir/Observation",
           _hba1c(value=7.0, eff="2026-04-15T10:00:00Z"))
     r2 = client.get(
-        f"/api/v1/fhir/events?since={next_since}", headers=ORG_HEADERS,
+        f"/api/v1/fhir/events?since={next_since}", headers=FEED_HEADERS,
     ).get_json()
     assert r2["count"] == 1
 
@@ -676,3 +693,73 @@ def test_the_cap_FITS_in_gunicorns_request_line(client, fake_canon):
         f"{GUNICORN_LIMIT_REQUEST_LINE} limit: the cap of "
         f"{MAX_PATIENT_ALLOWLIST} cannot be used, and the 400 above is dead "
         f"code (#831)")
+
+
+# ---------------------------------------------------------------------------
+# #818 — Rule 24 scopes on the PATIENT's organisation, not the performer
+# ---------------------------------------------------------------------------
+
+def test_scoping_follows_the_PATIENT_org_not_the_performer(client, fake_canon):
+    """The whole of #818 in one test.
+
+    A row whose performer is `ORG` and whose patient belongs to `PATIENT_ORG`
+    must be visible to a reader affiliated with PATIENT_ORG, and invisible to
+    one affiliated with ORG. Before the repoint the answers were reversed.
+
+    This is the test that distinguishes the two columns. Everything else in
+    this file would pass just as happily with the filter on either one, which
+    is exactly why the live defect — the access blob carries care-unit guids
+    while `org_guid` holds ips CLINIC guids, two disjoint spaces, so no
+    non-admin reader matched any row — went unseen for months.
+    """
+    r = _post(client, "/api/v1/fhir/Observation", _hba1c())
+    assert r.status_code == 201, r.get_json()
+
+    seen = client.get(f"/api/v1/fhir/Observation?patient={PATIENT_GUID}",
+                      headers={"X-Org-Guids": PATIENT_ORG})
+    assert seen.get_json()["total"] == 1, "patient-org reader must SEE the row"
+
+    hidden = client.get(f"/api/v1/fhir/Observation?patient={PATIENT_GUID}",
+                        headers={"X-Org-Guids": ORG})
+    assert hidden.get_json()["total"] == 0, (
+        "performer-org reader must NOT see it — if this passes, the filter is "
+        "back on org_guid")
+
+
+def test_a_row_with_no_patient_org_is_invisible_to_a_scoped_reader(
+    client, fake_canon,
+):
+    """Fail-closed, and the reason the writer had to start carrying the column.
+
+    `POST /api/v1/fhir/<Type>` set no patient_org_guid until #818, so every
+    row it wrote would have become admin-only once the read filter repointed.
+    Live data was unaffected — all 73,582 rows across cdr1/2/3 came from sim
+    through the ingest pipeline, which did set it — but this pins the
+    behaviour rather than leaving it to be rediscovered.
+    """
+    body = _hba1c()
+    del body["patient_org_guid"]
+    r = _post(client, "/api/v1/fhir/Observation", body)
+    assert r.status_code == 201, r.get_json()
+
+    scoped = client.get(f"/api/v1/fhir/Observation?patient={PATIENT_GUID}",
+                        headers={"X-Org-Guids": PATIENT_ORG})
+    assert scoped.get_json()["total"] == 0
+
+    admin = client.get(f"/api/v1/fhir/Observation?patient={PATIENT_GUID}",
+                       headers=ADMIN_HEADERS)
+    assert admin.get_json()["total"] == 1
+
+
+def test_the_writer_accepts_the_patient_org_as_a_header_too(client, fake_canon):
+    """Producers that send context as headers rather than in the body are not
+    silently dropped — the same both-shapes rule as #820."""
+    body = _hba1c()
+    del body["patient_org_guid"]
+    headers = dict(WRITE_HEADERS)
+    headers["X-Patient-Org-Guid"] = PATIENT_ORG
+    r = client.post("/api/v1/fhir/Observation", json=body, headers=headers)
+    assert r.status_code == 201, r.get_json()
+    scoped = client.get(f"/api/v1/fhir/Observation?patient={PATIENT_GUID}",
+                        headers={"X-Org-Guids": PATIENT_ORG})
+    assert scoped.get_json()["total"] == 1

@@ -74,11 +74,36 @@ def _get_canonicaliser() -> Canonicaliser:
 # Request → WriteContext extractor
 # ---------------------------------------------------------------------------
 
+def _patient_org_guid_from_request() -> str | None:
+    """The PATIENT's organisation for this write (#818).
+
+    Header first, then the clinical context in the body — accepting BOTH
+    payload shapes for the same reason `ingest_pipeline._clinical_context_from`
+    does (#820): a producer that puts the canonical fields at the top level
+    must not be silently dropped. Returns None when nothing says, so the
+    column stays NULL rather than being invented; a NULL is visible only to
+    admins once Rule 24 scopes on this column, which is the fail-closed
+    direction.
+    """
+    hdr = (request.headers.get("X-Patient-Org-Guid") or "").strip()
+    if hdr:
+        return hdr
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return None
+    nested = body.get("clinical_context")
+    if isinstance(nested, dict) and nested.get("patient_org_guid"):
+        return str(nested["patient_org_guid"]).strip() or None
+    v = body.get("patient_org_guid")
+    return str(v).strip() or None if v else None
+
+
 def _extract_context() -> WriteContext:
     return WriteContext(
         org_guid=(request.headers.get("X-Org-Guid")
                   or request.args.get("org_guid")
                   or "00000000-0000-0000-0000-000000000000"),
+        patient_org_guid=_patient_org_guid_from_request(),
         source=request.headers.get("X-Source-Service") or "unknown",
         source_request_id=request.headers.get("X-Request-Id"),
         sim_run_id=request.headers.get("X-Sim-Run-Id"),

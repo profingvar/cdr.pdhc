@@ -17,6 +17,7 @@ from tests.test_fhir_read import (  # reuse seeding helpers
     WRITE_HEADERS,
     _FakeCanonicaliser,
     _hba1c,
+    PATIENT_ORG,
 )
 
 
@@ -43,8 +44,11 @@ ORG = "org-aaaa"
 PAT_OK = "pat-consent-ok-1"
 PAT_NO = "pat-consent-no-1"
 
-DOCTOR = {"X-Aff-Role": "doctor", "X-Aff-Org": ORG}
-RESEARCHER = {"X-Aff-Role": "Researcher", "X-Aff-Org": ORG,
+# #818 — a reader's affiliation names their CARE UNIT, which is the space
+# patient_org_guid lives in (sso's affiliations[].care_unit_guid), not the
+# performer space `ORG`. Scoped reads therefore have to ask for PATIENT_ORG.
+DOCTOR = {"X-Aff-Role": "doctor", "X-Aff-Org": PATIENT_ORG}
+RESEARCHER = {"X-Aff-Role": "Researcher", "X-Aff-Org": PATIENT_ORG,
               "X-Aff-Projects": "proj-1"}
 
 
@@ -134,7 +138,11 @@ def test_read_instance_403_with_reason(client, fake_canon):
 
 def test_everything_gated(client, fake_canon):
     client.put(f"/api/v1/fhir/Patient/{PAT_NO}",
-               json={"resourceType": "Patient", "id": PAT_NO},
+               json={"resourceType": "Patient", "id": PAT_NO,
+                         # #818: a row with no patient_org_guid is invisible
+                         # to any scoped reader, so the gate under test is
+                         # never reached — it 404s first.
+                         "patient_org_guid": PATIENT_ORG},
                headers=WRITE_HEADERS)
     with patch.object(ac, "_analysis_filter",
                       side_effect=_verdict_excluding(PAT_NO)):

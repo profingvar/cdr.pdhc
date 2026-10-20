@@ -86,20 +86,36 @@ def _org_filter(query, Live, *, request_args=None):
         return query
     # M0 #416: Zone-1 scope from affiliations[] (dual-read fallback to
     # organization_ids), shared with auth._blob_to_user.
+    #
+    # #818 — scoped on patient_org_guid, NOT org_guid. Rule 24 asks "rows whose
+    # PATIENT belongs to one of my care units"; org_guid is the PERFORMER, so
+    # the old filter asked a different question. It also compared two different
+    # IDENTIFIER SPACES and therefore matched nothing: measured 2026-10-20,
+    # `scope_org_guids` returns affiliations[].care_unit_guid and every one of
+    # sso's 10 affiliation rows holds a care-unit/organisation guid, while
+    # `org_guid` holds the ips CLINIC guid (cdr2: performer 02b83b6b/880d2fe5
+    # against patient org 7d55624c/560fcbe4, and no clinic's care_unit_guid
+    # equals any performer value). So this was failing CLOSED for every
+    # non-admin reader rather than over-granting, and the repoint restores
+    # access it never actually gave. patient_org_guid is indexed per resource
+    # table (ix_<table>_patient_org) and set on every live model via
+    # _common_live_columns, so this applies to every FHIR resource type.
     org_ids = scope_org_guids(blob)
     if org_ids:
-        return query.filter(Live.org_guid.in_(org_ids))
+        return query.filter(Live.patient_org_guid.in_(org_ids))
 
-    # Legacy header path
+    # Legacy header path. Same column, same reason: X-Org-Guids carries the
+    # caller's care units, which is the patient-org question.
     if request.headers.get("X-Is-Admin") == "1":
         return query
     org_guids_hdr = request.headers.get("X-Org-Guids", "").strip()
     if org_guids_hdr:
         orgs = [s.strip() for s in org_guids_hdr.split(",") if s.strip()]
-        return query.filter(Live.org_guid.in_(orgs))
+        return query.filter(Live.patient_org_guid.in_(orgs))
 
     # Nothing to scope by — non-admin user with no orgs sees nothing.
-    return query.filter(Live.org_guid == "__no_org__")
+    # Fail closed, on the same column the two branches above scope by.
+    return query.filter(Live.patient_org_guid == "__no_org__")
 
 
 # ---------------------------------------------------------------------------
