@@ -68,6 +68,10 @@ def create_app(config_override=None):
 
     # Service keys for inbound from gateways
     app.config["GATEWAY_PDHC_SERVICE_KEY"] = os.environ.get("GATEWAY_PDHC_SERVICE_KEY", "")
+    # icd11.pdhc projects a FHIR Condition per diagnosis episode (WRITE).
+    # Empty admits nobody: KNOWN_FHIR_SERVICES names the identity, and the
+    # key is what lets it in. Both are needed.
+    app.config["ICD11_PDHC_SERVICE_KEY"] = os.environ.get("ICD11_PDHC_SERVICE_KEY", "")
     # TWOGATE_PDHC_SERVICE_KEY was read here until #732 removed the 2gate.pdhc
     # ingest identity (never built). Nothing reads it now, so the variable is
     # inert wherever it is still set; unset it on any instance that has it.

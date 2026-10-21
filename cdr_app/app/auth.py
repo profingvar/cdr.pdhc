@@ -152,6 +152,19 @@ KNOWN_FHIR_SERVICES = {
     # report ingestion). Key is the same GATEWAY_PDHC_SERVICE_KEY cdr1 already
     # trusts for ingest — this just admits it on the /api/v1/fhir/* write path.
     "gateway.pdhc":   "GATEWAY_PDHC_SERVICE_KEY",
+    # icd11.pdhc projects a FHIR Condition per diagnosis episode. It is the
+    # authority for the episode and its append-only assertion log; this
+    # repository holds the derived CURRENT state so the rest of the platform
+    # reads diagnoses the same way it reads everything else.
+    #
+    # WRITE, so deliberately NOT in READ_ONLY_SERVICE_SOURCES below.
+    #
+    # Note for whoever reads this next: condition_history here is NOT the
+    # diagnosis history. It records writes, not statements, and it is
+    # write-ordered — so replaying "what did we hold on date D" from it gives
+    # the wrong answer whenever a clinician states today that something became
+    # true earlier. Ask icd11.pdhc for that.
+    "icd11.pdhc":     "ICD11_PDHC_SERVICE_KEY",
 }
 
 # #293 read-lockdown allow-list: under CDR_READ_LOCKDOWN only these
