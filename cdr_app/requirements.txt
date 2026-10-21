@@ -34,9 +34,17 @@ APScheduler==3.11.3
 # dependency (via Flask-SQLAlchemy). The direct-deps-only limit documented
 # above left it free to move, and SQLAlchemy 2.1 is the release #711 was
 # raised about: it flips the default postgres driver to psycopg v3 and
-# crash-loops on rebuild unless the URL says `+psycopg2`. That mitigation is
-# in place, which is precisely why nobody would notice the version moving
-# until something else depended on it.
+# crash-loops on rebuild unless the URL says `+psycopg2`.
+#
+# That mitigation was NOT in place when this comment first claimed it was. The
+# pin landed; the `+psycopg2` it names did not. Every DSN here was a bare
+# `postgresql://` -- compose, .env.example, and the hardcoded fallback in
+# app/__init__.py -- so a fresh `up -d` crash-looped the app on
+# `ModuleNotFoundError: No module named 'psycopg'`, and `flask db upgrade`
+# failed the same way. Fixed 2026-10-21: all three now name the driver.
+#
+# The lesson is the comment itself. A note asserting a mitigation is in place
+# is not evidence that it is; it reads as verification and substitutes for it.
 #
 # Pinned at the version this service is ACTUALLY running. The rest of the
 # transitive closure is still loose; this is the one with a known hazard.
