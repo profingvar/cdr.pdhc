@@ -1,4 +1,4 @@
-"""FHIR R5 read / search / vread / $everything / $stats / terminology shims.
+"""FHIR R5 read / search / vread / $everything / $stats.
 
 Implements platform-plan §1.3. Endpoints (all under /api/v1/fhir/):
 
@@ -8,10 +8,26 @@ Implements platform-plan §1.3. Endpoints (all under /api/v1/fhir/):
   GET  /<Type>/<guid>/_history/<vid>      — vread specific snapshot
   GET  /Patient/<guid>/$everything        — patient compartment Bundle
   GET  /Observation/$stats                — numeric summary stats
+  GET  /events                            — change_feed long-poll (§1.5)
+
+NO TERMINOLOGY HERE, and this header used to say otherwise. Until 2026-10-31
+it listed three more endpoints:
+
   POST /CodeSystem/$lookup                — proxy to termbank.pdhc
   POST /ConceptMap/$translate             — proxy to xlate.pdhc
   POST /ValueSet/$validate-code           — proxy to plan.pdhc
-  GET  /events                            — change_feed long-poll (§1.5)
+
+**None of them has existed since 2026-06-28.** They were deleted deliberately
+by #290 (SSOT phase 4, commit 6b86e7c, −105 lines): they were pure HTTP
+passthroughs, cdr held no terminology data, and plan.pdhc has owned
+terminology since 2026-06-22. Clients call plan.pdhc / termbank.pdhc /
+xlate.pdhc directly.
+
+The code was right for four months and the header advertised a capability the
+module does not have — the same class as #804, where a docstring's promise was
+mistaken for a check. Recorded rather than silently deleted so the next person
+reading an old client, a stale integration note or this file's history finds
+the reason here instead of concluding the routes were lost by accident.
 
 Search supports the demonstrator subset called out in §1.3.a:
 patient, code, date (ge/le), category, _tag, _has, _include,

@@ -258,3 +258,42 @@ exist anywhere in this service** — the line is the only `CodeSystem` mention i
 the file. Same class as #804: a docstring advertising a capability the module
 does not have. Not fixed here; it is unrelated to #857 and deserves its own
 look at whether the proxy should exist or the line should go.
+
+### Follow-up, same day: the $lookup line is fixed
+
+Recorded above as "not fixed here". Done now, and it was three lines rather
+than one.
+
+`cdr_app/app/api/fhir_read.py`'s module header advertised:
+
+```
+POST /CodeSystem/$lookup       — proxy to termbank.pdhc
+POST /ConceptMap/$translate    — proxy to xlate.pdhc
+POST /ValueSet/$validate-code  — proxy to plan.pdhc
+```
+
+**None has existed since 2026-06-28.** `git log -S` found the deletion:
+`6b86e7c`, "#290 SSOT phase 4", −105 lines. They were pure HTTP passthroughs,
+cdr held no terminology data, and plan.pdhc has owned terminology since
+2026-06-22. The code was right for four months; only the header lied. The
+module title said "terminology shims" too, and no longer does.
+
+The three lines are **quoted in the header rather than silently deleted**,
+with the commit, the ticket and the date, so the next person reading an old
+client or a stale integration note finds the reason here instead of concluding
+the routes were lost by accident.
+
+Checked before and after:
+
+- Zero route definitions matching `CodeSystem`, `ConceptMap` or
+  `validate-code` anywhere in `cdr_app/app` — none has been re-added.
+- Nothing on the platform calls cdr's removed endpoints. The eight files
+  mentioning those paths are termbank's **own** `$lookup` route
+  (`termbank.pdhc/app/__init__.py:106`) and documentation about it. termbank
+  is the owner, so that is correct.
+- 304 passed, unchanged.
+
+My first route check here was sloppy and is worth recording: it counted files
+containing both a route decorator and the word, not actual route definitions,
+and reported 3 / 1 / 1. Redone against `@bp.(post|get|route)(` patterns: zero.
+A count is not a measurement unless it counts the right thing.
