@@ -40,6 +40,7 @@ from app.services.canonicalisation import (
     operation_outcome_xlate_not_configured,
     record_plan_miss,
 )
+from app.auth import icd11_assertion_refused_for
 from app.services.plan_client import PlanClient
 from app.services.resource_writer import (
     EtagMismatch,
@@ -139,6 +140,16 @@ def _write_one(fhir: dict, ctx: WriteContext, *,
         return _operation_outcome(
             "error", "structure", "resource missing resourceType"
         ), 400, {}
+
+    # #857 — checked BEFORE canonicalisation, which costs an upstream round
+    # trip to plan (and xlate) we would only throw away. This is an
+    # authorisation refusal, not a content one, so 403 rather than the 422 the
+    # plan_miss / xlate_miss paths return: the code may be perfectly valid and
+    # still not this caller's to assert.
+    refusal = icd11_assertion_refused_for(fhir)
+    if refusal:
+        log.warning("icd11_assertion_refused: %s", refusal)
+        return _operation_outcome("error", "forbidden", refusal), 403, {}
 
     canon = _get_canonicaliser()
     result = canon.canonicalise(fhir)

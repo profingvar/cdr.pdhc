@@ -184,3 +184,77 @@ Deployed to prod CDR1 SURGICALLY (in-place edit — prod cdr1 is behind local gi
 /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/auth.py
 /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/__init__.py
 /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/.env.example
+
+## 2026-10-31 — #857 (b): a service key may not assert an ICD-11 diagnosis
+
+Operator chose (b) after (a)'s real cost was measured. Repo only — nothing
+deployed.
+
+Edited:
+
+- `cdr_app/app/auth.py` — `ICD11_ASSERTING_SERVICES` (a frozenset, **empty**),
+  `ICD11_WHO_SYSTEM`, `ICD11_CANONICAL_LIB`, `icd11_assertion_refused_for()`
+  and `_codings_in()`. Placed beside `KNOWN_FHIR_SERVICES` and
+  `READ_ONLY_SERVICE_SOURCES` on purpose: CLAUDE.md's own lesson is that an
+  auditor must already check two dicts here, and a third rule in a third file
+  makes that worse.
+- `cdr_app/app/api/fhir_write.py` — the refusal is evaluated in `_write_one`,
+  the one path POST, PUT and every Bundle entry share, and BEFORE
+  canonicalisation so a refused write costs no upstream round trip. 403, not
+  the 422 the plan_miss/xlate_miss paths use: the code may be perfectly valid
+  and still not this caller's to assert.
+- `cdr_app/tests/test_icd11_assertion_gate.py` — NEW, 11 tests.
+
+### Why the set is empty, and why that is not a placeholder
+
+Measured 2026-10-31 across cdr1, cdr2 and cdr3: `fhir_resources` holds **zero
+Condition rows**. Only Observations — 1,942 + 7 on cdr1 (sim, gateway), 52,131
+on cdr2, 19,509 on cdr3, all sim. So no legitimate producer is affected.
+
+And `icd11.pdhc` is not in `KNOWN_FHIR_SERVICES` at all, so "only icd11.pdhc
+may write these" and "nobody may" are the same rule today. The empty set is the
+honest spelling. When icd11.pdhc's projection goes live it gets a key, an entry
+in the first list, and its name here — and adding it to the first without the
+second refuses its writes with a message naming this constant, which is the
+intended failure.
+
+### Two decisions inside the guard
+
+- **The coding walk is recursive, not a path list.** A Condition carries
+  codings under `code`, `bodySite`, `severity`, `stage.summary` and
+  `evidence.code`, and a Bundle nests them deeper. Reading known paths is how a
+  guard ends up checking the one place the producer did not use. Depth-bounded
+  at 12.
+- **Both spellings are matched.** WHO's `http://id.who.int/icd/release/11/mms`
+  arrives on a raw FHIR resource; the slug `icd11-mms` arrives inside a
+  termbank canonical URI, which is what `parse_canonical_uri` hands to plan.
+  Only one of them looks like ICD-11 at a glance.
+
+### Verified
+
+304 passed (was 293). Control: the rule was disabled and **7 of the 11 went
+red while 4 stayed green** — the 4 being exactly the ones that should pass
+without it (a non-ICD-11 coding, ICD-10, a human caller, and the assertion that
+the allowlist is empty). One test posts a real Condition through the HTTP route
+and asserts 403, because asserting the predicate is not asserting the guard
+runs.
+
+### What this does NOT do
+
+Option (a) — cdr validating the code against termbank's used-concept record —
+would close the hole whatever key the caller holds. It is not done, and the
+cost was measured rather than estimated: this service has **no termbank HTTP
+client**, only URI strings and comments, so it means a new client (patterns
+exist in `plan_client`, `xlate_client`, `cambio_client`), new configuration,
+and putting termbank — a loopback-only service with no public subdomain — on
+the clinical write path. Tracked against the #868 gate: before real patient
+data.
+
+### Found on the way
+
+`cdr_app/app/api/fhir_read.py:11` advertises
+`POST /CodeSystem/$lookup — proxy to termbank.pdhc`. **That route does not
+exist anywhere in this service** — the line is the only `CodeSystem` mention in
+the file. Same class as #804: a docstring advertising a capability the module
+does not have. Not fixed here; it is unrelated to #857 and deserves its own
+look at whether the proxy should exist or the line should go.

@@ -248,6 +248,109 @@ def _service_key_outcome(app):
 # narrowed rather than retired the way monitor.pdhc was (#727).
 READ_ONLY_SERVICE_SOURCES = frozenset({"analyse.pdhc", "dashboard.pdhc"})
 
+# ---------------------------------------------------------------------------
+# #857 — who may ASSERT an ICD-11 diagnosis
+# ---------------------------------------------------------------------------
+#
+# plan.pdhc's `$validate-code` answers TRUE for ANY `icd11-mms` code, including
+# one that does not exist. That is correct and was ratified: plan holds no copy
+# of an 85 000-code classification chosen at the point of care, so the per-code
+# question has no meaningful answer there and asking it anyway returns a false
+# negative rather than a fact. Measured 2026-10-21:
+#
+#     system=icd11-mms&code=1A00         -> true
+#     system=icd11-mms&code=ZZ-nonsense  -> TRUE
+#     system=icd10&code=A00.9            -> false   (the control)
+#
+# But it MOVES the existence check rather than removing it. Per-code existence
+# now rests entirely on icd11.pdhc validating against WHO's `codeinfo` at
+# ENTRY. Inside the designed path that is sound. The exposure is BESIDE it:
+# KNOWN_FHIR_SERVICES gates FHIR WRITES as well as reads (#760) and the blob it
+# mints is SU-equivalent, so any identity on that list could POST a Condition
+# carrying a fabricated ICD-11 code, plan would assent, and this CDR would
+# store it with nothing in the chain refusing it.
+#
+# So the writer is restricted instead. **The set is EMPTY, deliberately.**
+# Measured 2026-10-31 across cdr1, cdr2 and cdr3: `fhir_resources` holds ZERO
+# Condition rows — only Observations, from sim.pdhc and gateway.pdhc — so no
+# legitimate producer is affected. icd11.pdhc is not in KNOWN_FHIR_SERVICES at
+# all today, so "only icd11.pdhc may write these" and "nobody may" are the same
+# rule; this is the honest spelling of it.
+#
+# WHEN icd11.pdhc's Condition projection goes live it gets its own service key,
+# an entry in KNOWN_FHIR_SERVICES, and its name HERE. Adding it to the first
+# list without adding it here will refuse its writes with the message below,
+# which is the intended failure: loud, named, and pointing at this comment.
+#
+# This is a narrower control than validating the code against termbank's
+# used-concept record (#857 option (a)), which would close the hole whatever
+# key the caller holds. That remains the durable fix and is NOT done: it needs
+# a termbank HTTP client in this service — there is none, only URI strings —
+# and it would put termbank, a loopback-only service with no public subdomain,
+# on the clinical write path. Tracked against the #868 gate: before real
+# patient data.
+ICD11_ASSERTING_SERVICES: frozenset[str] = frozenset()
+
+#: The two spellings an ICD-11 coding arrives in. WHO's own system URI appears
+#: on a raw FHIR resource; the canonical-library slug appears inside a termbank
+#: canonical URI (`https://termbank.pdhc.se/CodeSystem/icd11-mms/<code>`), which
+#: is what `parse_canonical_uri` hands to plan. Both are checked, because a
+#: producer can send either and only one of them looks like ICD-11 at a glance.
+ICD11_WHO_SYSTEM = "http://id.who.int/icd/release/11/mms"
+ICD11_CANONICAL_LIB = "icd11-mms"
+
+
+def icd11_assertion_refused_for(fhir: dict) -> str | None:
+    """Reason this caller may not write this resource, or None.
+
+    Returns None for every non-service caller: the rule is about machine
+    identities holding an SU-equivalent blob, not about a clinician.
+    """
+    source = (getattr(g, "access_blob", None) or {}).get("service_source")
+    if not source:
+        return None
+    if source in ICD11_ASSERTING_SERVICES:
+        return None
+    for coding in _codings_in(fhir):
+        system = (coding.get("system") or "")
+        if system == ICD11_WHO_SYSTEM or f"/{ICD11_CANONICAL_LIB}/" in system:
+            return (
+                f"service '{source}' may not assert an ICD-11 code. "
+                f"plan.pdhc answers `true` for every code in '{ICD11_CANONICAL_LIB}' "
+                f"because it is a whole-system answer space, so that assent is an "
+                f"ADOPTION statement and not a check that the code exists (#857). "
+                f"Per-code existence is verified by icd11.pdhc against WHO at "
+                f"entry, so an ICD-11 diagnosis must arrive through it. See "
+                f"ICD11_ASSERTING_SERVICES in app/auth.py."
+            )
+    return None
+
+
+def _codings_in(node, _depth: int = 0):
+    """Every `coding` entry anywhere in a FHIR resource.
+
+    Walks rather than reading known paths: a Condition carries them under
+    `code`, but also under `bodySite`, `severity`, `stage.summary` and
+    `evidence.code`, and a Bundle entry nests them deeper still. Reading a
+    fixed list of paths is how a guard ends up checking the one place the
+    producer did not use. Depth-bounded so a cyclic or absurd body cannot
+    spin here.
+    """
+    if _depth > 12:
+        return
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "coding" and isinstance(value, list):
+                for c in value:
+                    if isinstance(c, dict):
+                        yield c
+            else:
+                yield from _codings_in(value, _depth + 1)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _codings_in(item, _depth + 1)
+
+
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 # A distinct outcome from "bad credentials". The credentials ARE valid; the verb
