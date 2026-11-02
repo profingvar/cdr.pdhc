@@ -426,6 +426,41 @@ class CdrAuditPlanMiss(db.Model):
     last_request_id = db.Column(db.String(64), nullable=True)
 
 
+class CdrAuditWholeSystemAccept(db.Model):
+    """A canonical URI that plan.pdhc accepted at SYSTEM level rather than
+    per code (#872).
+
+    The mirror image of ``CdrAuditPlanMiss``: that table records what plan
+    refused, this one records what plan accepted *without being asked about
+    the specific code*. Both are needed to answer "on what basis is this
+    code in the repository?" after the fact.
+
+    Why it exists. plan's ``$validate-code`` normally answers from a
+    Concept/ValueCatalog row for that exact code. For a CLASSIFICATION
+    (``canonical_libs.whole_system_answer_space``) it instead answers
+    ``result: true`` for ANY code in the system, because ~85 000 ICD-11
+    codes chosen at the point of care cannot be pre-enumerated. plan says so
+    in the response — a ``whole_system`` boolean plus a message — and
+    **nothing read it** (measured 2026-11-01: zero readers outside
+    plan.pdhc). So an ICD-11 diagnosis and a planned LOINC measurement were
+    indistinguishable in this repository's record of why each was accepted.
+
+    Per-code existence for such a code is checked at ENTRY by icd11.pdhc
+    against WHO's codeinfo, not here. This row is therefore not a warning —
+    it is the provenance of the decision.
+    """
+    __tablename__ = "cdr_audit_whole_system_accept"
+
+    guid = db.Column(db.String(36), primary_key=True, default=_uuid)
+    canonical_uri = db.Column(db.String(512), nullable=False, unique=True)
+    canonical_lib_name = db.Column(db.String(128), nullable=True)
+    canonical_refnumber = db.Column(db.String(128), nullable=True)
+    seen_count = db.Column(db.Integer, nullable=False, default=1)
+    first_seen_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False)
+    last_seen_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False)
+    last_request_id = db.Column(db.String(64), nullable=True)
+
+
 class ChangeFeed(db.Model):
     """Append-only event log emitted on every CDR write.
 

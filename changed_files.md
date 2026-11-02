@@ -297,3 +297,60 @@ My first route check here was sloppy and is worth recording: it counted files
 containing both a route decorator and the word, not actual route definitions,
 and reported 3 / 1 / 1. Redone against `@bp.(post|get|route)(` patterns: zero.
 A count is not a measurement unless it counts the right thing.
+
+## 2026-11-01 — #872: record WHY a code was accepted, not only that it was
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/models/resources.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/models/__init__.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/canonicalisation.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_write.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/migrations/versions/c8d9e0f1a2b3_whole_system_accept_audit.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_whole_system_accept_audit.py
+
+plan.pdhc answers `$validate-code` per code, EXCEPT for a canonical library
+flagged `whole_system_answer_space` — then it answers `result: true` for any
+code in the system, because ~85 000 ICD-11 codes picked at the point of care
+cannot be pre-enumerated. plan has said so on the wire since #857: a
+`whole_system` boolean plus a message naming icd11.pdhc as the per-code
+existence checker.
+
+**Measured 2026-11-01: nothing read it.** Zero readers across the workspace.
+`PlanClient._parse_parameters` copies every boolean in the response by name, so
+the key arrived in cdr's own dict and no code inspected it. Nothing was let
+through wrongly — but an ICD-11 diagnosis and a planned LOINC measurement were
+indistinguishable in this repository's record of *why* each was accepted.
+
+Now: `cdr_audit_whole_system_accept`, deliberately the mirror of
+`cdr_audit_plan_miss` — same columns, same one-row-per-canonical dedup with
+`seen_count`, same recorder shape. One table says what plan refused; the other
+says what plan accepted without being asked about the specific code. Read
+together they answer "on what basis is this code in the repository?".
+
+Threaded through the canonicaliser by passing a list INTO
+`_canonicalise_codeable_concept` rather than widening its return type: the
+method has 17 `return` statements and one call site, so a 4-tuple would have
+touched every one of them for nothing.
+
+Both accept sites are wired, which is the easy thing to half-do: the
+termbank-prefixed branch AND the xlate-translated branch. The second has its
+own test for that reason.
+
+**The controls are the content.** Three of the 11 tests assert that a per-code
+acceptance records NOTHING, and one asserts a refusal records nothing. Proven
+by disabling the rule — `if accepts is None` instead of also checking
+`whole_system` — which turned exactly the two per-code controls red (2 failed,
+9 passed) and nothing else. Restored: 11/11, and 315/315 for the full suite.
+
+The first run of the write-path control failed on my own test setup, not on the
+code: the fake canonicaliser returned the same `primary_canonical_uri` in both
+tests, so the second POST deduplicated against the first row and returned 200
+instead of 201. Fixed by parameterising it; the fake now documents why.
+
+Migration applied, reverted and re-applied against real Postgres
+(`cdr_pdhc_db`, database `cdr_db`): table created with
+`uq_whole_system_canonical`, dropped on downgrade, recreated on upgrade, head
+`c8d9e0f1a2b3`. NOT deployed to production.
+
+Additive only, and nothing is backfilled: rows written before this migration
+have no recorded basis and cannot get one. That is worth knowing the first
+time the table is read — an empty table does not mean no system-level
+acceptances happened.

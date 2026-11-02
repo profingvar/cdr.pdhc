@@ -39,6 +39,7 @@ from app.services.canonicalisation import (
     operation_outcome_xlate_miss,
     operation_outcome_xlate_not_configured,
     record_plan_miss,
+    record_whole_system_accept,
 )
 from app.auth import icd11_assertion_refused_for
 from app.services.plan_client import PlanClient
@@ -181,6 +182,13 @@ def _write_one(fhir: dict, ctx: WriteContext, *,
     # status == ok
     rewritten = result.rewritten or fhir
     ctx.primary_canonical_uri = result.primary_canonical_uri
+    # Record codings plan accepted at SYSTEM level rather than per code
+    # (#872). Mirrors the plan_miss bookkeeping above: the write proceeds
+    # either way, but afterwards the repository can say on what basis each
+    # code got in. Caller commits.
+    for note in result.whole_system_accepts:
+        record_whole_system_accept(
+            db.session, note, request_id=ctx.source_request_id)
     # FHIR R5 "update as create" (PUT-by-id semantics): when the body
     # carries an `id` and the caller didn't pass an explicit
     # update_by_guid, route through the update-by-guid path so the

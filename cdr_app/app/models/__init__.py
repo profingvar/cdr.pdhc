@@ -334,13 +334,15 @@ class CambioDeliveryLog(db.Model):
 
 # ---------------------------------------------------------------------------
 # Phase-1 platform-plan tables (FHIR per-type + history + sync_group +
-# cdr_audit_plan_miss + change_feed). Imported for side effect so SQLAlchemy
+# cdr_audit_plan_miss + cdr_audit_whole_system_accept + change_feed).
+# Imported for side effect so SQLAlchemy
 # registers the tables on db.metadata.
 # ---------------------------------------------------------------------------
 from app.models import resources as _resources  # noqa: E402, F401
 from app.models.resources import (  # noqa: E402, F401
     SyncGroup,
     CdrAuditPlanMiss,
+    CdrAuditWholeSystemAccept,
     ChangeFeed,
     live_model,
     history_model,

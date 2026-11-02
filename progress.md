@@ -1844,3 +1844,33 @@ needs a migration.
 293 tests green; cdr1/cdr2/cdr3 sibling smokes 18/18 each; row counts and NULL
 counts unchanged on all three; 41 containers, 0 unhealthy. Backups:
 `backups/predeploy/cdr.pdhc/818_cdr{1,2,3}_20261020T1246-1247Z`.
+
+## #872 — the basis for an acceptance is now recorded (2026-11-01)
+
+plan.pdhc answers `$validate-code` per code, except for a canonical library
+flagged `whole_system_answer_space`, where it answers `result: true` for any
+code in the system and says so with a `whole_system` boolean. **Measured
+2026-11-01: nothing in the workspace read that boolean** — our own
+`PlanClient._parse_parameters` carried it into a dict no code inspected. So
+an ICD-11 diagnosis and a planned LOINC measurement were indistinguishable in
+this repository's record of *why* each was accepted.
+
+New table `cdr_audit_whole_system_accept`, the deliberate mirror of
+`cdr_audit_plan_miss`: same columns, same dedup on `canonical_uri` with
+`seen_count`. One says what plan refused, the other what plan accepted without
+being asked about the specific code; read together they answer "on what basis
+is this code here?". Wired on BOTH accept sites — the termbank-prefixed branch
+and the xlate-translated one.
+
+Tests: **11 new, 315/315 total.** Four of the eleven are controls asserting
+that a per-code acceptance records nothing; proven by disabling the
+`whole_system` check, which turned exactly those red (2 failed / 9 passed) and
+nothing else.
+
+Migration `c8d9e0f1a2b3` applied, reverted and re-applied against real
+Postgres (`cdr_pdhc_db`/`cdr_db`), head confirmed. **Not deployed.** Additive,
+no backfill — rows written before it have no recorded basis and cannot get
+one, so an empty table does not mean no system-level acceptances happened.
+
+Full account, including why the result type was not widened and how the first
+write-path control failed on its own setup: `changed_files.md`, 2026-11-01.

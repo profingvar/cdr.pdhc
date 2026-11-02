@@ -72,6 +72,22 @@ class CodeMiss:
 
 
 @dataclass
+class WholeSystemAccept:
+    """A coding plan.pdhc accepted at SYSTEM level, not per code (#872).
+
+    Not a miss and never part of an OperationOutcome — the write proceeds.
+    It is recorded so the repository can say afterwards WHY a code was
+    accepted: because someone adopted that exact code, or because the whole
+    classification is adopted and the per-code check happens elsewhere
+    (icd11.pdhc against WHO, at entry)."""
+
+    canonical_uri: str
+    location: str
+    canonical_lib_name: str | None = None
+    canonical_refnumber: str | None = None
+
+
+@dataclass
 class CanonicalisationResult:
     """Return value of the canonicaliser.
 
@@ -87,6 +103,9 @@ class CanonicalisationResult:
     # The first canonical_uri we mapped through cleanly — used as the
     # row's `code_canonical` indexed column.
     primary_canonical_uri: str | None = None
+    # Codings plan accepted at system level rather than per code (#872).
+    # The writer records these; they do NOT affect ``status``.
+    whole_system_accepts: list[WholeSystemAccept] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +155,7 @@ class Canonicaliser:
         rewritten = dict(fhir_resource)  # shallow copy; we'll set keys back
         primary_canonical: str | None = None
         misses: list[CodeMiss] = []
+        accepts: list[WholeSystemAccept] = []
 
         for path in _CODE_PATHS[rt]:
             cc = rewritten.get(path)
@@ -143,7 +163,7 @@ class Canonicaliser:
                 continue
             try:
                 new_cc, canonical_uri, path_misses = self._canonicalise_codeable_concept(
-                    cc, location=f"{rt}.{path}"
+                    cc, location=f"{rt}.{path}", accepts=accepts
                 )
             except XlateNotConfigured as e:
                 # ORDER MATTERS: this is a subclass of XlateUnreachable,
@@ -192,11 +212,31 @@ class Canonicaliser:
             status="ok",
             rewritten=rewritten,
             primary_canonical_uri=primary_canonical,
+            whole_system_accepts=accepts,
         )
 
     # ----- internals -----------------------------------------------------
+    @staticmethod
+    def _note_whole_system(accepts, plan_outcome, canonical_uri: str,
+                           location: str) -> None:
+        """Record that plan answered at SYSTEM level for this coding (#872).
+
+        plan sends a ``whole_system`` boolean on exactly that branch. It has
+        always been on the wire and nothing read it; this is the reader."""
+        if accepts is None or not (plan_outcome or {}).get("whole_system"):
+            return
+        parsed = parse_canonical_uri(canonical_uri)
+        lib, ref = (parsed[0], parsed[1]) if parsed else (None, None)
+        accepts.append(WholeSystemAccept(
+            canonical_uri=canonical_uri,
+            location=location,
+            canonical_lib_name=lib,
+            canonical_refnumber=ref,
+        ))
+
     def _canonicalise_codeable_concept(
-        self, cc: dict, *, location: str
+        self, cc: dict, *, location: str,
+        accepts: "list[WholeSystemAccept] | None" = None,
     ) -> tuple[dict | None, str | None, list[CodeMiss]]:
         """Process one CodeableConcept. Returns (rewritten_cc, canonical_uri, misses).
 
@@ -259,6 +299,9 @@ class Canonicaliser:
                     continue
                 plan_outcome = self.plan.validate_canonical(canonical_uri)
                 if plan_outcome and plan_outcome.get("result"):
+                    self._note_whole_system(
+                        accepts, plan_outcome, canonical_uri,
+                        f"{location}.coding[{i}]")
                     # Promote this coding to position 0 (it likely already is).
                     promoted = self._promote(codings, i)
                     return self._with_codings(cc, promoted), canonical_uri, []
@@ -311,6 +354,8 @@ class Canonicaliser:
                 continue
 
             # Success — build the canonical coding and promote it.
+            self._note_whole_system(
+                accepts, plan_outcome, canonical_uri, f"{location}.coding[{i}]")
             canonical_coding = {
                 "system": f"https://termbank.pdhc.se/CodeSystem/{match['canonical_system']}",
                 "code": match["canonical_code"],
@@ -496,6 +541,42 @@ def record_plan_miss(db_session, miss: CodeMiss, *, request_id: str | None) -> N
             canonical_uri=miss.canonical_uri,
             canonical_lib_name=miss.canonical_lib_name,
             canonical_refnumber=miss.canonical_refnumber,
+            seen_count=1,
+            first_seen_at=now,
+            last_seen_at=now,
+            last_request_id=request_id,
+        )
+        db_session.add(row)
+    else:
+        row.seen_count = (row.seen_count or 0) + 1
+        row.last_seen_at = now
+        row.last_request_id = request_id
+
+
+def record_whole_system_accept(db_session, note: "WholeSystemAccept", *,
+                               request_id: str | None) -> None:
+    """Idempotently record a system-level acceptance to
+    ``cdr_audit_whole_system_accept`` (#872).
+
+    Deliberately identical in shape to ``record_plan_miss``: one row per
+    canonical_uri, ``seen_count`` on repeats. The two tables are read
+    together — one says what plan refused, the other what plan accepted
+    without being asked about the specific code.
+    """
+    from app.models.resources import CdrAuditWholeSystemAccept
+
+    if not note.canonical_uri:
+        return
+
+    row = db_session.query(CdrAuditWholeSystemAccept).filter_by(
+        canonical_uri=note.canonical_uri
+    ).one_or_none()
+    now = datetime.now(timezone.utc)
+    if row is None:
+        row = CdrAuditWholeSystemAccept(
+            canonical_uri=note.canonical_uri,
+            canonical_lib_name=note.canonical_lib_name,
+            canonical_refnumber=note.canonical_refnumber,
             seen_count=1,
             first_seen_at=now,
             last_seen_at=now,
