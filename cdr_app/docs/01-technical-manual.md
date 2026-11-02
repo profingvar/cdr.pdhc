@@ -78,6 +78,16 @@ parses that GUID out and looks it up via plan.pdhc (see §6.2).
   `GET /api/v1/fhir/events` (§4.2).
 - **`cdr_audit_plan_miss`** — a canonical URI returned by xlate.pdhc that no
   active plan.pdhc Concept references. Bookkept for out-of-band review.
+- **`cdr_audit_whole_system_accept`** (#872) — the mirror of the row above:
+  a canonical URI plan.pdhc accepted at **system** granularity rather than per
+  code, because its canonical library is flagged `whole_system_answer_space`
+  (`icd11-mms`, and `icd10` since 2026-11-02). plan answered `result: true`
+  *without having been asked about that particular code* — an adoption
+  statement about the code system, not a membership test. Deduped on
+  `canonical_uri` with `seen_count`, like its sibling. One table says what plan
+  REFUSED, the other what it assented to on system grounds; read together they
+  answer "on what basis is this code in the repository?". Nothing is
+  backfilled — the audit starts at first sighting after deploy.
 - **`cdr_read_audit`** (X1 #407/#443) — one row per patient-touching FHIR
   read: caller service/user, org guids, route, resource type, patient guid,
   rows returned, HTTP status, and the session/role/purpose/access-basis
@@ -101,9 +111,12 @@ legacy standard/canonical tables (`fhir_resources`, `openehr_compositions`,
 `health_observations`, `activities`) are effectively write-through legacy for
 provenance, not the query store.
 
-**Table count is ~37**, not 13: 10 live + 10 history + 4 cross-cutting
-(`sync_group`, `change_feed`, `cdr_audit_plan_miss`, `cdr_read_audit`) + 13
-legacy/infra tables.
+**Table count is 38 on CDR 1** (37 on cdr2/cdr3), not 13: 10 live + 10 history
++ 5 cross-cutting (`sync_group`, `change_feed`, `cdr_audit_plan_miss`,
+`cdr_audit_whole_system_accept`, `cdr_read_audit`) + 13 legacy/infra tables.
+`cdr_audit_whole_system_accept` exists on CDR 1 only so far (migration
+`c8d9e0f1a2b3`, applied 2026-11-02); cdr2/cdr3 are one migration behind.
+Counts exclude `alembic_version`.
 
 ## 3. The five CDRs and `CDR_READ_LOCKDOWN` (#293)
 
@@ -170,6 +183,13 @@ create"), version-bumping and pushing the prior row to `*_history`. Error
 outcomes: `422 xlate_miss`, `422 plan_miss` (also bookkept to
 `cdr_audit_plan_miss`), `412` on stale `If-Match`, `503 transient` when xlate
 or plan is unreachable.
+
+On the **accept** path, a coding that plan assented to on whole-system grounds
+(its answer carried `whole_system: true`) is bookkept to
+`cdr_audit_whole_system_accept` (#872) on **both** accept branches — the
+termbank-prefixed one and the xlate-translated one. The write proceeds either
+way; the row records the *basis*, so a later reader can tell an individually
+verified code from one admitted because its whole classification is adopted.
 
 ### 4.3 FHIR read / search
 
