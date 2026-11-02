@@ -1874,3 +1874,28 @@ one, so an empty table does not mean no system-level acceptances happened.
 
 Full account, including why the result type was not widened and how the first
 write-path control failed on its own setup: `changed_files.md`, 2026-11-01.
+
+### #874 — the assertion gate now asks plan, 2026-11-02
+
+#857's gate named one canonical library. #872 flagged a second twelve days
+later and the gate did not notice. It now reads
+`whole_system_answer_space` from plan's own published table
+(`GET /api/v1/lookup/canonical-libs`, unauthenticated, cached 60 s), with
+`WHOLE_SYSTEM_LIBS_FLOOR = {icd11-mms}` as a level it cannot regress below —
+so a plan outage can only make the set smaller than reality, never empty.
+
+Matching is exact (the predecessor's `f"/{lib}/" in system` could not tell
+`icd10` from `icd10-se`), and a `canonical_lib_url` is honoured only when one
+library holds it, because `icd10` carries a copy of `snomed`'s (#875).
+
+Every flagged library admits nobody; permission is per library.
+
+**337 passed.** Controls proven by deliberate breakage (3 / 2 / 4 red).
+**NOT deployed.** The deploy is its own decision: #857's gate has never been
+in production, and `auth.py` also adds the `icd11.pdhc` write identity, which
+needs an operator-set service key.
+
+Blast radius measured on 73 589 resources across cdr1/2/3: zero carry an
+ICD-10 or ICD-11 coding, with a positive control confirming the searches ran.
+
+Full account: `changed_files.md`, 2026-11-02.

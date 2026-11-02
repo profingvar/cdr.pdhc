@@ -249,7 +249,7 @@ def _service_key_outcome(app):
 READ_ONLY_SERVICE_SOURCES = frozenset({"analyse.pdhc", "dashboard.pdhc"})
 
 # ---------------------------------------------------------------------------
-# #857 — who may ASSERT an ICD-11 diagnosis
+# #857 / #874 — who may ASSERT a code from a WHOLE-SYSTEM answer space
 # ---------------------------------------------------------------------------
 #
 # plan.pdhc's `$validate-code` answers TRUE for ANY `icd11-mms` code, including
@@ -262,6 +262,14 @@ READ_ONLY_SERVICE_SOURCES = frozenset({"analyse.pdhc", "dashboard.pdhc"})
 #     system=icd11-mms&code=ZZ-nonsense  -> TRUE
 #     system=icd10&code=A00.9            -> false   (the control)
 #
+# **THAT CONTROL IS NO LONGER TRUE, and its falsification is why #874 exists.**
+# #872 flipped `icd10` to a whole-system answer space on 2026-11-02, so the
+# third line now reads TRUE in production. The example above is kept as the
+# 2026-10-21 measurement it was, not corrected in place, because the argument
+# it supports was made on it. The gate, however, must not be: a rule written
+# against ONE library's name goes stale the moment a second library is flagged,
+# which is exactly what happened here within twelve days.
+#
 # But it MOVES the existence check rather than removing it. Per-code existence
 # now rests entirely on icd11.pdhc validating against WHO's `codeinfo` at
 # ENTRY. Inside the designed path that is sound. The exposure is BESIDE it:
@@ -270,17 +278,25 @@ READ_ONLY_SERVICE_SOURCES = frozenset({"analyse.pdhc", "dashboard.pdhc"})
 # carrying a fabricated ICD-11 code, plan would assent, and this CDR would
 # store it with nothing in the chain refusing it.
 #
-# So the writer is restricted instead. **The set is EMPTY, deliberately.**
-# Measured 2026-10-31 across cdr1, cdr2 and cdr3: `fhir_resources` holds ZERO
-# Condition rows — only Observations, from sim.pdhc and gateway.pdhc — so no
-# legitimate producer is affected. icd11.pdhc is not in KNOWN_FHIR_SERVICES at
-# all today, so "only icd11.pdhc may write these" and "nobody may" are the same
-# rule; this is the honest spelling of it.
+# So the writer is restricted instead, and #874 made the restriction ask
+# plan.pdhc WHICH libraries are affected instead of naming one.
+#
+# **Every flagged library admits NOBODY by default.** Measured 2026-10-31
+# across cdr1, cdr2 and cdr3: `fhir_resources` holds ZERO Condition rows — only
+# Observations, from sim.pdhc and gateway.pdhc — so no legitimate producer is
+# affected. icd11.pdhc is not in KNOWN_FHIR_SERVICES at all today, so "only
+# icd11.pdhc may write these" and "nobody may" are the same rule; this is the
+# honest spelling of it.
 #
 # WHEN icd11.pdhc's Condition projection goes live it gets its own service key,
-# an entry in KNOWN_FHIR_SERVICES, and its name HERE. Adding it to the first
-# list without adding it here will refuse its writes with the message below,
-# which is the intended failure: loud, named, and pointing at this comment.
+# an entry in KNOWN_FHIR_SERVICES, and its name HERE under `icd11-mms`. Adding
+# it to the first list without adding it here will refuse its writes with the
+# message below, which is the intended failure: loud, named, and pointing at
+# this comment.
+#
+# `icd10` is deliberately absent too, and for a different reason: ICD-11 has an
+# entry-point validator (icd11.pdhc, against WHO `codeinfo`) and ICD-10-SE has
+# none, so there is no service that could honestly be trusted to assert one.
 #
 # This is a narrower control than validating the code against termbank's
 # used-concept record (#857 option (a)), which would close the hole whatever
@@ -289,40 +305,122 @@ READ_ONLY_SERVICE_SOURCES = frozenset({"analyse.pdhc", "dashboard.pdhc"})
 # and it would put termbank, a loopback-only service with no public subdomain,
 # on the clinical write path. Tracked against the #868 gate: before real
 # patient data.
-ICD11_ASSERTING_SERVICES: frozenset[str] = frozenset()
 
-#: The two spellings an ICD-11 coding arrives in. WHO's own system URI appears
-#: on a raw FHIR resource; the canonical-library slug appears inside a termbank
-#: canonical URI (`https://termbank.pdhc.se/CodeSystem/icd11-mms/<code>`), which
-#: is what `parse_canonical_uri` hands to plan. Both are checked, because a
-#: producer can send either and only one of them looks like ICD-11 at a glance.
+#: Per canonical library, the service identities permitted to assert one of its
+#: codes. A library ABSENT from this mapping admits nobody — the fail-closed
+#: direction, and today the rule for every flagged library.
+WHOLE_SYSTEM_ASSERTING_SERVICES: dict[str, frozenset[str]] = {}
+
+#: The libraries this gate refuses even when plan.pdhc cannot be asked. plan is
+#: the authority and may WIDEN this set; it may not narrow it. Without a floor,
+#: an unreachable (or misconfigured) plan would silently disarm the gate while
+#: writes still succeeded — open at exactly the wrong moment. `icd11-mms` is
+#: here because it is the level #857 shipped at, so this cannot regress below it.
+WHOLE_SYSTEM_LIBS_FLOOR: frozenset[str] = frozenset({"icd11-mms"})
+
+#: A coding ``system`` that identifies a library without spelling its name.
+#: WHO's own URI is what appears on a raw FHIR Condition from a real producer,
+#: and it is not in plan's table at all.
 ICD11_WHO_SYSTEM = "http://id.who.int/icd/release/11/mms"
 ICD11_CANONICAL_LIB = "icd11-mms"
+WHOLE_SYSTEM_SYSTEM_ALIASES: dict[str, str] = {
+    ICD11_WHO_SYSTEM: ICD11_CANONICAL_LIB,
+}
 
 
-def icd11_assertion_refused_for(fhir: dict) -> str | None:
+def _plan_client():
+    """The PlanClient this app already uses, so the gate shares its TTL cache.
+
+    One GET per minute for the whole process, not one per request. Imported
+    locally: `auth` is imported by the app factory and `plan_client` reaches
+    back into app config, so a module-level import cycles.
+    """
+    canon = getattr(current_app, "_canonicaliser", None)
+    plan = getattr(canon, "plan", None)
+    if plan is not None:
+        return plan
+    if not hasattr(current_app, "_gate_plan_client"):
+        from app.services.plan_client import PlanClient
+        current_app._gate_plan_client = PlanClient()
+    return current_app._gate_plan_client
+
+
+def flagged_systems() -> dict[str, str]:
+    """``system`` spelling -> library name, for every library whose adoption
+    plan.pdhc declares at SYSTEM granularity.
+
+    Asks plan; falls back to the floor when plan does not answer. The floor is
+    always present, so a plan outage can only make this set SMALLER than
+    reality, never empty.
+    """
+    try:
+        published = _plan_client().whole_system_systems()
+    except Exception:  # pragma: no cover - defensive; the client already logs
+        logger.warning("whole-system adoption flags could not be read; using floor")
+        published = None
+
+    systems = dict(WHOLE_SYSTEM_SYSTEM_ALIASES)
+    for name in WHOLE_SYSTEM_LIBS_FLOOR:
+        systems.setdefault(name, name)
+    if published:
+        systems.update(published)
+    return systems
+
+
+def _library_of_coding(coding: dict, systems: dict[str, str]) -> str | None:
+    """Which flagged library this coding belongs to, or None.
+
+    EXACT matches only. The predecessor used `f"/{lib}/" in system`, and a
+    substring test cannot distinguish `icd10` from a system that merely
+    contains it — the same defect #804 recorded in gateway's path guard.
+    """
+    system = (coding.get("system") or "").strip()
+    if not system:
+        return None
+    hit = systems.get(system)
+    if hit is not None:
+        return hit
+    from app.services.plan_client import parse_canonical_system
+    name = parse_canonical_system(system)
+    if name is not None:
+        return systems.get(name)
+    return None
+
+
+def whole_system_assertion_refused_for(fhir: dict) -> str | None:
     """Reason this caller may not write this resource, or None.
 
     Returns None for every non-service caller: the rule is about machine
     identities holding an SU-equivalent blob, not about a clinician.
+
+    Walks EVERY coding on the resource, not the canonicalised code paths.
+    `canonicalise()` only visits `Observation.code`, `Condition.code` and their
+    siblings, so a fabricated classification code in `bodySite`, `severity`,
+    `stage.summary` or `evidence.code` would never reach that gate. Reading a
+    fixed list of paths is how a guard ends up checking the one place the
+    producer did not use.
     """
     source = (getattr(g, "access_blob", None) or {}).get("service_source")
     if not source:
         return None
-    if source in ICD11_ASSERTING_SERVICES:
-        return None
+    systems = flagged_systems()
     for coding in _codings_in(fhir):
-        system = (coding.get("system") or "")
-        if system == ICD11_WHO_SYSTEM or f"/{ICD11_CANONICAL_LIB}/" in system:
-            return (
-                f"service '{source}' may not assert an ICD-11 code. "
-                f"plan.pdhc answers `true` for every code in '{ICD11_CANONICAL_LIB}' "
-                f"because it is a whole-system answer space, so that assent is an "
-                f"ADOPTION statement and not a check that the code exists (#857). "
-                f"Per-code existence is verified by icd11.pdhc against WHO at "
-                f"entry, so an ICD-11 diagnosis must arrive through it. See "
-                f"ICD11_ASSERTING_SERVICES in app/auth.py."
-            )
+        lib = _library_of_coding(coding, systems)
+        if lib is None:
+            continue
+        if source in WHOLE_SYSTEM_ASSERTING_SERVICES.get(lib, frozenset()):
+            continue
+        permitted = sorted(WHOLE_SYSTEM_ASSERTING_SERVICES.get(lib, frozenset()))
+        who = ", ".join(f"'{s}'" for s in permitted) if permitted else "no service"
+        return (
+            f"service '{source}' may not assert a '{lib}' code. "
+            f"plan.pdhc answers `true` for every code in '{lib}' because it is a "
+            f"whole-system answer space, so that assent is an ADOPTION statement "
+            f"about the code system and NOT a check that the code exists "
+            f"(#857, #872, #874). Per-code existence has to be verified at entry "
+            f"by whoever owns that classification. Permitted here: {who}. See "
+            f"WHOLE_SYSTEM_ASSERTING_SERVICES in app/auth.py."
+        )
     return None
 
 

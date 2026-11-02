@@ -354,3 +354,104 @@ Additive only, and nothing is backfilled: rows written before this migration
 have no recorded basis and cannot get one. That is worth knowing the first
 time the table is read — an empty table does not mean no system-level
 acceptances happened.
+
+---
+
+## 2026-11-02 — #874: the assertion gate asks plan which libraries are
+## whole-system, instead of naming one
+
+- `cdr_app/app/services/plan_client.py`
+- `cdr_app/app/auth.py`
+- `cdr_app/app/api/fhir_write.py`
+- `cdr_app/tests/conftest.py`
+- `cdr_app/tests/test_whole_system_assertion_gate.py` (renamed from
+  `test_icd11_assertion_gate.py` via `git mv`, so history follows)
+- `cdr_app/tests/test_whole_system_accept_audit.py`
+
+**What was wrong.** #857 shipped a gate that named ONE canonical library,
+`icd11-mms`. #872 flagged `icd10` twelve days later and the gate did not
+notice. A rule written against a library's NAME goes stale the moment a second
+library is flagged, and cdr had no way to learn that it had.
+
+**The fix: ask, don't copy.** plan.pdhc publishes the canonical-library table —
+including `whole_system_answer_space` — at `GET /api/v1/lookup/canonical-libs`,
+and the GET is unauthenticated (verified against production 2026-11-02; the
+POST/PUT siblings are not). `PlanClient.whole_system_systems()` fetches it
+through the existing TTL cache, so it is one GET per minute for the process,
+not one per request.
+
+**`WHOLE_SYSTEM_LIBS_FLOOR` is the part worth defending.** plan may WIDEN the
+flagged set; it may not narrow it. Without a floor an unreachable *or merely
+misconfigured* plan would silently disarm the gate while writes kept
+succeeding — open at exactly the wrong moment. The floor is `icd11-mms`,
+i.e. the level #857 shipped at, so this cannot regress below it. The client
+returns `None` for "plan did not answer" rather than `{}`, because an empty
+mapping would read as "nothing is flagged", which is permission.
+
+**Resolution is EXACT, never substring.** The predecessor matched
+`f"/{lib}/" in system`. A substring test cannot tell `icd10` from `icd10-se` or
+from `.../ValueSet/icd10` — the same defect #804 recorded in gateway's path
+guard. Four parametrised lookalikes pin it.
+
+**A url is used only when exactly one library holds it.** Measured in
+production: `icd10` carries a copy of `snomed`'s `canonical_lib_url` (#875).
+Matching on url alone would have resolved a SNOMED coding to a FLAGGED library
+and refused legitimate SNOMED writes. Dropping non-unique urls makes that
+collision unrepresentable here instead of a latent surprise.
+
+**Still broader than the canonicaliser, on purpose.** The authoritative signal
+would be #872's `whole_system_accepts`, but that only covers the paths
+`_CODE_PATHS` walks (`Condition.code`, `Observation.code`, …). A fabricated
+classification code in `bodySite`, `severity`, `stage.summary` or
+`evidence.code` never reaches it. So the gate keeps walking every coding and
+runs BEFORE canonicalisation.
+
+**Policy: every flagged library admits nobody.** `WHOLE_SYSTEM_ASSERTING_SERVICES`
+is an empty mapping with an empty default. `icd11-mms` will list `icd11.pdhc`
+when its Condition projection goes live; `icd10` has no entry-point validator
+at all, so there is no service that could honestly be trusted to assert one.
+Permission is per library — a test pins that permitting `icd11.pdhc` for
+`icd11-mms` earns it nothing for `icd10`.
+
+**Hermeticity.** The gate now calls plan on every service-key write, and
+fourteen test files send one. A conftest autouse fixture stubs the client to
+return `None`, so the suite exercises the FLOOR by default and makes no network
+call — the same problem `_consent_allow_all` exists for. A regression that
+stops the floor refusing `icd11-mms` therefore turns tests red rather than
+passing quietly.
+
+**The #872 write-path test had to grant itself permission**, and that is the
+two rules meeting: the gate decides who may put such a code in, this table
+records that it got in on SYSTEM grounds. Rows come from human (SSO) writers
+and from explicitly permitted services. Written into the test rather than left
+as a coincidence.
+
+33 tests (was 11). Controls proven by deliberate breakage:
+
+| breakage | red |
+|---|---|
+| ignore plan's answer (the #874 regression itself) | 3 |
+| remove the floor | 2 |
+| substring instead of exact match | 4 |
+
+Control 2 left the WHO-URI parametrisation green, correctly: that spelling is
+carried by `WHOLE_SYSTEM_SYSTEM_ALIASES`, a separate mechanism from the floor.
+
+**337 passed.** NOT deployed — and the deploy is larger than this change,
+because #857's gate has never been in production (0 occurrences in the running
+cdr1) and `auth.py` also carries the `icd11.pdhc` write identity, which needs
+an operator-set `ICD11_PDHC_SERVICE_KEY`.
+
+**Blast radius, measured 2026-11-02 across all three CDRs** — and measured on
+resources, not on a Condition count, because the gate applies to every type:
+
+| | cdr1 | cdr2 | cdr3 |
+|---|---|---|---|
+| fhir_resources (all Observations) | 1 949 | 52 131 | 19 509 |
+| body contains `icd` | 0 | 0 | 0 |
+| body contains `id.who.int` | 0 | 0 | 0 |
+| `observation.code_canonical` contains `icd` | 0 | 0 | 0 |
+
+Positive control: 1 949 / 52 131 / 19 509 bodies contain `coding`, so the
+searches ran. No producer has ever sent a classification code to any CDR, so
+turning the gate on refuses nothing that currently happens.

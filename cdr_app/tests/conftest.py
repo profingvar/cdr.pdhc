@@ -86,6 +86,26 @@ def db_session(app):
 
 
 @pytest.fixture(autouse=True)
+def _whole_system_flags_unavailable(monkeypatch):
+    """#874: the assertion gate asks plan.pdhc which canonical libraries are
+    adopted at SYSTEM granularity. Without this stub the whole suite would
+    attempt a real GET to PLAN_BASE_URL on every service-key write — the same
+    hermeticity problem `_consent_allow_all` below exists for.
+
+    It returns None, meaning "plan did not answer", so the gate falls back to
+    `WHOLE_SYSTEM_LIBS_FLOOR`. That is deliberately the DEGRADED state: every
+    test that does not opt in therefore exercises the floor, so a regression
+    which makes the floor stop refusing `icd11-mms` turns tests red here rather
+    than passing quietly. test_whole_system_assertion_gate.py overrides this
+    with real payloads."""
+    from types import SimpleNamespace
+    from app import auth
+    monkeypatch.setattr(
+        auth, "_plan_client",
+        lambda: SimpleNamespace(whole_system_systems=lambda: None))
+
+
+@pytest.fixture(autouse=True)
 def _consent_allow_all(monkeypatch):
     """#422 default: ips analysis-filter allows everyone, so the rest of the
     suite stays hermetic (no IPS_BASE_URL → the real call would 503 every

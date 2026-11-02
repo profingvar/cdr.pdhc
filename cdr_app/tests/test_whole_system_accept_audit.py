@@ -225,7 +225,20 @@ def clean_audit(app):
     yield
 
 
-def test_the_WRITE_PATH_records_the_basis(app, client, clean_audit):
+def test_the_WRITE_PATH_records_the_basis(app, client, clean_audit, monkeypatch):
+    """#874 interacts with this, deliberately, and the permission below is the
+    interaction made explicit rather than left as a coincidence.
+
+    That gate refuses a SERVICE assertion of any code from a whole-system
+    library, and `icd11-mms` is one — so without the grant this POST is a 403
+    and the audit row can never be written by a service key. The two rules are
+    consistent: the gate decides who may put such a code in, and this table
+    records that it got in on SYSTEM grounds. Rows therefore come from human
+    (SSO) writers and from services explicitly permitted here.
+    """
+    from app import auth
+    monkeypatch.setattr(auth, "WHOLE_SYSTEM_ASSERTING_SERVICES",
+                        {"icd11-mms": frozenset({"sim.pdhc"})})
     app._canonicaliser = _CanonWithNote([_note()])
     try:
         resp = client.post("/api/v1/fhir/Condition", json=_condition(),

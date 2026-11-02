@@ -41,7 +41,7 @@ from app.services.canonicalisation import (
     record_plan_miss,
     record_whole_system_accept,
 )
-from app.auth import icd11_assertion_refused_for
+from app.auth import whole_system_assertion_refused_for
 from app.services.plan_client import PlanClient
 from app.services.resource_writer import (
     EtagMismatch,
@@ -142,14 +142,20 @@ def _write_one(fhir: dict, ctx: WriteContext, *,
             "error", "structure", "resource missing resourceType"
         ), 400, {}
 
-    # #857 — checked BEFORE canonicalisation, which costs an upstream round
-    # trip to plan (and xlate) we would only throw away. This is an
-    # authorisation refusal, not a content one, so 403 rather than the 422 the
-    # plan_miss / xlate_miss paths return: the code may be perfectly valid and
-    # still not this caller's to assert.
-    refusal = icd11_assertion_refused_for(fhir)
+    # #857 / #874 — checked BEFORE canonicalisation, which costs an upstream
+    # round trip we would only throw away. This is an authorisation refusal,
+    # not a content one, so 403 rather than the 422 the plan_miss / xlate_miss
+    # paths return: the code may be perfectly valid and still not this
+    # caller's to assert.
+    #
+    # It also has to run here rather than on the canonicalisation result,
+    # which would be the authoritative signal (#872's `whole_system_accepts`):
+    # that result only covers the code paths `_CODE_PATHS` walks, so a
+    # fabricated classification code in `bodySite` or `evidence.code` would
+    # pass. The gate is deliberately broader than the canonicaliser.
+    refusal = whole_system_assertion_refused_for(fhir)
     if refusal:
-        log.warning("icd11_assertion_refused: %s", refusal)
+        log.warning("whole_system_assertion_refused: %s", refusal)
         return _operation_outcome("error", "forbidden", refusal), 403, {}
 
     canon = _get_canonicaliser()

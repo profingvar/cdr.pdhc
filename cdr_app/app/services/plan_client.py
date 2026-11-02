@@ -39,6 +39,12 @@ DEFAULT_BASE_URL = "http://127.0.0.1:9030"
 DEFAULT_TIMEOUT_SECONDS = 5.0
 DEFAULT_CACHE_TTL_SECONDS = 60.0
 
+#: plan.pdhc publishes the canonical-library table, including
+#: ``whole_system_answer_space``, on this path. GET is unauthenticated (the
+#: POST/PUT siblings are not), verified against production 2026-11-02 — which
+#: is what lets cdr.pdhc ASK rather than keep its own copy of the flag (#874).
+WHOLE_SYSTEM_LIBS_PATH = "/api/v1/lookup/canonical-libs"
+
 # When plan.pdhc returns 429 (rate-limited) or 503 (briefly overloaded)
 # the canonicaliser previously interpreted it as "concept not adopted"
 # and rejected the FHIR write with 422 plan_miss. That mis-attribution
@@ -52,6 +58,12 @@ _INITIAL_BACKOFF_SECONDS = 0.25
 
 
 _CANONICAL_RE = re.compile(r"^https?://[^/]+/CodeSystem/([^/]+)/(.+)$")
+
+#: The same shape with NO trailing code — a coding's ``system`` rather than a
+#: full canonical URI. Kept beside ``_CANONICAL_RE`` because both spellings of
+#: the canonical form belong to this module; a second copy somewhere else is
+#: how the two drift apart.
+_CANONICAL_SYSTEM_RE = re.compile(r"^https?://[^/]+/CodeSystem/([^/]+)/?$")
 
 
 # plan.pdhc local CodeSystem canonical URL — used as the ``system``
@@ -114,6 +126,18 @@ def parse_canonical_uri(canonical_uri: str) -> tuple[str, str] | None:
     if m is None:
         return None
     return m.group(1), m.group(2)
+
+
+def parse_canonical_system(system: str) -> str | None:
+    """The canonical_lib_name out of a coding ``system``, or None.
+
+    ``parse_canonical_uri`` needs a trailing code and so cannot read a bare
+    system; a CodeableConcept carries the two separately.
+    """
+    if not system:
+        return None
+    m = _CANONICAL_SYSTEM_RE.match(system)
+    return m.group(1) if m is not None else None
 
 
 class PlanUnreachable(Exception):
@@ -266,6 +290,74 @@ class PlanClient:
                 break
         self._set_cached(key, display)
         return display
+
+    def whole_system_systems(self) -> dict[str, str] | None:
+        """Map each ``system`` spelling that names a library plan declares at
+        SYSTEM granularity to that library's name.
+
+        ``None`` means **plan did not answer** — a caller must not read it as
+        "no library is flagged". That distinction is the whole point: a gate
+        that treats silence as permission is open exactly when the authority
+        is down.
+
+        Only libraries with ``whole_system_answer_space`` true are included,
+        under two spellings: the library NAME (plan's own global/cdr form) and
+        its ``canonical_lib_url``.
+
+        **A url is included only when exactly one library in the whole table
+        holds it.** Measured 2026-11-02: `icd10` carries a copy of `snomed`'s
+        URL (#875), so matching on url alone would resolve a SNOMED coding to
+        a FLAGGED library and refuse legitimate SNOMED writes. Dropping
+        non-unique urls makes that collision unrepresentable here rather than
+        a latent surprise; #875 is the fix at the source.
+        """
+        key = ("whole_system_systems",)
+        cached = self._get_cached(key)
+        if cached is not self._MISS:
+            return cached
+
+        url = f"{self.base_url}{WHOLE_SYSTEM_LIBS_PATH}"
+        try:
+            resp = self._get_with_retry(url, operation="whole_system_systems")
+        except PlanUnreachable as e:
+            # Deliberately NOT cached: a blip must not pin "unknown" for the
+            # whole TTL, and the caller has a floor to fall back on.
+            log.warning("plan.pdhc adoption flags unavailable: %s", e)
+            return None
+        if resp.status_code != 200:
+            log.warning("plan.pdhc %s returned %s — adoption flags unknown",
+                        WHOLE_SYSTEM_LIBS_PATH, resp.status_code)
+            return None
+        try:
+            rows = resp.json()
+        except ValueError:
+            log.warning("plan.pdhc %s returned a non-JSON body", WHOLE_SYSTEM_LIBS_PATH)
+            return None
+        if not isinstance(rows, list):
+            log.warning("plan.pdhc %s returned %s, expected a list",
+                        WHOLE_SYSTEM_LIBS_PATH, type(rows).__name__)
+            return None
+
+        rows = [r for r in rows if isinstance(r, dict) and r.get("canonical_lib_name")]
+        url_counts: dict[str, int] = {}
+        for r in rows:
+            u = (r.get("canonical_lib_url") or "").strip()
+            if u:
+                url_counts[u] = url_counts.get(u, 0) + 1
+
+        out: dict[str, str] = {}
+        for r in rows:
+            if not r.get("whole_system_answer_space"):
+                continue
+            name = str(r["canonical_lib_name"]).strip()
+            if not name:
+                continue
+            out[name] = name
+            u = (r.get("canonical_lib_url") or "").strip()
+            if u and url_counts.get(u) == 1:
+                out[u] = name
+        self._set_cached(key, out)
+        return out
 
     # ----- cache helpers -------------------------------------------------
     def _get_cached(self, key: tuple):
