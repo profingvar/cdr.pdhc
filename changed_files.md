@@ -455,3 +455,67 @@ resources, not on a Condition count, because the gate applies to every type:
 Positive control: 1 949 / 52 131 / 19 509 bodies contain `coding`, so the
 searches ran. No producer has ever sent a classification code to any CDR, so
 turning the gate on refuses nothing that currently happens.
+
+## 2026-11-04 — #874: the ticket was wrong on both counts, and the floor was the real gap
+
+- cdr_app/app/auth.py — EDIT. `WHOLE_SYSTEM_ASSERTING_SERVICES` gains its FIRST
+  entry that admits anybody: `{"icd10": frozenset({"sim.pdhc"})}` (operator
+  decision). `WHOLE_SYSTEM_LIBS_FLOOR` gains `icd10`.
+- cdr_app/tests/test_whole_system_assertion_gate.py — EDIT. 33 -> 43 tests. The
+  emptiness guard became a grant guard keeping its original insight; two tests
+  switched their caller from `sim.pdhc` to `gateway.pdhc` so they keep measuring
+  what they meant to measure rather than becoming tests of the grant.
+
+**#874's two stated problems are both FALSE, measured 2026-11-04.**
+
+| it claims | measured |
+|---|---|
+| "the gate is not deployed AT ALL" | **deployed.** Image built 2026-11-02T06:42:27Z, container started 06:43:02Z — the same day the ticket was filed. Importable in the container, and WIRED: `app/api/fhir_write.py:44` imports it, line 156 calls it |
+| its evidence: `grep -c icd11_assertion_refused_for` -> 0 | the symbol is `whole_system_assertion_refused_for`. `icd11_assertion_refused_for` exists **nowhere** — not locally, not deployed, not in any commit. The probe measured a name that never existed |
+| "when deployed it still will not cover icd10" | **false.** `flagged_systems()` asks plan and merges a floor; plan publishes **icd10 AND icd11-mms** as whole-system answer spaces on the live unauthenticated `/api/v1/lookup/canonical-libs`. icd10 is covered dynamically |
+| the ICD-11-only matcher it quotes | already replaced by exact matching that cites #804 and drops non-unique urls for #875 |
+
+This is #804's lesson a second time: searching for a symbol is not checking for
+a capability. The note in this file dated 2026-11-02 saying the gate was "NOT
+deployed ... 0 occurrences in the running cdr1" is stale by hours — the image
+that carries it was built at 06:42 that morning.
+
+**The one REAL gap, and it was not in the ticket.** The live floor is
+`{icd11-mms}` only. #872 flagged `icd10` in plan production on 2026-11-02 and
+did not add it to the floor, so a plan outage left EVERY service identity free
+to assert any ICD-10 code — exactly the window the floor exists to close, left
+open for the one library that had just been flagged. Proven test-first: the
+guard failed before the fix, with "a plan outage disarmed the gate for icd10".
+
+**The grant was NARROWED from the decision as drafted.** It covered icd10 and
+icd11-mms; sim emits **zero** ICD-11 codings (0 references against 22 for
+icd10, measured with a working control), so icd11-mms would have been a right
+with no consumer. sim's `concepts/diabetes_v1.yaml` uses only ATC, LOINC and
+Snomed CT as `canonical_lib`; ICD-10 enters solely via `icd10_alt`.
+
+**Why sim at all.** Its diagnosis codes are hand-curated real codes dual-coded
+with SNOMED PRIMARY: 46635009/E10, 44054006/E11, 38341003/I10. SNOMED is not a
+whole-system answer space, so what tripped the gate was a correct ICD-10
+cross-reference on a properly-adopted resource — the gate walks every coding by
+design, which is right, and is why the entry is needed rather than a reason to
+loosen the walk.
+
+**Blast radius: still zero.** The 2026-11-02 measurement in this file holds —
+no producer has ever sent a classification code to any CDR (0 of 1 949 / 52 131
+/ 19 509, with a positive control on `coding`). So neither the grant nor the
+floor change alters anything that happens today; both are forward-looking.
+
+347 tests pass (the gate suite 33 -> 43; the rest unchanged). Four mutations —
+grant revoked, over-granted by library, over-granted by identity, icd10 dropped
+from the floor — fail 5, 10, 5 and 2 tests.
+
+**NOT DEPLOYED.** The deploy needs a `--build`: cdr1 has no bind mount, so
+`/app` is baked. Measured before stopping: all 11 requirements are pinned, so
+the rebuild is not also a dependency upgrade (#785); and 30 of 31 `.py` files
+under `app/` are byte-identical host-to-container. The one that differs is
+`app/__init__.py` line 18 — a `DATABASE_URL` DEFAULT that is dead code because
+the container sets the env (len=78). The host copy carries
+`change-me-in-production` and not the dead original; the container carries the
+dead 8-char dev default (#848) and no placeholder. So the running image predates #848's source fix, and a
+rebuild would REMOVE that dead literal from the image rather than
+risk anything.

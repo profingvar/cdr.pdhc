@@ -73,10 +73,22 @@ def _as(app, source: str | None, fhir: dict) -> str | None:
 # The floor — what the gate does when plan does not answer
 # =======================================================================
 
-def test_the_asserting_map_is_EMPTY_and_that_is_the_point(app):
-    """Not a placeholder. icd11.pdhc is not in KNOWN_FHIR_SERVICES at all, so
-    "only icd11.pdhc may" and "nobody may" are currently the same rule."""
-    assert WHOLE_SYSTEM_ASSERTING_SERVICES == {}
+def test_the_asserting_map_grants_sim_icd10_and_NOTHING_ELSE(app):
+    """This guard used to assert the map was EMPTY, and its reason is worth
+    keeping: `icd11.pdhc` is not in KNOWN_FHIR_SERVICES at all, so "only
+    icd11.pdhc may" and "nobody may" were the same rule, and the emptiness was
+    therefore not a placeholder.
+
+    #874 (operator decision 2026-11-04) added the FIRST entry that admits
+    anybody, so the fail-closed invariant stops being vacuous: `sim.pdhc` IS in
+    cdr1's KNOWN_FHIR_SERVICES with a live key, so this grant is real.
+
+    Asserted as an exact equality rather than a membership test, because the
+    risk here is a map that grows quietly. A new entry should have to change
+    this line and say why."""
+    assert WHOLE_SYSTEM_ASSERTING_SERVICES == {
+        "icd10": frozenset({"sim.pdhc"}),
+    }
 
 
 def test_the_floor_holds_icd11(app):
@@ -107,7 +119,11 @@ def test_ICD10_IS_caught_once_plan_FLAGS_it(app, monkeypatch):
     """REVERSES `test_ICD10_is_NOT_caught`. #872 flipped icd10 on 2026-11-02;
     the whole point of #874 is that the gate follows without an edit here."""
     _plan_says(monkeypatch, {"icd10": "icd10", ICD11_CANONICAL_LIB: ICD11_CANONICAL_LIB})
-    msg = _as(app, "sim.pdhc", _condition(ICD10_SYSTEM, "A00.9"))
+    # `gateway.pdhc`, not `sim.pdhc`: #874 granted sim icd10, and leaving sim
+    # here would have turned this into a test of the grant instead of a test of
+    # the FOLLOWING. gateway is the sharpest substitute — it writes to cdr1 by
+    # design and still may not assert a whole-system code.
+    msg = _as(app, "gateway.pdhc", _condition(ICD10_SYSTEM, "A00.9"))
     assert msg is not None
     assert "icd10" in msg
 
@@ -155,7 +171,8 @@ def test_a_LOOKALIKE_system_is_not_caught(app, monkeypatch, system):
 def test_the_library_NAME_alone_is_accepted_as_a_system(app, monkeypatch):
     """plan's own global/cdr spelling: `system=icd10`, not a URL."""
     _plan_says(monkeypatch, {"icd10": "icd10"})
-    assert _as(app, "sim.pdhc", _condition("icd10", "A00.9")) is not None
+    # gateway, for the same reason as above: sim holds an icd10 grant (#874).
+    assert _as(app, "gateway.pdhc", _condition("icd10", "A00.9")) is not None
 
 
 def test_a_UNIQUE_canonical_lib_url_is_accepted_as_a_system(app, monkeypatch):
@@ -372,3 +389,108 @@ def test_the_WRITE_PATH_does_not_403_a_PERMITTED_service(client, monkeypatch):
                  "X-Service-Key": "test-sim-key"},
     )
     assert resp.status_code != 403
+
+
+# =======================================================================
+# #874 — the sim.pdhc icd10 grant, and the floor it exposed
+# =======================================================================
+#: The real manifest shape, measured in sim.pdhc/concepts/diabetes_v1.yaml on
+#: 2026-11-04: a genuine SNOMED CT concept id as the PRIMARY coding, with a
+#: genuine ICD-10 code as `icd10_alt`. SNOMED is not a whole-system answer
+#: space; ICD-10 is. So this resource is properly adopted on its primary code
+#: and trips the gate on its cross-reference — which is why the grant exists
+#: and why the gate is right to walk every coding.
+def _dual_coded_condition(snomed="44054006", icd10="E11"):
+    return {
+        "resourceType": "Condition",
+        "subject": {"reference": "Patient/p1"},
+        "code": {"coding": [
+            {"system": SNOMED_SYSTEM, "code": snomed},
+            {"system": ICD10_SYSTEM, "code": icd10},
+        ]},
+    }
+
+
+class TestTheSimGrant:
+    def test_sim_MAY_now_assert_an_icd10_code(self, app, monkeypatch):
+        _plan_says(monkeypatch, {"icd10": "icd10"})
+        assert _as(app, "sim.pdhc", _condition(ICD10_SYSTEM, "E11")) is None
+
+    def test_sim_may_write_the_REAL_dual_coded_diagnosis(self, app, monkeypatch):
+        """The production shape, not a synthetic one. Before #874 this was
+        refused: a Condition whose primary code is an adopted SNOMED concept
+        was rejected because it also carried a correct ICD-10 cross-reference."""
+        _plan_says(monkeypatch, {"icd10": "icd10"})
+        assert _as(app, "sim.pdhc", _dual_coded_condition()) is None
+
+    def test_CONTROL_gateway_is_still_refused_that_same_resource(self, app,
+                                                                 monkeypatch):
+        """The grant is PER IDENTITY. Without this, the two tests above would
+        pass for a gate that had simply been switched off."""
+        _plan_says(monkeypatch, {"icd10": "icd10"})
+        msg = _as(app, "gateway.pdhc", _dual_coded_condition())
+        assert msg is not None
+        assert "icd10" in msg and "gateway.pdhc" in msg
+
+    def test_CONTROL_sim_is_still_refused_ICD11(self, app, monkeypatch):
+        """The grant is PER LIBRARY, and deliberately narrower than the
+        decision as first drafted. sim emits ZERO ICD-11 codings (0 references
+        against 22 for icd10, measured with a control 2026-11-04), so granting
+        icd11-mms would have been a right with no consumer."""
+        _plan_says(monkeypatch, {ICD11_CANONICAL_LIB: ICD11_CANONICAL_LIB})
+        msg = _as(app, "sim.pdhc", _condition(ICD11_WHO_SYSTEM))
+        assert msg is not None
+        assert ICD11_CANONICAL_LIB in msg
+
+    def test_CONTROL_the_snomed_primary_was_never_the_problem(self, app,
+                                                              monkeypatch):
+        """SNOMED alone passes for every identity, before and after #874. If it
+        did not, the dual-coding tests above would be measuring the wrong
+        coding."""
+        _plan_says(monkeypatch, {"icd10": "icd10"})
+        for who in ("sim.pdhc", "gateway.pdhc", "analyse.pdhc"):
+            assert _as(app, who, _condition(SNOMED_SYSTEM, "44054006")) is None
+
+    def test_a_human_caller_is_unaffected_by_the_grant(self, app, monkeypatch):
+        """The rule is about machine identities holding an SU-equivalent blob."""
+        _plan_says(monkeypatch, {"icd10": "icd10"})
+        assert _as(app, None, _dual_coded_condition()) is None
+
+
+class TestTheFloorMustHoldICD10Too:
+    """#872 flagged icd10 in plan PRODUCTION on 2026-11-02, and the floor was
+    not updated with it.
+
+    The floor's own stated purpose is that an unreachable or misconfigured plan
+    must not silently disarm the gate while writes still succeed. That argument
+    applies to icd10 exactly as it applies to icd11-mms — so while icd10 was
+    absent from the floor, a plan outage left EVERY service identity free to
+    assert any ICD-10 code.
+
+    Adding icd10 does not affect sim, which holds a grant either way; it closes
+    the outage window for everyone else.
+    """
+
+    def test_icd10_is_in_the_floor(self):
+        assert "icd10" in WHOLE_SYSTEM_LIBS_FLOOR
+
+    def test_plan_SILENT_still_refuses_icd10(self, app, monkeypatch):
+        _plan_says(monkeypatch, None)
+        msg = _as(app, "gateway.pdhc", _condition("icd10", "E11"))
+        assert msg is not None, (
+            "a plan outage disarmed the gate for icd10 — this is what the "
+            "floor exists to prevent")
+        assert "icd10" in msg
+
+    def test_plan_SILENT_still_lets_sim_through(self, app, monkeypatch):
+        """The floor flags the library; the grant decides who may assert it.
+        Widening the floor must not revoke sim's grant."""
+        _plan_says(monkeypatch, None)
+        assert _as(app, "sim.pdhc", _condition("icd10", "E11")) is None
+
+    def test_CONTROL_a_library_in_NEITHER_is_still_open(self, app, monkeypatch):
+        """snomed is not flagged by plan and not in the floor, so it is not
+        gated at all. Without this the two tests above could pass for a gate
+        that refused everything."""
+        _plan_says(monkeypatch, None)
+        assert _as(app, "gateway.pdhc", _condition(SNOMED_SYSTEM, "44054006")) is None

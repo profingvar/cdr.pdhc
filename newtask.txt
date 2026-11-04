@@ -1,0 +1,42 @@
+cdr.pdhc — current focus
+========================
+
+#874 whole-system assertion gate — DONE AND DEPLOYED (2026-11-04).
+347 tests pass; the gate suite went 33 -> 43. Ticket closed.
+
+READ THE #874 ENTRY IN changed_files.md FIRST. The ticket's two stated problems
+are both false and the real gap was elsewhere; the short version:
+
+  - the gate IS deployed (image built 2026-11-02T06:42:27Z) and IS wired
+    (app/api/fhir_write.py:156). The ticket grepped `icd11_assertion_refused_for`,
+    a symbol that exists nowhere; the real name is
+    `whole_system_assertion_refused_for`.
+  - it DOES cover icd10 already, dynamically, because `flagged_systems()` asks
+    plan and plan publishes icd10 as a whole-system answer space.
+  - THE REAL GAP (now FIXED): the floor WAS `{icd11-mms}` only, so a plan
+    outage disarmed the gate for icd10. It is `{icd11-mms, icd10}` live since
+    2026-11-04, proven test-first and re-verified in the container.
+  - operator decision: `sim.pdhc` may assert icd10. Narrowed from the draft,
+    which also granted icd11-mms — sim emits zero ICD-11.
+
+DEPLOYED AND VERIFIED
+---------------------
+Live in cdr1: floor = ['icd10', 'icd11-mms'], asserting = {'icd10': {'sim.pdhc'}}.
+11 behaviour checks in the container, every control holding; sibling smoke
+18/18; /healthz 200. The rebuild also landed #848's source fix — the dead
+8-char dev default is gone from the running image (the value itself is in
+#848; this is a PUBLIC repo and #848 removed it from the tree deliberately).
+
+THE LESSON FROM THE FIRST ATTEMPT, worth keeping
+------------------------------------------------
+cdr1 has no bind mount, so `/app` is baked and a deploy is a `--build`. The
+first attempt's copy step did not run, the build did, and it rebaked the OLD
+source — green container, /healthz 200, nothing changed. A rebuild of unchanged
+files is indistinguishable from a successful deploy.
+
+So for any baked-image service: compare remote hashes against local and ABORT
+without building if they differ. The script that did it is
+scratchpad/deploy874.sh; the shape is worth reusing.
+
+NEXT ON THIS REPO
+-----------------

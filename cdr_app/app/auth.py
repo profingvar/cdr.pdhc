@@ -308,15 +308,63 @@ READ_ONLY_SERVICE_SOURCES = frozenset({"analyse.pdhc", "dashboard.pdhc"})
 
 #: Per canonical library, the service identities permitted to assert one of its
 #: codes. A library ABSENT from this mapping admits nobody — the fail-closed
-#: direction, and today the rule for every flagged library.
-WHOLE_SYSTEM_ASSERTING_SERVICES: dict[str, frozenset[str]] = {}
+#: direction, and still the rule for `icd11-mms` and for every library plan
+#: flags in future.
+#:
+#: THIS IS THE FIRST ENTRY THAT ADMITS ANYBODY (#874, operator decision
+#: 2026-11-04), so the fail-closed invariant stops being vacuous here. It was
+#: empty until now, and the test guarding that emptiness explained why: the only
+#: candidate, `icd11.pdhc`, is not in `KNOWN_FHIR_SERVICES` at all, so "only
+#: icd11.pdhc may" and "nobody may" were the same rule. `sim.pdhc` IS in
+#: `KNOWN_FHIR_SERVICES` on cdr1 (live key since 2026-10-12), so this grant is
+#: real rather than theoretical.
+#:
+#: WHY sim.pdhc, measured 2026-11-04 rather than assumed:
+#:
+#:  - Its diagnosis codes are HAND-CURATED REAL CODES, not generated. The
+#:    manifest (`sim.pdhc/concepts/diabetes_v1.yaml`) pairs a genuine SNOMED CT
+#:    concept id with a genuine ICD-10 code per diagnosis: 46635009/E10 type 1
+#:    diabetes, 44054006/E11 type 2, 38341003/I10 hypertension. The gate exists
+#:    to stop a machine asserting a code nobody verified; here a human did.
+#:  - The PRIMARY coding is SNOMED, which plan does NOT flag as a whole-system
+#:    answer space. ICD-10 appears only as `icd10_alt`, a dual-coding. So what
+#:    tripped the gate was a correct cross-reference on a properly-adopted
+#:    resource — `whole_system_assertion_refused_for` walks EVERY coding by
+#:    design, which is right, and that is exactly why this entry is needed.
+#:  - Everything in cdr1 is synthetic in this phase, by policy.
+#:  - Without it no diagnosis data reaches cdr1 at all, and the alerting/MDR
+#:    work reads thresholds AGAINST a diagnosis (#917).
+#:
+#: DELIBERATELY NARROWER than the decision as first drafted, which also granted
+#: `icd11-mms`: sim emits ZERO ICD-11 codings (0 references against 22 for
+#: icd10, with a control, measured 2026-11-04), so that would have been a right
+#: with no consumer. Three of the service identities found on this platform so
+#: far named no service at all; the narrowest list that works is the rule.
+WHOLE_SYSTEM_ASSERTING_SERVICES: dict[str, frozenset[str]] = {
+    "icd10": frozenset({"sim.pdhc"}),
+}
 
 #: The libraries this gate refuses even when plan.pdhc cannot be asked. plan is
 #: the authority and may WIDEN this set; it may not narrow it. Without a floor,
 #: an unreachable (or misconfigured) plan would silently disarm the gate while
 #: writes still succeeded — open at exactly the wrong moment. `icd11-mms` is
 #: here because it is the level #857 shipped at, so this cannot regress below it.
-WHOLE_SYSTEM_LIBS_FLOOR: frozenset[str] = frozenset({"icd11-mms"})
+#:
+#: `icd10` was ADDED by #874. #872 flagged it in plan PRODUCTION on 2026-11-02
+#: and did not update the floor with it, so until now a plan outage left every
+#: service identity free to assert any ICD-10 code — precisely the window the
+#: paragraph above exists to close, left open for the one library that had just
+#: been flagged. Proven rather than argued: the guarding test failed before
+#: this line changed, with "a plan outage disarmed the gate for icd10".
+#:
+#: Widening the floor does not revoke anyone's grant. The floor decides which
+#: libraries are GATED; WHOLE_SYSTEM_ASSERTING_SERVICES decides who may assert
+#: one. sim.pdhc passes either way, and a test asserts that.
+#:
+#: THE RULE THIS SETS for the next library plan flags: add it here in the same
+#: commit. A library flagged in plan but missing from the floor is protected
+#: only while plan is answering.
+WHOLE_SYSTEM_LIBS_FLOOR: frozenset[str] = frozenset({"icd11-mms", "icd10"})
 
 #: A coding ``system`` that identifies a library without spelling its name.
 #: WHO's own URI is what appears on a raw FHIR Condition from a real producer,

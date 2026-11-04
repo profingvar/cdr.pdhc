@@ -1899,3 +1899,79 @@ Blast radius measured on 73 589 resources across cdr1/2/3: zero carry an
 ICD-10 or ICD-11 coding, with a positive control confirming the searches ran.
 
 Full account: `changed_files.md`, 2026-11-02.
+
+## #874 — DEPLOYED 2026-11-04. The ticket was wrong on both counts.
+
+The useful part of this ticket is the correction, so it is recorded before the
+fix. Both stated problems are false, measured rather than argued:
+
+| #874 claims | measured 2026-11-04 |
+|---|---|
+| "the gate is not deployed AT ALL" | **deployed** since image build `2026-11-02T06:42:27Z` — the same day the ticket was filed — and **wired**: `app/api/fhir_write.py:44` imports it, line 156 calls it |
+| its evidence, `grep -c icd11_assertion_refused_for` → 0 | the symbol is `whole_system_assertion_refused_for`. The name the ticket grepped exists **nowhere**: not locally, not deployed, not in any commit. The probe measured a name that never existed |
+| "when deployed it still will not cover icd10" | **false.** `flagged_systems()` asks plan and merges a floor; plan publishes **icd10 and icd11-mms** as whole-system answer spaces on the live `/api/v1/lookup/canonical-libs` |
+
+This is #804's lesson a second time — searching for a symbol is not checking
+for a capability — and `changed_files.md`'s own 2026-11-02 note saying the gate
+was "NOT deployed … 0 occurrences in the running cdr1" was stale by **hours**:
+the image carrying it was built at 06:42 that morning.
+
+**The one real gap was not in the ticket.** The live floor was `{icd11-mms}`
+only. #872 flagged `icd10` in plan production on 2026-11-02 and did not add it
+to the floor, so a plan outage left every service identity free to assert any
+ICD-10 code — exactly the window the floor exists to close, left open for the
+one library that had just been flagged. Proven test-first: the guard failed
+before the fix, with *"a plan outage disarmed the gate for icd10"*.
+
+Now `{icd11-mms, icd10}`, and `WHOLE_SYSTEM_ASSERTING_SERVICES` carries its
+first entry that admits anybody: `{"icd10": frozenset({"sim.pdhc"})}`.
+
+**Narrowed from the decision as drafted**, which also granted `icd11-mms`: sim
+emits **zero** ICD-11 codings (0 references against 22 for icd10, with a
+working control), so that would have been a right with no consumer.
+
+**Verified by BEHAVIOUR in the deployed container, 11 checks, every control
+holding:**
+
+| | |
+|---|---|
+| sim.pdhc, real dual-coded diagnosis (SNOMED 44054006 + ICD-10 E11) | permitted |
+| gateway.pdhc, same resource | REFUSED — the grant is per identity |
+| sim.pdhc, ICD-11 | REFUSED — the grant is per library |
+| sim / gateway / analyse, SNOMED alone | permitted — so the rows above measure the gated coding and not the resource |
+| a human caller, dual-coded | permitted — the rule is about machine identities |
+| **plan SILENT, gateway.pdhc, icd10** | **REFUSED** — this was permitted before the floor fix |
+| plan SILENT, sim.pdhc, icd10 | permitted — widening the floor did not revoke the grant |
+| plan SILENT, gateway.pdhc, SNOMED | permitted — so the two rows above are not a gate that refuses everything |
+
+347 tests pass (gate suite 33 → 43). Four mutations — grant revoked,
+over-granted by library, over-granted by identity, icd10 dropped from the floor
+— fail 5, 10, 5 and 2. Sibling smoke 18/18, "Created nothing". `/healthz` 200.
+
+**Blast radius: zero, and that was already measured.** No producer has ever
+sent a classification code to any CDR (0 of 1 949 / 52 131 / 19 509, positive
+control on `coding`, 2026-11-02). Both changes are forward-looking.
+
+### The deploy itself, and the first attempt that silently did nothing
+
+cdr1 has **no bind mount** — `/app` is baked — so the deploy is a `--build`,
+which rebakes the whole host directory. Two things were measured before
+touching it: all 11 requirements are pinned (so the rebuild is not also a
+dependency upgrade, #785), and 30 of 31 `app/*.py` were byte-identical
+host-to-container.
+
+The one that differed was `app/__init__.py:18`, a `DATABASE_URL` **default**
+that is dead code because the container sets the env (len=78). The host copy
+carried `change-me-in-production`; the container still carried the dead 8-char
+dev default #848 removed from the tree. So
+the running image predated #848's source fix, and the rebuild **removed** the
+dead published literal rather than risking anything — confirmed after: 0
+occurrences of the dead literal, 1 of the placeholder.
+
+**The first attempt rebuilt the OLD source and reported success.** The copy
+step did not run, the build did, and `/healthz` stayed 200 with a green
+container — a rebuild of unchanged files is indistinguishable from a successful
+deploy. The second attempt used a script whose third step **compares remote
+hashes against local and aborts without building** if they do not match. For a
+baked-image service that gate is not optional: there is no other signal that
+the thing you edited is the thing that got built.
