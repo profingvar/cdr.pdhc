@@ -519,3 +519,68 @@ the container sets the env (len=78). The host copy carries
 dead 8-char dev default (#848) and no placeholder. So the running image predates #848's source fix, and a
 rebuild would REMOVE that dead literal from the image rather than
 risk anything.
+
+## 2026-11-04 — #935 (cdr half): the #874 gate reads a route that exists for it
+
+- cdr_app/app/services/plan_client.py — EDIT. `WHOLE_SYSTEM_LIBS_PATH` points
+  at `/api/v1/lookup/whole-system-libs` instead of the whole `canonical-libs`
+  table.
+- cdr_app/tests/test_whole_system_assertion_gate.py — EDIT. 43 → 49 tests.
+
+**Why it matters, and it is not performance.** Before this, the #874
+whole-system assertion gate read plan's ENTIRE canonical-libs table, and that
+worked because the table happened to be open. So a **deployed security control
+depended on an accident**: gating `canonical-libs` would have degraded this gate
+to its hard-coded floor — still refusing `icd10` and `icd11-mms` from the floor,
+but silently no longer following plan for anything flagged later.
+
+plan now publishes `/api/v1/lookup/whole-system-libs` FOR this purpose (#935),
+with the three fields the gate reads and nothing else, documented as public by
+decision. The dependency is explicit rather than incidental.
+
+This client still sends only `X-Operator-Session-Id` (#408) — session
+propagation, not authentication. #931 is the ticket for giving plan a usable
+machine-auth door; until then an unauthenticated read is the only read
+available, and plan's route now says that is deliberate.
+
+### The uniqueness guard is KEPT, and it is now weaker — stated, not dropped
+
+`whole_system_systems` drops any url held by more than one library in the
+response. #875 made `canonical_lib_url` UNIQUE in plan (verified in production
+2026-11-04: `uq_canonical_libs_canonical_lib_url`, 0 duplicates), so the
+collision is unrepresentable at the source — the tempting conclusion is that the
+guard is now dead code.
+
+It is not, and it is also no longer as strong. On the full table it could spot a
+FLAGGED library sharing an UNFLAGGED one's url, which is exactly the case #875
+was filed about (`icd10` holding `snomed`'s). On the narrow read it sees only
+the flagged rows and cannot.
+
+Kept anyway, for one reason: **a security decision should not depend on a remote
+invariant holding.** If two flagged libraries ever collided, the guard drops both
+urls and falls back to name-only matching, which still resolves plan's own
+`icd10`/`icd11-mms` spellings — it degrades rather than misfires. Removing it
+would buy nothing and would make cdr trust a constraint it cannot see.
+
+The flagged filter is likewise belt-and-braces now: plan's route returns only
+flagged rows, but the client should not break if that projection ever widens.
+
+### Checked before touching production
+
+cdr's container reaches the new route over `https://plan.pdhc.se` — its real
+path, through the reverse proxy — with 200. The repoint cannot work otherwise,
+and that is a cheaper thing to measure than to discover. 31 of 31 `app/*.py`
+byte-identical host-to-container, 11 of 11 requirements pinned (#785).
+
+353 tests pass (was 347). Three mutations — the path reverted, the uniqueness
+guard removed, the flagged filter removed — fail 2, 2 and 4. The keeper asserts
+the URL **on the wire**, not the constant: a constant nobody uses would pass a
+test of the constant.
+
+**DEPLOYED AND VERIFIED 2026-11-04.** In the container, against the LIVE narrow
+route: `flagged_systems()` returns the same five mappings as before the repoint
+— `icd10`, `icd11-mms`, both termbank urls, and WHO's
+`http://id.who.int/icd/release/11/mms` — the floor is intact, and #874 behaves
+unchanged (gateway + icd10 REFUSED, sim + icd10 permitted via its #874 grant,
+gateway + SNOMED permitted). Control: with plan silent the floor still refuses.
+`/healthz` 200, sibling smoke 18/18.

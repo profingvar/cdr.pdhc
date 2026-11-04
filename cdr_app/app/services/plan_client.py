@@ -39,11 +39,24 @@ DEFAULT_BASE_URL = "http://127.0.0.1:9030"
 DEFAULT_TIMEOUT_SECONDS = 5.0
 DEFAULT_CACHE_TTL_SECONDS = 60.0
 
-#: plan.pdhc publishes the canonical-library table, including
-#: ``whole_system_answer_space``, on this path. GET is unauthenticated (the
-#: POST/PUT siblings are not), verified against production 2026-11-02 — which
+#: The NARROW whole-system read (#935). Three fields — library name,
+#: ``canonical_lib_url`` and ``whole_system_answer_space`` — and nothing else.
+#: GET is unauthenticated BY DECISION on plan's side, documented there, which
 #: is what lets cdr.pdhc ASK rather than keep its own copy of the flag (#874).
-WHOLE_SYSTEM_LIBS_PATH = "/api/v1/lookup/canonical-libs"
+#:
+#: WAS ``/api/v1/lookup/canonical-libs``, the whole table. That read worked
+#: because the table happened to be open, so a DEPLOYED SECURITY CONTROL
+#: depended on an accident: gating `canonical-libs` would have degraded this
+#: gate to its hard-coded floor, silently — it would keep refusing the floor's
+#: libraries and stop following plan for anything flagged later. Pointing at a
+#: route that exists FOR this purpose makes the dependency explicit, and it is
+#: the narrowest read that answers the question.
+#:
+#: This client still sends only ``X-Operator-Session-Id`` (#408), which is
+#: session propagation and not authentication. #931 is the ticket for giving
+#: plan a usable machine-auth door; until then an unauthenticated read is the
+#: only read available, and plan's own route documents that it is deliberate.
+WHOLE_SYSTEM_LIBS_PATH = "/api/v1/lookup/whole-system-libs"
 
 # When plan.pdhc returns 429 (rate-limited) or 503 (briefly overloaded)
 # the canonicaliser previously interpreted it as "concept not adopted"
@@ -302,14 +315,30 @@ class PlanClient:
 
         Only libraries with ``whole_system_answer_space`` true are included,
         under two spellings: the library NAME (plan's own global/cdr form) and
-        its ``canonical_lib_url``.
+        its ``canonical_lib_url``. Since #935 the endpoint returns only the
+        flagged ones, so the filter below is belt-and-braces rather than the
+        thing doing the work — kept because this client should not break if
+        plan's projection ever widens.
 
-        **A url is included only when exactly one library in the whole table
-        holds it.** Measured 2026-11-02: `icd10` carries a copy of `snomed`'s
-        URL (#875), so matching on url alone would resolve a SNOMED coding to
-        a FLAGGED library and refuse legitimate SNOMED writes. Dropping
-        non-unique urls makes that collision unrepresentable here rather than
-        a latent surprise; #875 is the fix at the source.
+        **A url is included only when exactly one library in the RESPONSE
+        holds it.** Measured 2026-11-02: `icd10` carried a copy of `snomed`'s
+        URL (#875), so matching on url alone would resolve a SNOMED coding to a
+        FLAGGED library and refuse legitimate SNOMED writes.
+
+        THE GUARD IS KEPT, AND IT IS NOW WEAKER — worth stating rather than
+        quietly dropping. #875 made `canonical_lib_url` UNIQUE in plan
+        (verified in production 2026-11-04: constraint
+        `uq_canonical_libs_canonical_lib_url`, 0 duplicates), so the collision
+        is unrepresentable at the source. But this check used to see the WHOLE
+        table and could spot a flagged library sharing an unflagged one's url;
+        on the narrow read it sees only the flagged rows and cannot.
+
+        It is kept anyway for one reason: a security decision should not depend
+        on a remote invariant holding. If two FLAGGED libraries ever collided,
+        this drops both urls and falls back to name-only matching, which still
+        resolves plan's own `icd10`/`icd11-mms` spellings — it degrades rather
+        than misfires. Removing it would buy nothing and would make cdr trust a
+        constraint it cannot see.
         """
         key = ("whole_system_systems",)
         cached = self._get_cached(key)
@@ -339,6 +368,8 @@ class PlanClient:
             return None
 
         rows = [r for r in rows if isinstance(r, dict) and r.get("canonical_lib_name")]
+        # Counted over the RESPONSE, which since #935 is the flagged rows only.
+        # See the docstring: this is deliberately kept and deliberately weaker.
         url_counts: dict[str, int] = {}
         for r in rows:
             u = (r.get("canonical_lib_url") or "").strip()

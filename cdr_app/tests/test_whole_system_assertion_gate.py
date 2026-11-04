@@ -494,3 +494,100 @@ class TestTheFloorMustHoldICD10Too:
         that refused everything."""
         _plan_says(monkeypatch, None)
         assert _as(app, "gateway.pdhc", _condition(SNOMED_SYSTEM, "44054006")) is None
+
+
+# =======================================================================
+# #935 — the gate reads a NARROW endpoint that exists for it
+# =======================================================================
+
+def test_the_path_is_the_narrow_read_not_the_whole_table(app):
+    """Before #935 this gate read `/api/v1/lookup/canonical-libs`, the whole
+    table, and that worked because the table happened to be open. So a DEPLOYED
+    SECURITY CONTROL depended on an accident: gating `canonical-libs` would have
+    degraded this gate to its hard-coded floor, silently.
+
+    plan now publishes `/api/v1/lookup/whole-system-libs` FOR this purpose, with
+    the three fields the gate reads and nothing else, and documents that it is
+    public by decision. The dependency is explicit."""
+    from app.services.plan_client import WHOLE_SYSTEM_LIBS_PATH
+    assert WHOLE_SYSTEM_LIBS_PATH == "/api/v1/lookup/whole-system-libs"
+    assert WHOLE_SYSTEM_LIBS_PATH != "/api/v1/lookup/canonical-libs"
+
+
+def test_the_request_actually_GOES_there(app, monkeypatch):
+    """The constant above is a string; this asserts the URL on the wire. A
+    constant nobody uses would pass the test above."""
+    from app.services.plan_client import PlanClient
+    seen = {}
+
+    def capture(url, **kw):
+        seen["url"] = url
+        return _Resp(payload=[_row("icd10", True)])
+
+    c = PlanClient(base_url="http://plan.invalid")
+    monkeypatch.setattr(c, "_get_with_retry", capture)
+    c.whole_system_systems()
+    assert seen["url"] == "http://plan.invalid/api/v1/lookup/whole-system-libs"
+
+
+def test_it_works_on_a_NARROW_payload(app, monkeypatch):
+    """plan's narrow route returns exactly three fields per row and only the
+    flagged libraries. Nothing the client reads is missing from that shape —
+    which is the whole claim #935 makes."""
+    c = _client(monkeypatch, _Resp(payload=[
+        {"canonical_lib_name": "icd10",
+         "canonical_lib_url": "https://termbank.pdhc.se/CodeSystem/icd10",
+         "whole_system_answer_space": True},
+        {"canonical_lib_name": "icd11-mms",
+         "canonical_lib_url": ICD11_SYSTEM,
+         "whole_system_answer_space": True},
+    ]))
+    assert c.whole_system_systems() == {
+        "icd10": "icd10",
+        "https://termbank.pdhc.se/CodeSystem/icd10": "icd10",
+        "icd11-mms": "icd11-mms",
+        ICD11_SYSTEM: "icd11-mms",
+    }
+
+
+def test_the_uniqueness_guard_IS_KEPT_and_still_bites(app, monkeypatch):
+    """It is now WEAKER, and that is stated rather than quietly dropped.
+
+    #875 made `canonical_lib_url` UNIQUE in plan (verified in production
+    2026-11-04, 0 duplicates), so the collision is unrepresentable at the
+    source. And on the narrow read this check sees only the FLAGGED rows, so it
+    can no longer spot a flagged library sharing an unflagged one's url — which
+    is exactly the case #875 was filed about.
+
+    It is kept because a security decision should not depend on a remote
+    invariant holding. Two FLAGGED libraries colliding still degrades to
+    name-only matching rather than resolving one as the other."""
+    c = _client(monkeypatch, _Resp(payload=[
+        _row("icd10", True, SHARED_URL),
+        _row("icd11-mms", True, SHARED_URL),
+    ]))
+    got = c.whole_system_systems()
+    assert got == {"icd10": "icd10", "icd11-mms": "icd11-mms"}, (
+        "a url shared by two flagged libraries was kept, so one library's "
+        "coding would resolve to the other")
+    assert SHARED_URL not in got
+
+
+def test_CONTROL_a_unique_url_on_the_narrow_payload_is_still_kept(app, monkeypatch):
+    """Without this, the test above would pass for a client that had stopped
+    reading urls at all — and then only plan's own name spellings would match,
+    missing every real coding."""
+    c = _client(monkeypatch, _Resp(payload=[_row("icd10", True, SHARED_URL)]))
+    assert c.whole_system_systems() == {"icd10": "icd10", SHARED_URL: "icd10"}
+
+
+def test_CONTROL_an_unflagged_row_is_still_skipped(app, monkeypatch):
+    """plan's narrow route returns only flagged rows, so the client's filter is
+    belt-and-braces. Kept because this client should not break if plan's
+    projection ever widens."""
+    c = _client(monkeypatch, _Resp(payload=[
+        _row("icd10", True), _row("loinc", False, "http://loinc.org"),
+    ]))
+    got = c.whole_system_systems()
+    assert got == {"icd10": "icd10"}
+    assert "http://loinc.org" not in got
