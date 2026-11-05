@@ -317,13 +317,15 @@ def _extract_per_type_columns(fhir: dict, resource_type: str) -> dict:
 
 
 def _coding_canonical_uri(coding: dict) -> str | None:
-    sys_uri = coding.get("system", "")
-    code = coding.get("code", "")
-    if not sys_uri or not code:
-        return None
-    if sys_uri.startswith("https://termbank.pdhc.se/"):
-        return f"{sys_uri.rstrip('/')}/{code}"
-    return None
+    """Delegate to the one builder (#869).
+
+    This held its own copy of the rule, with the termbank prefix as a LITERAL
+    rather than even sharing the constant — so it could not know about a
+    system the canonicaliser had learned. That is why a raw WHO-coded
+    ICD-11 Condition was stored with `code_canonical` NULL.
+    """
+    from app.services.plan_client import canonical_uri_for
+    return canonical_uri_for(coding.get("system"), coding.get("code"))
 
 
 # ---------------------------------------------------------------------------

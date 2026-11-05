@@ -369,11 +369,16 @@ WHOLE_SYSTEM_LIBS_FLOOR: frozenset[str] = frozenset({"icd11-mms", "icd10"})
 #: A coding ``system`` that identifies a library without spelling its name.
 #: WHO's own URI is what appears on a raw FHIR Condition from a real producer,
 #: and it is not in plan's table at all.
-ICD11_WHO_SYSTEM = "http://id.who.int/icd/release/11/mms"
-ICD11_CANONICAL_LIB = "icd11-mms"
-WHOLE_SYSTEM_SYSTEM_ALIASES: dict[str, str] = {
-    ICD11_WHO_SYSTEM: ICD11_CANONICAL_LIB,
-}
+# #869: these moved to plan_client, beside the canonical-URI builder that
+# now also consumes them, so the gate and the canonicaliser cannot disagree
+# about which systems name a library. plan_client imports only stdlib and
+# requests, so this is safe at module level despite `_plan_client()` below
+# needing `current_app` at RUNTIME — verified by importing both orders.
+from app.services.plan_client import (  # noqa: E402
+    ICD11_CANONICAL_LIB,
+    ICD11_WHO_SYSTEM,
+    SYSTEM_ALIASES as WHOLE_SYSTEM_SYSTEM_ALIASES,
+)
 
 
 def _plan_client():

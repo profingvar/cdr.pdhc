@@ -1975,3 +1975,88 @@ deploy. The second attempt used a script whose third step **compares remote
 hashes against local and aborts without building** if they do not match. For a
 baked-image service that gate is not optional: there is no other signal that
 the thing you edited is the thing that got built.
+
+## 2026-11-05 — #869: one canonical-URI rule, and ICD-11 reaches it
+
+375 tests pass (was 353). **Not deployed** — the Mac had no route to miserver
+when this was written, and cdr1/cdr2/cdr3 are three separately deployed
+codebases.
+
+### The ticket asked for a third canonical form. There must not be one
+
+`https://termbank.pdhc.se/CodeSystem/icd11-mms/<code>` is Path A unchanged. It
+was already in this suite's own fixtures, termbank owns the vocabulary
+(icd11.pdhc's Rule 18), and plan already knows `icd11-mms` at SYSTEM
+granularity (#874), so an 85,000-code classification needs no row per code.
+The four decisions, as ratified:
+
+| | |
+|---|---|
+| stored shape | the termbank form — no new form |
+| release segment | NOT in the canonical. icd11 carries it in `coding.version` (its Rule 28), so the identity key is release-free and two statements of one entity collide for dedup and search |
+| postcoordination | the FULL cluster expression, unescaped |
+| where the rule lives | `plan_client`, beside the two parsers |
+
+Postcoordination needed a measurement, not a judgement: `parse_canonical_uri`'s
+refnumber group is `(.+)` and not `([^/]+)`, so `BD13&XT8W&XS3A/CA60.3`
+round-trips through build-then-parse unchanged. Escaping would have changed
+every existing Path-A value in every CDR for no gain.
+
+### What was actually broken was a level deeper than the ticket looked
+
+The ticket named the two READER predicates, `stats.py:26` and
+`clinical_read.py:160`. Those implement a *different* rule — plan-concept
+Path B — and are untouched; a test pins that an ICD-11 canonical is correctly
+"not a plan concept" to both, with a control that a Path-B canonical still
+yields its GUID. What ICD-11 rows lack from those readers is a human label,
+which is a display gap, not a parse bug.
+
+The real split was the BUILDER, in two copies — `canonicalisation.py`'s method
+and `resource_writer.py`'s function, the latter with the termbank prefix as a
+bare LITERAL rather than even the shared constant. So a system either had
+learned about was unknown to the other. The two parsers in `plan_client`
+already carried the note *"a second copy somewhere else is how the two drift
+apart"*; it simply did not cover the builder.
+
+### And the WHO system was already in the codebase, in the wrong layer
+
+`auth.py` has held `ICD11_WHO_SYSTEM` → `icd11-mms` since **#874, written the
+previous day**, for the whole-system assertion gate, with the comment "WHO's
+own URI is what appears on a raw FHIR Condition from a real producer". The
+canonicaliser did not know it. So the coding fell to the xlate branch — and
+xlate is deployed NOWHERE (#833) — and the row was stored with
+`code_canonical` NULL: unsearchable by code, weakly deduplicated.
+
+That also dissolves the objection I raised before measuring, that a cdr-side
+mapping would put vocabulary knowledge in the service which explicitly does
+not own vocabulary. The mapping was already there, with a documented reason.
+It now lives in `plan_client` and `auth` imports it, and a test asserts the
+gate and the canonicaliser hold the **same object**.
+
+`SYSTEM_ALIASES` is deliberately tiny, and its docstring states the admission
+rule: a system belongs there only when the mapping is a pure RENAME with no
+code transformation. Anything that needs the code itself changed is xlate's
+job and must not be added.
+
+### Order is now a documented rule, not an accident of a loop
+
+The first canonicalisable coding wins. icd11 sends the asserted cluster and
+sometimes a pre-coordinated `simplified_to` equivalent, which its own comment
+calls "additional information, not a replacement" — so the cluster must come
+first or cdr would store the simplification as the row's identity. Pinned,
+with a control that reversing the order picks the other, so the test measures
+ORDER rather than a preference for clusters that no code implements.
+
+### Five mutations, and a test that had to read the parse tree
+
+Fail 9, 6, 3, 2 and 1 — the alias removed, the builder escaping the code, the
+loop reverting to a bare prefix test, the loop picking the last coding, and
+`auth` keeping its own dict.
+
+The "there is one builder" test asserts on the **parse tree**, because the
+docstrings written for #869 quote the termbank prefix in order to explain it,
+and a substring search would match the prose explaining the fix. That is the
+#885/#904/#912 instrument error, and #924's — where it happened inside the
+credential auditor itself. It also carries a control that the builder itself
+*does* contain the rule, without which the two assertions would pass on a
+codebase where the rule had been deleted outright.

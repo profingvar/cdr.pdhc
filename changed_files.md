@@ -584,3 +584,75 @@ route: `flagged_systems()` returns the same five mappings as before the repoint
 unchanged (gateway + icd10 REFUSED, sim + icd10 permitted via its #874 grant,
 gateway + SNOMED permitted). Control: with plan silent the floor still refuses.
 `/healthz` 200, sibling smoke 18/18.
+
+#869 — ONE canonical-URI rule, and ICD-11 reaches it (2026-11-05)
+-----------------------------------------------------------------
+/Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/plan_client.py
+/Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/canonicalisation.py
+/Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/resource_writer.py
+/Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/auth.py
+/Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_canonical_uri_one_rule_869.py  (new)
+
+375 tests pass (was 353). NOT DEPLOYED (#939) — cdr1/cdr2/cdr3 are three separately
+deployed codebases (`infra_cdr_prod_behind_local_git`), and the Mac had no
+route to miserver when this was written.
+
+THE TICKET ASKED FOR A THIRD CANONICAL FORM. There must not be one.
+`https://termbank.pdhc.se/CodeSystem/icd11-mms/<code>` is Path A unchanged, it
+was already in this suite's own fixtures, termbank owns the vocabulary
+(icd11.pdhc's Rule 18), and plan already knows `icd11-mms` at SYSTEM
+granularity (#874) so an 85,000-code classification needs no row per code.
+
+The four decisions the ticket asked for, ratified by the operator:
+  1. stored shape  — termbank form, i.e. no new form at all
+  2. release       — NOT in the canonical. icd11 puts it in `coding.version`
+                     (its Rule 28), so the identity key is release-free and
+                     two statements of one entity collide for dedup/search
+  3. postcoordination — the FULL cluster expression, unescaped. Measured:
+                     `parse_canonical_uri`'s refnumber group is `(.+)` not
+                     `([^/]+)`, so `BD13&XT8W&XS3A/CA60.3` round-trips
+  4. one rule      — in plan_client, beside the two parsers
+
+WHAT WAS ACTUALLY BROKEN was a level deeper than the ticket looked. It named
+the two READER predicates (stats.py:26, clinical_read.py:160) — those are a
+DIFFERENT rule (plan-concept Path B) and are untouched; a test pins that an
+ICD-11 canonical is correctly "not a plan concept" to both. The real split was
+the BUILDER, in two copies:
+
+    canonicalisation.py::_coding_to_canonical_uri   (ingest)
+    resource_writer.py::_coding_canonical_uri       (storage, with the
+                                                     termbank prefix as a
+                                                     LITERAL, not even the
+                                                     shared constant)
+
+so a system either had learned about was unknown to the other. Both now
+delegate to `plan_client.canonical_uri_for`. The two parsers there already
+carried the note "a second copy somewhere else is how the two drift apart" —
+it just did not cover the builder.
+
+AND THE WHO SYSTEM WAS ALREADY IN THE CODEBASE, in the wrong layer.
+`auth.py` has held `ICD11_WHO_SYSTEM` -> `icd11-mms` since #874 for the
+whole-system assertion gate, with the comment "WHO's own URI is what appears
+on a raw FHIR Condition from a real producer". The canonicaliser did not know
+it, so a WHO-coded Condition fell to the xlate branch — and xlate is deployed
+NOWHERE (#833) — and was stored with `code_canonical` NULL: unsearchable by
+code, weakly deduplicated. The alias now lives in plan_client and `auth`
+imports it, so the gate and the canonicaliser cannot disagree. A test asserts
+they are the SAME object.
+
+`SYSTEM_ALIASES` is deliberately tiny and its docstring says why: a system
+belongs there only when the mapping is a pure RENAME with no code
+transformation. Anything needing the code itself changed is xlate's job.
+
+ORDER IS NOW A DOCUMENTED RULE. The first canonicalisable coding wins, so a
+producer sending several must put the ASSERTED statement first. icd11 sends a
+cluster and sometimes a pre-coordinated `simplified_to` equivalent, which its
+own comment calls "additional information, not a replacement" — so the
+cluster must come first or cdr would store the simplification as the row's
+identity. Pinned, with a control that reversing the order picks the other, so
+the test measures order rather than a cluster preference no code implements.
+
+5 mutations, all caught — fail 9, 6, 3, 2, 1. The "one builder" test asserts
+on the PARSE TREE, because the docstrings written for #869 quote the termbank
+prefix to explain it and a substring search would match the prose explaining
+the fix (the #885/#904/#912/#924 instrument error).

@@ -79,6 +79,82 @@ _CANONICAL_RE = re.compile(r"^https?://[^/]+/CodeSystem/([^/]+)/(.+)$")
 _CANONICAL_SYSTEM_RE = re.compile(r"^https?://[^/]+/CodeSystem/([^/]+)/?$")
 
 
+# ---------------------------------------------------------------------------
+# The canonical URI BUILDER — one implementation, beside the two parsers
+# ---------------------------------------------------------------------------
+# #869. The two parsers above carry the note "a second copy somewhere else is
+# how the two drift apart", and the BUILDER had drifted into two copies that
+# the note did not cover:
+#
+#     canonicalisation.py::_coding_to_canonical_uri   (ingest)
+#     resource_writer.py::_coding_canonical_uri       (storage)
+#
+# Both were `startswith(TERMBANK_PREFIX)` then `f"{system}/{code}"`, so a
+# system either of them learned about would be unknown to the other. That is
+# exactly the split #869 was filed about, one level deeper than the ticket
+# looked: the ticket named the two READER predicates in stats.py and
+# clinical_read.py, which implement a DIFFERENT rule (plan-concept Path B,
+# not termbank canonical) and are untouched by this.
+
+TERMBANK_PREFIX = "https://termbank.pdhc.se/"
+
+#: A coding ``system`` that names a library without spelling its name. WHO's
+#: own URI is what appears on a raw FHIR Condition from a real producer — see
+#: `icd11.pdhc/app/services/fhir.py`, which sends it with the release in
+#: `coding.version` rather than in the system (its Rule 28).
+#:
+#: THIS IS NOT A NEW VOCABULARY MAPPING. `auth.py` has held this exact alias
+#: since #874, for the whole-system assertion gate, and imports it from here
+#: now so there is one spelling rather than two.
+ICD11_WHO_SYSTEM = "http://id.who.int/icd/release/11/mms"
+ICD11_CANONICAL_LIB = "icd11-mms"
+
+#: foreign ``system`` -> termbank library name. Deliberately tiny: a system
+#: belongs here only when the mapping is a pure RENAME with no code
+#: transformation, which is the only kind cdr may do without xlate. Anything
+#: that needs the code itself changed is xlate's job (#833) and must not be
+#: added here.
+SYSTEM_ALIASES: dict[str, str] = {
+    ICD11_WHO_SYSTEM: ICD11_CANONICAL_LIB,
+}
+
+
+def canonical_uri_for(system: str | None, code: str | None) -> str | None:
+    """Build the termbank canonical URI for one coding, or None.
+
+    The ONE builder. Three outcomes:
+
+      termbank system      ``<system>/<code>``, the pre-existing rule verbatim
+      an aliased system    ``<termbank>/CodeSystem/<lib>/<code>``
+      anything else        None — a foreign coding, xlate's job
+
+    THE CODE IS NOT ESCAPED, deliberately. An ICD-11 cluster expression
+    contains ``&`` and ``/`` (``BD13&XT8W&XS3A/CA60.3``) and that round-trips
+    through `parse_canonical_uri` unchanged, because its refnumber group is
+    ``(.+)`` and not ``([^/]+)`` — measured, with controls, for #869. Escaping
+    would change every existing Path-A value for no gain.
+    """
+    if not system or not code:
+        return None
+    if system.startswith(TERMBANK_PREFIX):
+        return f"{system.rstrip('/')}/{code}"
+    lib = SYSTEM_ALIASES.get(system)
+    if lib:
+        return f"{TERMBANK_PREFIX}CodeSystem/{lib}/{code}"
+    return None
+
+
+def is_canonicalisable_system(system: str | None) -> bool:
+    """Whether `canonical_uri_for` can build a canonical from this system.
+
+    Separate from the builder because the canonicaliser has to decide
+    *per coding, before it has a code* whether this coding is a candidate.
+    """
+    if not system:
+        return False
+    return system.startswith(TERMBANK_PREFIX) or system in SYSTEM_ALIASES
+
+
 # plan.pdhc local CodeSystem canonical URL — used as the ``system``
 # parameter when calling ``ConceptMap/$translate`` to identify the
 # source code system (ADR D2 of the plan.pdhc terminology profile).

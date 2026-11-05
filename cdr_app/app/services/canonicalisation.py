@@ -47,12 +47,21 @@ from app.services.xlate_client import (
     XlateUnavailable,
     XlateUnreachable,
 )
-from app.services.plan_client import PlanClient, PlanUnreachable, parse_canonical_uri
+from app.services.plan_client import (
+    TERMBANK_PREFIX,
+    PlanClient,
+    PlanUnreachable,
+    canonical_uri_for,
+    is_canonicalisable_system,
+    parse_canonical_uri,
+)
 
 
 log = logging.getLogger(__name__)
 
-TERMBANK_PREFIX = "https://termbank.pdhc.se/"
+# TERMBANK_PREFIX now lives in plan_client beside the builder and the two
+# parsers (#869). Re-exported here because this module's name for it is
+# used in two more places below and in its own docstring.
 PLAN_CONCEPT_SYSTEM = "https://plan.pdhc.se/Concept"
 
 
@@ -289,11 +298,26 @@ class Canonicaliser:
             new_codings = [canonical_coding] + codings  # original preserved
             return self._with_codings(cc, new_codings), resolved["canonical_uri"], []
 
-        # If any coding is already a termbank canonical, that's our chosen
+        # If any coding is already canonicalisable, that's our chosen
         # canonical — verify against plan and we're done.
+        #
+        # ORDER IS SIGNIFICANT AND THAT IS NOW A DOCUMENTED RULE (#869). The
+        # FIRST canonicalisable coding wins, so a producer sending more than
+        # one must put the ASSERTED statement first. icd11.pdhc sends a
+        # postcoordinated cluster and, when WHO defines one, a pre-coordinated
+        # `simplified_to` equivalent — its own comment calls that "additional
+        # information, not a replacement", so the cluster must come first or
+        # cdr would store the simplification as the identity of the row.
+        # A test pins this with two icd11-mms codings.
+        #
+        # `is_canonicalisable_system` rather than a bare TERMBANK_PREFIX test:
+        # a raw WHO-coded Condition is canonicalisable by rename alone, and
+        # before #869 it fell through to the xlate branch — which is deployed
+        # NOWHERE (#833), so `code_canonical` came out NULL and the row was
+        # unsearchable by code and only weakly deduplicated.
         for i, coding in enumerate(codings):
             sys_uri = coding.get("system", "")
-            if sys_uri.startswith(TERMBANK_PREFIX):
+            if is_canonicalisable_system(sys_uri):
                 canonical_uri = self._coding_to_canonical_uri(coding)
                 if canonical_uri is None:
                     continue
@@ -376,15 +400,10 @@ class Canonicaliser:
 
     @staticmethod
     def _coding_to_canonical_uri(coding: dict) -> str | None:
-        """termbank canonical URI built from {system, code} where system
-        starts with https://termbank.pdhc.se/CodeSystem/<lib>."""
-        sys_uri = coding.get("system", "")
-        code = coding.get("code", "")
-        if not sys_uri.startswith(TERMBANK_PREFIX) or not code:
-            return None
-        # Two valid shapes: "https://termbank.pdhc.se/CodeSystem/loinc" (system
-        # only) or already a full canonical URI (rare). We treat the first.
-        return f"{sys_uri.rstrip('/')}/{code}"
+        """Delegate to the one builder (#869). Kept as a method because the
+        call sites read better, and because a copy of the rule here is what
+        #869 was filed about."""
+        return canonical_uri_for(coding.get("system"), coding.get("code"))
 
     @staticmethod
     def _promote(codings: list[dict], idx: int) -> list[dict]:

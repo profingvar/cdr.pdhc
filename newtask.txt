@@ -1,8 +1,29 @@
 cdr.pdhc — current focus
 ========================
 
+#869 DONE LOCALLY, NOT DEPLOYED (2026-11-05). 375 tests pass (was 353).
+
+One canonical-URI builder, in plan_client beside the two parsers, and a raw
+WHO-coded ICD-11 Condition now canonicalises instead of storing
+`code_canonical` NULL. The ticket asked for a THIRD canonical form; there must
+not be one — the termbank form is Path A unchanged. Full account in
+changed_files.md.
+
+NEXT, and it is a deploy not a code change — filed as #939:
+  * cdr1, cdr2 and cdr3 are three SEPARATELY deployed codebases
+    (`infra_cdr_prod_behind_local_git`): surgical in-place edits, py_compile,
+    auto-rollback. Four files each — plan_client.py, canonicalisation.py,
+    resource_writer.py, auth.py.
+  * cdr2/cdr3 carry no `app/api/clinical_read.py`, which is why stats.py holds
+    its own mirror of the Path-B reader rule. The #869 change does not touch
+    either, so that asymmetry is unaffected — but check it before assuming any
+    file exists on those two.
+  * AFTER the deploy, flip `CDR_CANONICALISES_WHO_MMS=true` in icd11.pdhc, on
+    the projection target only. Until then icd11 keeps reporting
+    `not_indexable` on ICD-11-only deliveries, which is now a false alarm.
+
 #935 cdr half — DEPLOYED AND VERIFIED (2026-11-04). Ticket closed.
-353 tests pass (was 347).
+353 tests pass (was 347) at that point.
 
 Verified in the container against the LIVE narrow route: flagged_systems()
 returns the same five mappings as before the repoint (both library names, both
