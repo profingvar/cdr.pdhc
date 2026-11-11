@@ -698,3 +698,39 @@ documented path, gitignored, 11 of 11 requirements pinned).
 Verified BEFORE editing: this file was byte-identical in git, in
 `/usr/local/www/cdr.pdhc`, and inside `cdr_pdhc_app` (`be4dd6982229`), so the
 change was made in the repo normally. NOT deployed.
+
+## #983 part 2 — opt-in newest-first paging, and truncation that says so (2026-11-11)
+
+### cdr_app/app/api/clinical_read.py
+
+The series was `ORDER BY effective_at ASC LIMIT 10000`: a patient over ten
+thousand points got the OLDEST ten thousand, silently, with no way to page.
+That is the size the patient dashboard's Gates 1 and 4 test at. Latent on
+cdr1 today — the largest patient has 650 rows, measured 2026-11-11.
+
+THE DEFAULT ORDER STAYS ASCENDING. Existing consumers rely on oldest->newest
+(dashboard's charts page; two pre-existing tests). `?order=desc` and
+`?cursor=` are opt-in. A mutation flipping the default fails those two
+pre-existing tests, which is the proof the old contract is guarded.
+
+`guid` is always the tiebreak — two (patient, effective_at) pairs repeat on
+cdr1 today, so a timestamp-only cursor would skip or repeat at a boundary.
+One extra row is fetched and the response reports `truncated`, `limit` and
+`next_cursor`. A malformed cursor, or one minted for the other direction, is
+a 400 `invalid_cursor` — never a silent page one. Rows with no
+`effective_at` are excluded from the paged walk and reported as
+`undated_count` (0 today; the column is nullable).
+
+The early return when org scope yields nothing now carries `truncated` and
+`next_cursor` too, so the endpoint has one shape.
+
+### cdr_app/tests/test_clinical_read.py
+
+`test_series_org_scope_blocks_cross_org` compared the whole body and failed
+on the new keys — a failure about SHAPE, not scoping. Rewritten to assert the
+security property itself (no points, count 0, nothing truncated).
+
+Ten new tests. Six mutations, each failing on assertions (exit 1): tiebreak,
+silent page one, truncation never reported, default flipped, cross-direction
+cursor accepted, undated rows dropped uncounted. Whole cdr suite 389 passed.
+NOT deployed.

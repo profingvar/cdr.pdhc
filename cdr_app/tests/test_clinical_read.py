@@ -195,7 +195,17 @@ def test_series_code_and_date_filter(client):
 def test_series_org_scope_blocks_cross_org(client):
     h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
     r = client.get("/api/v1/clinical/patient/pat-b1/series", headers=h)
-    assert r.get_json() == {"patient_guid": "pat-b1", "points": [], "count": 0}
+    body = r.get_json()
+    # The SECURITY property, asserted as such. This used to compare the whole
+    # body for equality and so failed when #983 added order/limit/truncated/
+    # next_cursor — a failure about the payload's SHAPE, not about scoping.
+    # What matters is that another organisation's patient yields nothing, and
+    # that nothing slipped past a limit either.
+    assert body["patient_guid"] == "pat-b1"
+    assert body["points"] == []
+    assert body["count"] == 0
+    assert body["truncated"] is False
+    assert body["next_cursor"] is None
 
 
 def test_series_requires_care_delivery_guard(client):
@@ -330,3 +340,115 @@ def test_the_existing_fields_are_UNCHANGED(client):
     assert p["code"] == "sys|weight"
     assert p["org_guid"] == "org-a"
     assert p["unit"] == "mmol/L"
+
+
+# --- #983 part 2: order, cursor, visible truncation ------------------------
+
+H_A = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+WEIGHT = "/api/v1/clinical/patient/pat-a1/series?code=sys|weight"
+
+
+def _walk(client, url, limit):
+    """Follow cursors to the end; bounded so a looping cursor FAILS."""
+    seen, cursor = [], None
+    for _ in range(50):
+        u = f"{url}&limit={limit}" + (f"&cursor={cursor}" if cursor else "")
+        body = client.get(u, headers=H_A).get_json()
+        seen += [p["observation_guid"] for p in body["points"]]
+        cursor = body["next_cursor"]
+        if not cursor:
+            return seen
+    raise AssertionError("cursor never terminated — the walk loops")
+
+
+def test_the_DEFAULT_order_is_still_ascending(client):
+    """Existing consumers rely on oldest->newest. #983 is opt-in."""
+    body = client.get(WEIGHT, headers=H_A).get_json()
+    assert body["order"] == "asc"
+    assert [p["at"][:10] for p in body["points"]] == [
+        "2026-04-05", "2026-04-08", "2026-04-12"]
+    assert "undated_count" not in body       # the old path is unchanged
+
+
+def test_desc_returns_NEWEST_first(client):
+    body = client.get(WEIGHT + "&order=desc", headers=H_A).get_json()
+    assert [p["at"][:10] for p in body["points"]] == [
+        "2026-04-12", "2026-04-08", "2026-04-05"]
+
+
+def test_THE_ORIGINAL_DEFECT_the_first_page_holds_the_newest_point(client):
+    """`ORDER BY effective_at ASC LIMIT n` returned the OLDEST n. Asked for
+    newest-first with a limit, the first page must contain the newest."""
+    body = client.get(WEIGHT + "&order=desc&limit=1", headers=H_A).get_json()
+    assert [p["at"][:10] for p in body["points"]] == ["2026-04-12"]
+    assert body["truncated"] is True
+    assert body["next_cursor"]
+
+
+def test_truncation_is_REPORTED_and_the_cursor_reaches_every_row(client):
+    first = client.get(WEIGHT + "&limit=2", headers=H_A).get_json()
+    assert first["truncated"] is True and first["limit"] == 2
+    assert first["count"] == 2
+    assert sorted(_walk(client, WEIGHT, 2)) == ["o1", "o2", "o3"]
+
+
+def test_an_untruncated_page_says_so(client):
+    body = client.get(WEIGHT, headers=H_A).get_json()
+    assert body["truncated"] is False
+    assert body["next_cursor"] is None
+
+
+def test_TIED_timestamps_are_neither_skipped_nor_repeated(app, client):
+    """`effective_at` is not unique — two (patient, effective_at) pairs
+    repeat on cdr1 today. Page size 1 puts every boundary INSIDE the tied
+    group, which is the only arrangement where a timestamp-only cursor is
+    visibly wrong."""
+    Obs = live_model("Observation")
+    with app.app_context():
+        for gid in ("t-a", "t-b", "t-c"):
+            _db.session.add(Obs(guid=gid, patient_guid="pat-a1",
+                                org_guid="org-a", code_canonical="sys|tied",
+                                value_unit="kg", effective_at=_dt(15),
+                                status="final", raw_json={}))
+        _db.session.commit()
+    url = "/api/v1/clinical/patient/pat-a1/series?code=sys|tied"
+    for order in ("asc", "desc"):
+        got = _walk(client, f"{url}&order={order}", 1)
+        assert sorted(got) == ["t-a", "t-b", "t-c"], (order, got)
+        assert len(got) == len(set(got)), f"{order}: a row was repeated"
+
+
+def test_a_malformed_cursor_is_REFUSED_not_treated_as_page_one(client):
+    for bad in ("not-a-cursor", "e30", "%%%"):
+        r = client.get(WEIGHT + f"&cursor={bad}", headers=H_A)
+        assert r.status_code == 400, bad
+        assert r.get_json()["error"] == "invalid_cursor"
+
+
+def test_a_cursor_from_the_OTHER_direction_is_refused(client):
+    """Resuming a descending walk with an ascending predicate returns the
+    wrong rows silently."""
+    asc = client.get(WEIGHT + "&limit=1", headers=H_A).get_json()["next_cursor"]
+    r = client.get(WEIGHT + f"&order=desc&limit=1&cursor={asc}", headers=H_A)
+    assert r.status_code == 400
+    assert "order" in r.get_json()["message"]
+
+
+def test_an_unknown_order_is_refused_by_name(client):
+    r = client.get(WEIGHT + "&order=sideways", headers=H_A)
+    assert r.status_code == 400
+    assert r.get_json()["error"] == "invalid_order"
+
+
+def test_UNDATED_rows_are_excluded_from_paging_and_COUNTED(app, client):
+    """A row with no effective time cannot be placed in a time-ordered walk.
+    Excluding it silently would make the history look complete."""
+    Obs = live_model("Observation")
+    with app.app_context():
+        _db.session.add(Obs(guid="u-1", patient_guid="pat-a1", org_guid="org-a",
+                            code_canonical="sys|weight", value_unit="kg",
+                            effective_at=None, status="final", raw_json={}))
+        _db.session.commit()
+    body = client.get(WEIGHT + "&order=desc", headers=H_A).get_json()
+    assert body["undated_count"] == 1
+    assert "u-1" not in [p["observation_guid"] for p in body["points"]]

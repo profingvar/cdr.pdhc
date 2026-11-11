@@ -31,11 +31,14 @@ Endpoints (mounted at /api/v1/clinical):
 """
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import re
 from datetime import datetime
 
 from flask import Blueprint, current_app, g, jsonify, request
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 
 from app import db
 from app.models.resources import live_model
@@ -287,10 +290,77 @@ def patient_summary(guid):
 # GET /api/v1/clinical/patient/<guid>/series — the actual data points
 # ---------------------------------------------------------------------------
 
+# --- #983 part 2: ordering, a keyset cursor, and VISIBLE truncation --------
+#
+# The series used to be `ORDER BY effective_at ASC LIMIT 10000`, so a patient
+# with more than ten thousand points got the OLDEST ten thousand — silently,
+# and with no way to page past them. That is the size the patient dashboard's
+# Gate 1 and Gate 4 test at. No cdr1 patient is near it today (max 650 rows,
+# measured 2026-11-11), so the defect is latent rather than live.
+#
+# Three changes, and the first is the constraint the others work around:
+#
+# 1. THE DEFAULT ORDER STAYS ASCENDING. This endpoint has consumers that rely
+#    on oldest->newest — `test_series_ordered_with_value_and_org` asserts it,
+#    and dashboard's existing charts page reads it. Flipping the default would
+#    break them to serve a new one. `?order=desc` is opt-in.
+# 2. `guid` IS ALWAYS THE TIEBREAK. `effective_at` is not unique — two
+#    (patient, effective_at) pairs repeat on cdr1 today — and a cursor on a
+#    non-unique key either skips rows or repeats them at a page boundary.
+# 3. TRUNCATION IS REPORTED. One extra row is fetched; if it exists the
+#    response says `truncated: true` and carries a cursor, so a consumer can
+#    say "showing N of M" instead of presenting a cut history as complete.
+
+_CURSOR_VERSION = 1
+_ORDERS = ("asc", "desc")
+
+
+class InvalidCursor(ValueError):
+    """A cursor that cannot be honoured. Never silently means "page one":
+    an infinite list that quietly restarts re-serves the same rows forever
+    with nothing to say the walk broke."""
+
+
+def _encode_cursor(order: str, at, obs_guid: str) -> str:
+    payload = {"v": _CURSOR_VERSION, "o": order,
+               "e": at.isoformat(), "g": obs_guid}
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _decode_cursor(cursor: str, order: str):
+    """-> (effective_at, guid). Raises InvalidCursor on anything doubtful,
+    INCLUDING a cursor minted for the other direction: resuming a descending
+    walk with an ascending predicate silently returns the wrong rows."""
+    try:
+        pad = "=" * (-len(cursor) % 4)
+        data = json.loads(base64.urlsafe_b64decode(cursor + pad))
+    except (binascii.Error, ValueError, UnicodeDecodeError) as exc:
+        raise InvalidCursor("cursor is not decodable") from exc
+    if not isinstance(data, dict) or data.get("v") != _CURSOR_VERSION:
+        raise InvalidCursor("cursor version is not supported")
+    if data.get("o") != order:
+        raise InvalidCursor(
+            f"cursor was minted for order={data.get('o')!r}, not {order!r}")
+    guid, e = data.get("g"), data.get("e")
+    if not isinstance(guid, str) or not guid or not isinstance(e, str):
+        raise InvalidCursor("cursor is missing its position")
+    try:
+        at = datetime.fromisoformat(e)
+    except ValueError as exc:
+        raise InvalidCursor("cursor timestamp is not ISO-8601") from exc
+    return at, guid
+
+
+def _bad_request(code: str, message: str):
+    return jsonify(error=code, message=message), 400
+
+
 @bp.get("/patient/<guid>/series")
 def patient_series(guid):
     """Time-series points for a patient, optionally filtered to specific
-    concept codes and an effective-date window. Ordered oldest→newest.
+    concept codes and an effective-date window. Ordered oldest→newest by
+    default; `?order=desc` and `?cursor=` page newest-first (#983).
 
     Each point carries ``org_guid`` so the dashboard can apply spärr
     (per-clinic blocks) on its side (operator #469 Q1) — CDR1 has already
@@ -324,7 +394,11 @@ def patient_series(guid):
          .filter(Obs.patient_guid == guid))
     q = _apply_org_scope(q, Obs)
     if q is None:
-        return jsonify(patient_guid=guid, points=[], count=0), 200
+        # Same shape as the full path: a consumer branches on `truncated` and
+        # `next_cursor`, and two shapes for one endpoint is how a client ends
+        # up reading a missing key as "false" on one path only.
+        return jsonify(patient_guid=guid, points=[], count=0,
+                       truncated=False, next_cursor=None), 200
 
     codes = [c for c in request.args.getlist("code") if c]
     if codes:
@@ -336,8 +410,48 @@ def patient_series(guid):
     if to is not None:
         q = q.filter(Obs.effective_at <= to)
 
-    q = q.order_by(Obs.effective_at.asc()).limit(_series_limit())
-    rows = q.all()
+    order = (request.args.get("order") or "asc").lower()
+    if order not in _ORDERS:
+        return _bad_request("invalid_order",
+                            f"order must be one of {', '.join(_ORDERS)}")
+    cursor = request.args.get("cursor")
+    paged = order == "desc" or bool(cursor)
+
+    undated = None
+    if paged:
+        # A row with no effective time cannot be placed in a time-ordered
+        # walk. Those rows are EXCLUDED from the paged path and COUNTED, so
+        # the omission is visible rather than silent. 0 on cdr1 today; the
+        # column is nullable, so it is handled rather than assumed away.
+        undated = q.filter(Obs.effective_at.is_(None)).count()
+        q = q.filter(Obs.effective_at.isnot(None))
+
+    if cursor:
+        try:
+            c_at, c_guid = _decode_cursor(cursor, order)
+        except InvalidCursor as exc:
+            return _bad_request("invalid_cursor", str(exc))
+        if order == "desc":
+            q = q.filter(or_(Obs.effective_at < c_at,
+                             and_(Obs.effective_at == c_at, Obs.guid < c_guid)))
+        else:
+            q = q.filter(or_(Obs.effective_at > c_at,
+                             and_(Obs.effective_at == c_at, Obs.guid > c_guid)))
+
+    if order == "desc":
+        q = q.order_by(Obs.effective_at.desc(), Obs.guid.desc())
+    else:
+        q = q.order_by(Obs.effective_at.asc(), Obs.guid.asc())
+
+    limit = _series_limit()
+    rows = q.limit(limit + 1).all()
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+    next_cursor = None
+    if truncated and rows:
+        last = rows[-1]
+        if last[1] is not None:            # effective_at
+            next_cursor = _encode_cursor(order, last[1], last[6])
 
     points = [{
         "code": code,
@@ -354,4 +468,9 @@ def patient_series(guid):
         "ingest_raw_guid": ingest,
         "care_plan_guid": cp,
     } for code, at, vq, unit, vs, org, obs_guid, txn, ingest, cp in rows]
-    return jsonify(patient_guid=guid, points=points, count=len(points)), 200
+    body = dict(patient_guid=guid, points=points, count=len(points),
+                order=order, limit=limit, truncated=truncated,
+                next_cursor=next_cursor)
+    if undated is not None:
+        body["undated_count"] = undated
+    return jsonify(body), 200
