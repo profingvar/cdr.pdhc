@@ -256,3 +256,77 @@ def test_summary_display_none_when_plan_unconfigured(client):
     params = client.get(
         "/api/v1/clinical/patient/pat-a1/summary", headers=h).get_json()["parameters"]
     assert params and all(p["display"] is None for p in params)
+
+
+# --- #983: identity + per-datapoint provenance on every point --------------
+#
+# Without the observation's own guid a consumer cannot ADDRESS a datapoint:
+# no cursor tiebreak, no selection, nothing to look a detail up by. The
+# dashboard's event list and provenance panel were blocked on this one field
+# while the column sat populated in the table.
+
+def test_every_point_carries_its_own_observation_guid(client):
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    r = client.get("/api/v1/clinical/patient/pat-a1/series?code=sys|weight",
+                   headers=h)
+    pts = r.get_json()["points"]
+    guids = [p["observation_guid"] for p in pts]
+    assert all(guids), "a point without an identity cannot be addressed at all"
+    assert len(set(guids)) == len(guids), "identities must be unique per point"
+    # it is the row's own guid, not something derived
+    assert set(guids) <= {"o1", "o2", "o3"}, guids
+
+
+def test_the_provenance_KEYS_are_present_even_when_unset(client):
+    """A field absent from the payload is indistinguishable from one the
+    consumer forgot to read.
+
+    `care_plan_guid` is unpopulated on cdr1 today — 0 of 1 949 rows — and is
+    projected anyway, so a consumer can render "not recorded" and keep the
+    gap VISIBLE. That is the plan's step 18 principle applied to the API.
+    """
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    pts = client.get("/api/v1/clinical/patient/pat-a1/series?code=sys|weight",
+                     headers=h).get_json()["points"]
+    for p in pts:
+        for key in ("transaction_guid", "ingest_raw_guid", "care_plan_guid"):
+            assert key in p, f"{key} is absent from the payload entirely"
+        assert p["care_plan_guid"] is None     # unset here, but PRESENT
+
+
+def test_provenance_VALUES_survive_the_projection(app, client):
+    """The fixture leaves them unset, so a test that only read the fixture
+    would pass against a projection that hard-coded None."""
+    Obs = live_model("Observation")
+    with app.app_context():
+        _db.session.add(Obs(
+            guid="o-prov", patient_guid="pat-a1", org_guid="org-a",
+            code_canonical="sys|probe", value_unit="kg",
+            effective_at=_dt(20), status="final", raw_json={},
+            transaction_guid="txn-1", ingest_raw_guid="ing-1",
+            care_plan_guid="cp-1",
+        ))
+        _db.session.commit()
+
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    pts = client.get("/api/v1/clinical/patient/pat-a1/series?code=sys|probe",
+                     headers=h).get_json()["points"]
+    assert len(pts) == 1
+    p = pts[0]
+    assert p["observation_guid"] == "o-prov"
+    assert p["transaction_guid"] == "txn-1"
+    assert p["ingest_raw_guid"] == "ing-1"
+    assert p["care_plan_guid"] == "cp-1"
+
+
+def test_the_existing_fields_are_UNCHANGED(client):
+    """The control for a projection edit: adding four keys must not move,
+    rename or drop any of the six that were already there."""
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    p = client.get("/api/v1/clinical/patient/pat-a1/series?code=sys|weight",
+                   headers=h).get_json()["points"][0]
+    for key in ("code", "at", "value", "unit", "value_string", "org_guid"):
+        assert key in p, f"{key} disappeared from the projection"
+    assert p["code"] == "sys|weight"
+    assert p["org_guid"] == "org-a"
+    assert p["unit"] == "mmol/L"

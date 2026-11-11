@@ -656,3 +656,45 @@ the test measures order rather than a cluster preference no code implements.
 on the PARSE TREE, because the docstrings written for #869 quote the termbank
 prefix to explain it and a substring search would match the prose explaining
 the fix (the #885/#904/#912/#924 instrument error).
+
+## #983 part 1 — the clinical series now carries identity and provenance (2026-11-11)
+
+### cdr_app/app/api/clinical_read.py
+
+`/api/v1/clinical/patient/<guid>/series` selected six columns and omitted the
+observation's own `guid`, `transaction_guid`, `ingest_raw_guid` and
+`care_plan_guid`. All four are columns ON the observation row, by #769's
+repair, so this is one SELECT and no join.
+
+#769's comment in `models/resources.py` explains the patient dashboard plan's
+claim that `observation -> clinical_context` "joins 0 rows": `clinical_context`
+is keyed on `ingest_raw_guid` while this table's `guid` is the FHIR resource
+id, so a join on the resource id matches nothing. #769 moved the four fields
+onto the row precisely because a side table that cannot be joined looks
+populated.
+
+Without the row's own guid a consumer cannot ADDRESS a datapoint — no cursor
+tiebreak, no selection, nothing to look a detail up by. The dashboard's event
+list and provenance panel were blocked on that one field while it sat
+populated in the table.
+
+Two deliberate choices: the wire name is `observation_guid`, not `guid`,
+because the payload already carries an org guid and a transaction guid; and
+`care_plan_guid` is projected although unpopulated (0 of 1 949 on cdr1),
+because a field absent from the payload is indistinguishable from one the
+consumer forgot to read.
+
+### cdr_app/tests/test_clinical_read.py
+
+Four tests. Reverting the projection fails three of them on assertions; the
+fourth is the control that the six existing fields did not move. One test
+seeds its own row WITH provenance, because the fixture leaves those fields
+unset and a test reading only the fixture would pass against a projection
+that hard-coded None.
+
+Whole cdr suite: 379 passed. `cdr_app/venv/` was created for this (the readme's
+documented path, gitignored, 11 of 11 requirements pinned).
+
+Verified BEFORE editing: this file was byte-identical in git, in
+`/usr/local/www/cdr.pdhc`, and inside `cdr_pdhc_app` (`be4dd6982229`), so the
+change was made in the repo normally. NOT deployed.

@@ -301,9 +301,25 @@ def patient_series(guid):
     if err:
         return err
     Obs = live_model("Observation")
+    # #983 — identity and per-datapoint provenance travel WITH the point.
+    #
+    # The four context columns live ON THIS ROW by #769's repair, not in
+    # `clinical_context`: that side table is keyed on `ingest_raw_guid` while
+    # this table's `guid` is the FHIR resource id, so a join on the resource
+    # id matched 0 rows while the side table looked populated. They are
+    # columns here, so this costs one SELECT and no join at all.
+    #
+    # `guid` is the row identity a consumer needs in order to ADDRESS a
+    # datapoint: without it there is no cursor tiebreak, no selection, and
+    # nothing to look a detail up by. `care_plan_guid` is projected although
+    # it is unpopulated today (0 of 1 949 on cdr1) — a field absent from the
+    # payload is indistinguishable from one the consumer forgot to read, and
+    # a consumer that renders it as "not recorded" keeps the gap visible.
     q = (db.session.query(
             Obs.code_canonical, Obs.effective_at, Obs.value_quantity,
             Obs.value_unit, Obs.value_string, Obs.org_guid,
+            Obs.guid, Obs.transaction_guid, Obs.ingest_raw_guid,
+            Obs.care_plan_guid,
          )
          .filter(Obs.patient_guid == guid))
     q = _apply_org_scope(q, Obs)
@@ -330,5 +346,12 @@ def patient_series(guid):
         "unit": unit,
         "value_string": vs,
         "org_guid": org,
-    } for code, at, vq, unit, vs, org in rows]
+        # Named `observation_guid`, not `guid`: this payload already carries
+        # an org guid and a transaction guid, and a bare `guid` in that
+        # company reads as "which one?".
+        "observation_guid": obs_guid,
+        "transaction_guid": txn,
+        "ingest_raw_guid": ingest,
+        "care_plan_guid": cp,
+    } for code, at, vq, unit, vs, org, obs_guid, txn, ingest, cp in rows]
     return jsonify(patient_guid=guid, points=points, count=len(points)), 200
