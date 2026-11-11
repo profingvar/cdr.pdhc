@@ -734,3 +734,44 @@ Ten new tests. Six mutations, each failing on assertions (exit 1): tiebreak,
 silent page one, truncation never reported, default flipped, cross-direction
 cursor accepted, undated rows dropped uncounted. Whole cdr suite 389 passed.
 NOT deployed.
+
+## #983 detail — GET /api/v1/clinical/observation/<guid> (2026-11-11)
+
+### cdr_app/app/api/clinical_read.py
+
+One observation with every provenance field, for the patient dashboard's
+detail panel.
+
+WHY NOT `/observations/<guid>/provenance`. Measured on cdr1: that route is
+keyed on `FhirResource.guid`, and `observation.guid` matches
+`fhir_resources.guid` for 0 of 1 949 rows — the two stores give the same
+datapoint DIFFERENT guids, the split #769 describes. Every observation_guid a
+clinical read hands out would 404 there. Both stores match on
+`ingest_raw_guid` exactly 1:1, as does `clinical_context`. It is also behind
+the narrow ingest/provenance service list, which the dashboard is not on.
+
+WHY NOT the FHIR read: its blob is SU-equivalent and organisation-blind, so
+reading a care datapoint through it steps round this module's Rule 24 scope.
+
+So: the same `_care_delivery_guard` and `_apply_org_scope` as the series,
+looked up by the live table's guid, context joined on `ingest_raw_guid`, raw
+FHIR from the row's own `raw_json` (populated on 1 949 of 1 949). The raw
+fallbacks REUSE provenance.py's helpers and inherit #665: `author_org_guid`
+gets no fallback, because `performer` currently carries the submitter.
+
+Every context field is returned, null when absent, so "not recorded" can be
+rendered. `context_filled_from_raw` says which values came from the FHIR
+resource rather than the structured columns. Cross-organisation and
+nonexistent both answer the same flat 404, so probing learns nothing.
+`patient_guid` is returned so the consumer can re-gate on the observation's
+OWN patient.
+
+ClinicalContext's model and production schema were compared before querying
+it: 19 columns each, no difference. (An earlier list suggested
+`author_org_guid` was missing in production; it had been cut by `head -14`.)
+
+### cdr_app/tests/test_clinical_read.py
+
+Six tests; five mutations each failing on assertions (org scope skipped,
+cross-org distinguishable from missing, author_org fallback, null keys
+omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.

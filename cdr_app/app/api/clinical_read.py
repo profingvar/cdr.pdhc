@@ -474,3 +474,109 @@ def patient_series(guid):
     if undated is not None:
         body["undated_count"] = undated
     return jsonify(body), 200
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/clinical/observation/<guid> — ONE datapoint and its provenance
+# ---------------------------------------------------------------------------
+#
+# For the patient dashboard's detail panel (#983, step 18 of its plan).
+#
+# WHY NOT THE EXISTING `/observations/<guid>/provenance`. Measured on cdr1
+# 2026-11-11: that route is keyed on `FhirResource.guid`, and
+# `observation.guid` matches `fhir_resources.guid` for 0 of 1 949 rows — the
+# two stores use DIFFERENT guids for the same datapoint, the id-space split
+# #769 describes. Every observation_guid a clinical read hands out would 404
+# there. It is also guarded by the narrow ingest/provenance service list,
+# which the dashboard is deliberately not on.
+#
+# WHY NOT THE FHIR READ. `fhir_read`'s blob is SU-equivalent and
+# organisation-blind; reading a care datapoint through it would step round
+# this module's own Rule 24 scoping.
+#
+# So: the same guard and the same org scope as the series, looked up by the
+# live table's guid, with context joined on `ingest_raw_guid` — exactly 1:1
+# against both `clinical_context` and `fhir_resources` on cdr1. The raw FHIR is
+# on the row already (`raw_json`, populated on 1 949 of 1 949).
+#
+# The fallbacks into the raw resource REUSE provenance.py's helpers rather
+# than re-implementing them, and inherit its #665 rule: author_org_guid gets
+# NO fallback, because FHIR `performer` currently carries the SUBMITTER.
+
+_CONTEXT_FIELDS = (
+    "service_request_guid", "plan_definition_guid", "plan_activity_guid",
+    "contract_guid", "requesting_org_guid", "provider_org_guid",
+    "author_org_guid", "care_plan_guid", "transaction_guid", "concept_guid",
+    "requester_user_guid", "source_service", "sim_run_id",
+)
+
+
+@bp.get("/observation/<guid>")
+def observation_detail(guid):
+    """One observation with every provenance field, present or null.
+
+    A missing value is returned as an explicit null, never omitted: the
+    dashboard renders "not recorded" so the context gaps stay VISIBLE, and a
+    key absent from the payload is indistinguishable from one the consumer
+    forgot to read.
+
+    404 for "does not exist" AND for "outside your organisations", with the
+    same body, so probing an observation guid learns nothing.
+    """
+    err = _care_delivery_guard()
+    if err:
+        return err
+    from app.models import ClinicalContext
+    from .provenance import (_basedon_guid, _extension_ref_guid,
+                             _EXT_CONTRACT, _EXT_REQUESTING_ORG)
+
+    Obs = live_model("Observation")
+    q = _apply_org_scope(Obs.query.filter(Obs.guid == guid), Obs)
+    row = q.first() if q is not None else None
+    if row is None:
+        return jsonify(error="not_found",
+                       message="no such observation in your scope"), 404
+
+    ctx = None
+    if row.ingest_raw_guid:
+        ctx = (ClinicalContext.query
+               .filter_by(ingest_raw_guid=row.ingest_raw_guid).first())
+
+    context = {k: (getattr(ctx, k, None) if ctx is not None else None)
+               for k in _CONTEXT_FIELDS}
+    # The row's own columns win over the side table: #769 put them there.
+    for k in ("transaction_guid", "care_plan_guid"):
+        if getattr(row, k, None):
+            context[k] = getattr(row, k)
+
+    raw = row.raw_json if isinstance(row.raw_json, dict) else {}
+    filled_from_raw = []
+    for key, value in (
+        ("service_request_guid", _basedon_guid(raw, "ServiceRequest")),
+        ("plan_definition_guid", _basedon_guid(raw, "PlanDefinition")),
+        ("contract_guid", _extension_ref_guid(raw, _EXT_CONTRACT)),
+        ("requesting_org_guid", _extension_ref_guid(raw, _EXT_REQUESTING_ORG)),
+    ):
+        if not context.get(key) and value:
+            context[key] = value
+            filled_from_raw.append(key)
+    # author_org_guid: deliberately NO fallback (#665).
+
+    return jsonify({
+        "observation_guid": row.guid,
+        "patient_guid": row.patient_guid,
+        "code": row.code_canonical,
+        "at": _iso(row.effective_at),
+        "received_at": _iso(row.received_at),
+        "value": float(row.value_quantity) if row.value_quantity is not None else None,
+        "unit": row.value_unit,
+        "value_string": row.value_string,
+        "org_guid": row.org_guid,
+        "ingest_raw_guid": row.ingest_raw_guid,
+        "context": context,
+        "context_found": ctx is not None,
+        # Which values came from the FHIR resource rather than the structured
+        # columns — a reader auditing provenance should know the difference.
+        "context_filled_from_raw": filled_from_raw,
+        "raw_fhir": raw or None,
+    }), 200

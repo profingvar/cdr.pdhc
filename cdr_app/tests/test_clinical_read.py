@@ -452,3 +452,95 @@ def test_UNDATED_rows_are_excluded_from_paging_and_COUNTED(app, client):
     body = client.get(WEIGHT + "&order=desc", headers=H_A).get_json()
     assert body["undated_count"] == 1
     assert "u-1" not in [p["observation_guid"] for p in body["points"]]
+
+
+# --- #983 detail: GET /api/v1/clinical/observation/<guid> -----------------
+
+DETAIL = "/api/v1/clinical/observation/{}"
+
+
+def _seed_detail(app, *, with_context=True, raw=None, guid="d-1",
+                 org="org-a", patient="pat-a1"):
+    from app.models import ClinicalContext
+    Obs = live_model("Observation")
+    with app.app_context():
+        _db.session.add(Obs(
+            guid=guid, patient_guid=patient, org_guid=org,
+            code_canonical="sys|weight", value_quantity=71.5,
+            value_unit="kg", effective_at=_dt(20), status="final",
+            raw_json=raw if raw is not None else {"resourceType": "Observation"},
+            ingest_raw_guid=f"ing-{guid}", transaction_guid="txn-row",
+        ))
+        if with_context:
+            _db.session.add(ClinicalContext(
+                ingest_raw_guid=f"ing-{guid}", patient_guid=patient,
+                plan_definition_guid="pd-1", contract_guid="ct-1",
+                provider_org_guid="prov-1", service_request_guid="sr-1",
+                transaction_guid="txn-ctx",
+            ))
+        _db.session.commit()
+
+
+def test_detail_returns_the_datapoint_its_PATIENT_and_its_context(app, client):
+    """`patient_guid` is what lets the dashboard re-gate on the observation's
+    OWN patient instead of on the caller's word for it."""
+    _seed_detail(app)
+    r = client.get(DETAIL.format("d-1"), headers=H_A)
+    assert r.status_code == 200
+    b = r.get_json()
+    assert b["observation_guid"] == "d-1"
+    assert b["patient_guid"] == "pat-a1"
+    assert b["value"] == 71.5 and b["unit"] == "kg"
+    assert b["context_found"] is True
+    c = b["context"]
+    assert c["plan_definition_guid"] == "pd-1"
+    assert c["contract_guid"] == "ct-1"
+    assert c["service_request_guid"] == "sr-1"
+    # the row's own column wins over the side table (#769)
+    assert c["transaction_guid"] == "txn-row"
+
+
+def test_every_context_field_is_PRESENT_even_with_no_context_row(app, client):
+    """"Not recorded" must be renderable — so the key must exist."""
+    _seed_detail(app, with_context=False, guid="d-2")
+    b = client.get(DETAIL.format("d-2"), headers=H_A).get_json()
+    assert b["context_found"] is False
+    for k in ("service_request_guid", "plan_definition_guid", "contract_guid",
+              "provider_org_guid", "author_org_guid", "care_plan_guid"):
+        assert k in b["context"], k
+    assert b["context"]["plan_definition_guid"] is None
+
+
+def test_gaps_are_filled_from_the_RAW_resource_and_SAID_so(app, client):
+    raw = {"resourceType": "Observation",
+           "basedOn": [{"type": "ServiceRequest",
+                        "identifier": {"value": "sr-raw"}}]}
+    _seed_detail(app, with_context=False, guid="d-3", raw=raw)
+    b = client.get(DETAIL.format("d-3"), headers=H_A).get_json()
+    assert b["context"]["service_request_guid"] == "sr-raw"
+    assert "service_request_guid" in b["context_filled_from_raw"]
+
+
+def test_author_org_gets_NO_fallback_from_performer(app, client):
+    """#665: performer currently carries the SUBMITTER, so filling author from
+    it would recreate the author/submitter conflation."""
+    raw = {"resourceType": "Observation",
+           "performer": [{"identifier": {"value": "submitter-org"}}]}
+    _seed_detail(app, with_context=False, guid="d-4", raw=raw)
+    b = client.get(DETAIL.format("d-4"), headers=H_A).get_json()
+    assert b["context"]["author_org_guid"] is None
+
+
+def test_another_organisations_observation_is_a_FLAT_404(app, client):
+    """Same answer as "does not exist", so probing a guid learns nothing."""
+    _seed_detail(app, guid="d-b", org="org-b", patient="pat-b1")
+    other = client.get(DETAIL.format("d-b"), headers=H_A)
+    missing = client.get(DETAIL.format("no-such-guid"), headers=H_A)
+    assert other.status_code == missing.status_code == 404
+    assert other.get_json() == missing.get_json()
+
+
+def test_detail_requires_the_care_delivery_guard(app, client):
+    _seed_detail(app, guid="d-5")
+    h = {k: v for k, v in H_A.items() if k != "X-Access-Purpose"}
+    assert client.get(DETAIL.format("d-5"), headers=h).status_code == 400
