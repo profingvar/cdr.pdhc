@@ -544,3 +544,30 @@ def test_detail_requires_the_care_delivery_guard(app, client):
     _seed_detail(app, guid="d-5")
     h = {k: v for k, v in H_A.items() if k != "X-Access-Purpose"}
     assert client.get(DETAIL.format("d-5"), headers=h).status_code == 400
+
+
+
+def test_series_TRANSACTION_filter_is_applied_and_ECHOED(app, client):
+    """#977: the dashboard's plan filter. The echo is how a caller tells
+    "filtered" from "an older cdr ignored the parameter"."""
+    Obs = live_model("Observation")
+    with app.app_context():
+        for g, tx in (("o-t1", "txn-A"), ("o-t2", "txn-B"), ("o-t3", "txn-A")):
+            _db.session.add(Obs(
+                guid=g, patient_guid="pat-a1", org_guid="org-a",
+                code_canonical="sys|txprobe", value_unit="kg",
+                effective_at=_dt(20), status="final", raw_json={},
+                transaction_guid=tx))
+        _db.session.commit()
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    body = client.get("/api/v1/clinical/patient/pat-a1/series"
+                      "?code=sys|txprobe&transaction=txn-A&order=desc",
+                      headers=h).get_json()
+    assert sorted(p["observation_guid"] for p in body["points"]) == ["o-t1", "o-t3"]
+    assert body["transaction_filter"] is True
+
+
+def test_series_without_a_transaction_filter_does_not_claim_one(client):
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    body = client.get("/api/v1/clinical/patient/pat-a1/series", headers=h).get_json()
+    assert "transaction_filter" not in body

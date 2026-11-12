@@ -409,6 +409,14 @@ def patient_series(guid):
     to = _parse_iso(request.args.get("to"))
     if to is not None:
         q = q.filter(Obs.effective_at <= to)
+    # The dashboard's plan filter (#977): observations belonging to a plan's
+    # transactions. ECHOED in the body as `transaction_filter`, because a cdr
+    # without this filter would ignore the parameter and answer with the
+    # whole history — the caller must be able to tell "filtered" from
+    # "ignored" without trusting that the server is new enough.
+    transactions = [t for t in request.args.getlist("transaction") if t]
+    if transactions:
+        q = q.filter(Obs.transaction_guid.in_(transactions))
 
     order = (request.args.get("order") or "asc").lower()
     if order not in _ORDERS:
@@ -473,6 +481,8 @@ def patient_series(guid):
                 next_cursor=next_cursor)
     if undated is not None:
         body["undated_count"] = undated
+    if transactions:
+        body["transaction_filter"] = True
     return jsonify(body), 200
 
 

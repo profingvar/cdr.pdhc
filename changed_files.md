@@ -775,3 +775,7 @@ it: 19 columns each, no difference. (An earlier list suggested
 Six tests; five mutations each failing on assertions (org scope skipped,
 cross-org distinguishable from missing, author_org fallback, null keys
 omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
+
+## 2026-11-12 — #977 part B: echoed transaction filter on the clinical series
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/clinical_read.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_clinical_read.py
