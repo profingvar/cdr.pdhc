@@ -51,3 +51,9 @@ services:
 volumes:
   pgdata:
     name: ${DB_VOLUME:-cdr_pdhc_pgdata}
+    # The volume must already exist; compose will NOT create it. Matches the
+    # deployed cdr1 compose (#1004). Without this a mistyped DB_VOLUME
+    # silently creates an EMPTY database and the CDR starts against it,
+    # healthy and holding nothing. A new CDR creates its volume first:
+    #   docker volume create <DB_VOLUME>      (deploy/stamp.sh prints it)
+    external: true

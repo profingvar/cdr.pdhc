@@ -790,3 +790,7 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/auth.py — scope_org_guids reads affiliations only
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_read.py — comments updated
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_reform_scope.py — pinning test inverted; + blob_to_user with only legacy ids has no scope
+
+## 2026-11-14 — #1004: repo compose declares the db volume external, as deployed
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/docker-compose.yml — volumes.pgdata external: true (matches production cdr1)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/deploy/stamp.sh — a new CDR creates its volume first
