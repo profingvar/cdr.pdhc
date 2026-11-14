@@ -93,15 +93,16 @@ def _org_filter(query, Live, *, request_args=None):
     Authoritative source is the SSO / service-key access blob loaded by
     ``app.auth.install_request_loader`` into ``g.access_blob``:
         - ``is_su_admin = True``  → bypass scoping (admin sees all).
-        - ``organization_ids``    → scope to that set.
+        - ``affiliations[].care_unit_guid`` → scope to that set (the legacy
+          ``organization_ids`` is no longer read, 2026-11-14).
     Legacy ``X-Is-Admin`` / ``X-Org-Guids`` headers are still honoured
     as a fallback for local-dev callers and the older test fixtures.
     """
     blob = getattr(g, "access_blob", None) or {}
     if blob.get("is_su_admin"):
         return query
-    # M0 #416: Zone-1 scope from affiliations[] (dual-read fallback to
-    # organization_ids), shared with auth._blob_to_user.
+    # M0 #416: Zone-1 scope from affiliations[] only (the organization_ids
+    # fallback was removed 2026-11-14), shared with auth._blob_to_user.
     #
     # #818 — scoped on patient_org_guid, NOT org_guid. Rule 24 asks "rows whose
     # PATIENT belongs to one of my care units"; org_guid is the PERFORMER, so

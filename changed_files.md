@@ -785,3 +785,8 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/ingest_pipeline.py
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/cambio_worker.py
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_cambio_synthetic_1000.py (NEW)
+
+## 2026-11-14 — organization_ids fallback removed (care unit = affiliation only)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/auth.py — scope_org_guids reads affiliations only
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_read.py — comments updated
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_reform_scope.py — pinning test inverted; + blob_to_user with only legacy ids has no scope
