@@ -3,7 +3,9 @@ import logging
 import time
 from datetime import datetime, timezone
 from app import db
-from app.models import CambioDeliveryLog, FhirResource, OpenEhrComposition
+from app.models import (CambioDeliveryLog, ClinicalContext, FhirResource,
+                        IngestRaw, OpenEhrComposition)
+from app.services.synthetic import synthetic_reason
 from .cambio_client import CambioClient
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,16 @@ def run_delivery_cycle(app):
 
         delivered = 0
         for log in pending:
+            # #1000, defence in depth: a row queued BEFORE the ingest rule
+            # existed must not leave either. Checked before _deliver_one,
+            # because that calls CambioClient.ensure_patient first — which
+            # would create the synthetic PATIENT in Cambio even if the
+            # observation itself were then refused.
+            reason = synthetic_reason_for(log)
+            if reason:
+                log.status = "skipped"
+                log.last_error = reason
+                continue
             try:
                 _deliver_one(log)
                 delivered += 1
@@ -39,6 +51,19 @@ def run_delivery_cycle(app):
         if delivered:
             logger.info("Delivery cycle: %d/%d succeeded", delivered, len(pending))
         return delivered
+
+
+def synthetic_reason_for(log):
+    """The #1000 rule applied to a queued row, from what cdr stored at
+    ingest: the writer (ingest_raw) and the run id (clinical_context)."""
+    raw = IngestRaw.query.get(log.ingest_raw_guid) if log.ingest_raw_guid else None
+    ctx = (ClinicalContext.query.filter_by(ingest_raw_guid=log.ingest_raw_guid).first()
+           if log.ingest_raw_guid else None)
+    return synthetic_reason(
+        source_service=raw.source_service if raw else None,
+        context_source=ctx.source_service if ctx else None,
+        sim_run_id=ctx.sim_run_id if ctx else None,
+    )
 
 
 def _deliver_one(log):

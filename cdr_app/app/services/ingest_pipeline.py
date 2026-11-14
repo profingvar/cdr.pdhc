@@ -8,6 +8,7 @@ from app.models import (
     Activity, ClinicalContext, DedupeRegistry, AuditLog, CambioDeliveryLog,
 )
 from .transformer import FhirOpenEhrTransformer
+from app.services.synthetic import synthetic_reason
 
 logger = logging.getLogger(__name__)
 
@@ -291,7 +292,29 @@ class IngestPipeline:
             or (fhir_row and fhir_row.loinc_code)
             or (fhir_row and _primary_canonical_uri(fhir_row.resource_json))
         )
-        if has_concept_ref:
+        # #1000: synthetic data never enters the Cambio queue. It used to be
+        # queued exactly like real data — 8 056 sim rows sat "pending" behind
+        # nothing but CAMBIO_DELIVERY_ENABLED=false. Recorded as "skipped"
+        # with the reason, so the decision is visible rather than an absence.
+        synthetic = synthetic_reason(
+            source_service=source_service,
+            context_source=(context or {}).get("source_service"),
+            sim_run_id=(context or {}).get("sim_run_id"),
+        )
+        if synthetic:
+            for kind, row in (("fhir", fhir_row), ("openehr", openehr_row)):
+                if row:
+                    db.session.add(CambioDeliveryLog(
+                        ingest_raw_guid=raw.guid,
+                        fhir_resource_guid=row.guid if kind == "fhir" else None,
+                        openehr_comp_guid=row.guid if kind == "openehr" else None,
+                        patient_guid=patient_guid,
+                        delivery_type=kind,
+                        operator_session_id=op_sid,
+                        status="skipped",
+                        last_error=synthetic,
+                    ))
+        elif has_concept_ref:
             if fhir_row:
                 db.session.add(CambioDeliveryLog(
                     ingest_raw_guid=raw.guid,

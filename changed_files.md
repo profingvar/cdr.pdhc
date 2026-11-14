@@ -779,3 +779,9 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 ## 2026-11-12 — #977 part B: echoed transaction filter on the clinical series
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/clinical_read.py
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_clinical_read.py
+
+## 2026-11-14 — #1000: synthetic data never enters the Cambio queue
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/synthetic.py (NEW)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/ingest_pipeline.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/cambio_worker.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_cambio_synthetic_1000.py (NEW)
