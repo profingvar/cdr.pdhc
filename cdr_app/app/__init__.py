@@ -89,6 +89,18 @@ def create_app(config_override=None):
         os.environ.get("CDR_READ_LOCKDOWN", "").lower() in ("1", "true", "yes")
     )
 
+    # #944: the clinical read surface (#468, /api/v1/clinical/*) belongs to the
+    # CLINICAL repository only. cdr2/cdr3 are analysis repositories and never
+    # registered it — by hand-edited copies of this file, which is how they
+    # drifted into a separate codebase. One codebase now, the role is config:
+    # default ON (cdr1 unchanged); analysis CDRs set CDR_CLINICAL_READ=false.
+    # Unset means the default, never "off": an analysis CDR that loses the key
+    # gains a surface it should not have, so set it explicitly there.
+    app.config["CDR_CLINICAL_READ"] = (
+        os.environ.get("CDR_CLINICAL_READ", "true").strip().lower()
+        not in ("0", "false", "no", "off")
+    )
+
     # Canonicalisation: when sim emits FHIR resources whose
     # coding[0].system = https://plan.pdhc.se/Concept, the canonicaliser
     # short-circuits the xlate hop and trusts plan.pdhc as the authority.
@@ -132,7 +144,9 @@ def create_app(config_override=None):
     # #292 shim — see api/__init__.py for the rationale.
     app.register_blueprint(stats_bp, url_prefix="/api/v1")
     # #468 / #462 D6 — care-delivery read surface for the clinical dashboard.
-    app.register_blueprint(clinical_read_bp, url_prefix="/api/v1/clinical")
+    # Registered on the clinical repository only (#944, see CDR_CLINICAL_READ).
+    if app.config["CDR_CLINICAL_READ"]:
+        app.register_blueprint(clinical_read_bp, url_prefix="/api/v1/clinical")
 
     # Start Cambio delivery scheduler if enabled
     if app.config["CAMBIO_DELIVERY_ENABLED"] and not app.config.get("TESTING"):

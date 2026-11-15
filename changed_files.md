@@ -794,3 +794,7 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 ## 2026-11-14 — #1004: repo compose declares the db volume external, as deployed
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/docker-compose.yml — volumes.pgdata external: true (matches production cdr1)
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/deploy/stamp.sh — a new CDR creates its volume first
+
+## 2026-11-15 — #944: the clinical read surface is a role (CDR_CLINICAL_READ)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/__init__.py — CDR_CLINICAL_READ (default true); clinical_read registered only when on
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_clinical_read_role_944.py (NEW)
