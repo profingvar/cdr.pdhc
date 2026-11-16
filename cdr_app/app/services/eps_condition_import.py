@@ -111,12 +111,20 @@ def to_cdr_condition(ips_resource: dict, patient_guid: str,
     return out
 
 
+#: Where a patient's presence in this CDR is read from. Condition as well as
+#: Observation: icd11's six patients in cdr2 had Conditions and no
+#: observations, and were wrongly read as "not here" (measured 2026-11-16).
+_HOME_TABLES = ("observation", "condition")
+
+
 def patient_org_for(patient_guid: str) -> str | None:
     """The patient's organisation as this CDR already records it. Raises Skip."""
     from app import db
-    rows = db.session.execute(db.text(
-        "select distinct patient_org_guid from observation "
-        "where patient_guid = :p and patient_org_guid is not null"), {"p": patient_guid}).scalars().all()
+    union = " union ".join(
+        f"select patient_org_guid from {t} where patient_guid = :p and patient_org_guid is not null"
+        for t in _HOME_TABLES)
+    rows = db.session.execute(db.text(f"select distinct patient_org_guid from ({union}) x"),
+                              {"p": patient_guid}).scalars().all()
     if len(rows) > 1:
         raise Skip(f"patient's rows name {len(rows)} organisations")
     return rows[0] if rows else None
@@ -124,8 +132,9 @@ def patient_org_for(patient_guid: str) -> str | None:
 
 def patient_is_here(patient_guid: str) -> bool:
     from app import db
-    return db.session.execute(db.text(
-        "select 1 from observation where patient_guid = :p limit 1"), {"p": patient_guid}).first() is not None
+    return any(db.session.execute(db.text(
+        f"select 1 from {t} where patient_guid = :p limit 1"), {"p": patient_guid}).first() is not None
+        for t in _HOME_TABLES)
 
 
 @dataclass
@@ -151,6 +160,7 @@ def run(entries: list[dict], *, apply: bool, write_one=None, canonicaliser=None)
     Dry run canonicalises only (plan validation included) and writes nothing.
     """
     from app import db
+    from app.models.resources import live_model
     from app.services.resource_writer import WriteContext
     if write_one is None:
         from app.api.fhir_write import _write_one as write_one
@@ -170,6 +180,12 @@ def run(entries: list[dict], *, apply: bool, write_one=None, canonicaliser=None)
             org = patient_org_for(pg)
         except Skip as s:
             rep.skipped[str(s)] += 1
+            continue
+        if live_model("Condition").query.filter_by(guid=fhir["id"]).first() is not None:
+            # Already imported. Skipped rather than rewritten: the writer
+            # version-bumps even on identical content (measured: a rerun made
+            # 146 no-op versions on cdr2).
+            rep.skipped["already in this CDR"] += 1
             continue
         if not apply:
             r = canonicaliser.canonicalise(fhir)

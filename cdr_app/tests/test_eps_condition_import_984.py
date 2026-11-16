@@ -88,9 +88,13 @@ def test_apply_writes_one_row_per_eps_condition_with_the_patients_org(app, clien
         assert {r.patient_org_guid for r in rows} == {ORG}
         assert {r.source for r in rows} == {"ips.pdhc"}
         assert {r.code_canonical for r in rows} == {"https://termbank.pdhc.se/CodeSystem/snomed/49436004"}
-        # rerun: same rows, updated, nothing new
+        # rerun: nothing written, nothing new, no no-op versions
         rep2 = imp.run(entries, apply=True)
-        assert rep2.written == {"updated": 2}
+        assert rep2.written == {}
+        assert rep2.skipped["already in this CDR"] == 2
+        from app.models.resources import history_model
+        assert history_model("Condition").query.filter(
+            history_model("Condition").guid.in_([imp.cdr_guid_for(r["id"]) for r in twice])).count() <= 2
         assert live_model("Condition").query.count() == 2
 
 
@@ -147,3 +151,18 @@ def test_run_passes_termbank_display_through(app, client, fake_canon):
                         "termbank_display": "Type 2 diabetes mellitus"}], apply=True)
         assert rep.skipped == {"EPS label contradicts the code": 1}
         assert live_model("Condition").query.count() == 0
+
+
+def test_a_patient_with_only_CONDITIONS_here_is_at_home(app, client, fake_canon):
+    """icd11's six cdr2 patients had Conditions and no observations."""
+    from tests.test_fhir_write import _SERVICE_KEYS
+    cond = {"resourceType": "Condition", "subject": {"reference": f"Patient/{P}"},
+            "code": {"coding": [{"system": "https://termbank.pdhc.se/CodeSystem/snomed", "code": "38341003"}]}}
+    r = client.post("/api/v1/fhir/Condition", json=cond, headers={
+        "X-Source-Service": "sim.pdhc", "X-Service-Key": _SERVICE_KEYS["sim.pdhc"], "X-Patient-Org-Guid": ORG})
+    assert r.status_code == 201, r.get_json()
+    with app.app_context():
+        rep = imp.run([{"patient_guid": P, "resource": _eps()}], apply=True)
+        assert rep.written == {"created": 1}, rep.lines()
+        row = live_model("Condition").query.filter_by(guid=imp.cdr_guid_for(_eps()["id"])).one()
+        assert row.patient_org_guid == ORG
