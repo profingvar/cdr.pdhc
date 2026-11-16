@@ -816,3 +816,8 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/canonicalisation.py — MedicationStatement/Request resolve via fhir_paths; nested write-back
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/resource_writer.py — dedup key, effective_at, performed_at, medication_canonical, fallback sweep via fhir_paths
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_r5_element_names_936.py (NEW)
+
+## #931 — each CDR reads plan.pdhc with its own service key (2026-11-16)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/plan_client.py — plan_read_headers(); the one HTTP chokepoint (_get_with_retry) sends it with the #408 session headers
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/.env.example — PLAN_SOURCE_SERVICE, PLAN_SERVICE_KEY
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_plan_read_key_931.py (NEW)

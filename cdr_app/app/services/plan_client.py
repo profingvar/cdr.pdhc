@@ -238,6 +238,27 @@ class PlanUnreachable(Exception):
     """
 
 
+def plan_read_headers() -> dict:
+    """#931 — this CDR's read_only service key for plan.pdhc.
+
+    Every PlanClient call is a READ, so every call carries it. Before #931 plan
+    had no door a CDR could authenticate through, and `outbound_session_headers`
+    — session correlation (#408), not a credential — was all that went out.
+
+    One identity per running CDR: cdr1 is `cdr.pdhc`, cdr2/cdr3 set
+    PLAN_SOURCE_SERVICE in their own .env, since they run this same code
+    (#944). Read from the environment at call time, like PLAN_BASE_URL above,
+    because PlanClient is also used outside an app context. Unset key = `{}`:
+    the read goes out unauthenticated exactly as before, and plan's shadow log
+    names it.
+    """
+    key = (os.environ.get("PLAN_SERVICE_KEY") or "").strip()
+    if not key:
+        return {}
+    src = (os.environ.get("PLAN_SOURCE_SERVICE") or "").strip() or "cdr.pdhc"
+    return {"X-Source-Service": src, "X-Service-Key": key}
+
+
 class PlanClient:
 
     _MISS = object()
@@ -282,7 +303,8 @@ class PlanClient:
             try:
                 from app.services.session_headers import outbound_session_headers
                 resp = requests.get(url, params=params,
-                                    headers=outbound_session_headers(), timeout=self.timeout)
+                                    headers={**outbound_session_headers(), **plan_read_headers()},
+                                    timeout=self.timeout)
             except requests.RequestException as e:
                 log.warning("plan.pdhc unreachable on %s (attempt %d): %s",
                             operation, attempt + 1, e)

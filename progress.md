@@ -2060,3 +2060,9 @@ and a substring search would match the prose explaining the fix. That is the
 credential auditor itself. It also carries a control that the builder itself
 *does* contain the rule, without which the two assertions would pass on a
 codebase where the rule had been deleted outright.
+
+## #931 — CDRs read plan with a key (2026-11-16)
+PlanClient's single requests.get now carries X-Source-Service + X-Service-Key
+(read from the environment at call time). cdr1 = cdr.pdhc; cdr2/cdr3 name
+themselves via PLAN_SOURCE_SERVICE. A test pins that chokepoint as the only
+raw requests call in plan_client. pytest: 446 passed.
