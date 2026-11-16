@@ -802,3 +802,11 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 ## 2026-11-16 — #1005 step 4: icd11.pdhc may assert icd11-mms
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/auth.py — WHOLE_SYSTEM_ASSERTING_SERVICES gains icd11-mms -> icd11.pdhc; comments updated
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_whole_system_assertion_gate.py — exact-map guard updated with the reason; real-map tests; message test names the permitted service
+
+## 2026-11-16 — #1006: an unknown performer organisation is NULL, never invented
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_write.py — org_guid None when X-Org-Guid / ?org_guid absent or blank
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/ingest_pipeline.py — no zero-guid fallback when the Observation has no performer
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/resource_writer.py — WriteContext.org_guid optional; no org meta tag without a value
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/models/resources.py — org_guid nullable on live, history and change_feed
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/migrations/versions/d9e0f1a2b3c4_org_guid_nullable.py (NEW) — drop NOT NULL, zero guid -> NULL; downgrade restores both
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_org_guid_null_1006.py (NEW); tests/test_live_observation_ingest.py — sentinel-pinning test inverted

@@ -62,7 +62,9 @@ def _common_live_columns() -> list:
     return [
         db.Column("guid", db.String(36), primary_key=True, default=_uuid),
         db.Column("patient_guid", db.String(36), nullable=True),  # null on Patient
-        db.Column("org_guid", db.String(36), nullable=False),
+        # #1006: nullable. NULL = the producer named no performer organisation;
+        # it used to be filled with an invented all-zero guid.
+        db.Column("org_guid", db.String(36), nullable=True),
         db.Column("code_canonical", db.String(512), nullable=True),
         db.Column("effective_at", db.DateTime(timezone=True), nullable=True),
         db.Column("raw_json", JSONType, nullable=False),
@@ -112,7 +114,7 @@ def _common_history_columns() -> list:
         db.Column("guid", db.String(36), nullable=False),
         db.Column("version_id", db.Integer, nullable=False),
         db.Column("patient_guid", db.String(36), nullable=True),
-        db.Column("org_guid", db.String(36), nullable=False),
+        db.Column("org_guid", db.String(36), nullable=True),  # #1006
         db.Column("code_canonical", db.String(512), nullable=True),
         db.Column("effective_at", db.DateTime(timezone=True), nullable=True),
         db.Column("raw_json", JSONType, nullable=False),
@@ -481,7 +483,7 @@ class ChangeFeed(db.Model):
     resource_type = db.Column(db.String(64), nullable=False)
     resource_guid = db.Column(db.String(36), nullable=False)
     patient_guid = db.Column(db.String(36), nullable=True)
-    org_guid = db.Column(db.String(36), nullable=False)
+    org_guid = db.Column(db.String(36), nullable=True)  # #1006
     version_id = db.Column(db.Integer, nullable=False)
     sync_group_id = db.Column(db.String(36), nullable=True)
     code_canonical = db.Column(db.String(512), nullable=True)

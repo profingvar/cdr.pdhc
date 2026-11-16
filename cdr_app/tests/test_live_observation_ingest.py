@@ -142,13 +142,15 @@ class TestBuildLiveObservationRow:
             assert row.source == 'gateway.pdhc'
             assert row.raw_json == _obs()
 
-    def test_falls_back_to_sentinel_org_when_performer_missing(self, app):
+    def test_NULL_org_when_performer_missing(self, app):
+        """#1006: this test used to pin the all-zero sentinel. An invented
+        organisation cannot be told from a real one, so unknown is NULL."""
         with app.app_context():
             f = _obs()
             f.pop('performer')
             row = build_live_observation_row(
                 f, patient_guid='pat-1', source_service='sim.pdhc')
-            assert row.org_guid == '00000000-0000-0000-0000-000000000000'
+            assert row.org_guid is None
 
     def test_falls_back_to_ingest_raw_guid_for_guid(self, app):
         with app.app_context():

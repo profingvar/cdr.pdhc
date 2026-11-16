@@ -85,7 +85,9 @@ class IntegerPatientReference(WriterError):
 class WriteContext:
     """Per-request context the writer needs in addition to the resource body."""
 
-    org_guid: str
+    #: The performer/author organisation; None when the producer does not say
+    #: (#1006 — it used to be the invented all-zero guid).
+    org_guid: str | None
     #: #818 — the PATIENT's organisation, which Rule 24 scopes reads on. The
     #: writer never carried it, so every row created through
     #: `POST /api/v1/fhir/<Type>` had a NULL in the scoping column while the
@@ -354,11 +356,12 @@ def _stamp_provenance(fhir: dict, ctx: WriteContext) -> dict:
     meta["tag"] = tags
 
     sec = list(meta.get("security") or [])
-    sec.append({
-        "system": "https://cdr.pdhc.se/CodeSystem/org",
-        "code": "org_guid",
-        "display": ctx.org_guid,
-    })
+    if ctx.org_guid:   # #1006: no tag rather than one saying "None"
+        sec.append({
+            "system": "https://cdr.pdhc.se/CodeSystem/org",
+            "code": "org_guid",
+            "display": ctx.org_guid,
+        })
     meta["security"] = sec
 
     out["meta"] = meta

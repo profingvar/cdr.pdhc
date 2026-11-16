@@ -524,7 +524,8 @@ def build_live_observation_row(fhir_resource, *, patient_guid, source_service,
         if ident:
             org_guid = ident
             break
-    org_guid = org_guid or "00000000-0000-0000-0000-000000000000"
+    # #1006: no performer, no org_guid. It used to fall back to the all-zero
+    # guid, an invented organisation that readers could not tell from a real one.
 
     # Value extraction — pick the first present *value* field.
     vq = fhir_resource.get("valueQuantity") or {}

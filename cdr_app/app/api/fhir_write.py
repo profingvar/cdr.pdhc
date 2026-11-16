@@ -102,9 +102,13 @@ def _patient_org_guid_from_request() -> str | None:
 
 def _extract_context() -> WriteContext:
     return WriteContext(
-        org_guid=(request.headers.get("X-Org-Guid")
-                  or request.args.get("org_guid")
-                  or "00000000-0000-0000-0000-000000000000"),
+        # #1006: NULL when the producer does not say. This used to default to
+        # "00000000-0000-0000-0000-000000000000", an invented organisation
+        # indistinguishable from a real one (icd11's 9 Conditions landed with
+        # it). Same rule as patient_org_guid (#818): unknown reads as unknown.
+        org_guid=((request.headers.get("X-Org-Guid") or "").strip()
+                  or (request.args.get("org_guid") or "").strip()
+                  or None),
         patient_org_guid=_patient_org_guid_from_request(),
         source=request.headers.get("X-Source-Service") or "unknown",
         source_request_id=request.headers.get("X-Request-Id"),
