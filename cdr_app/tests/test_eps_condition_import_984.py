@@ -118,3 +118,32 @@ def test_a_refusal_is_reported_and_nothing_half_written(app, client, fake_canon)
         rep = imp.run([{"patient_guid": P, "resource": _eps()}], apply=True)
         assert [s for _, s, _ in rep.refused] == [422]
         assert live_model("Condition").query.count() == 0
+
+
+# ---------------------------------------------------------------- contradictions
+
+@pytest.mark.parametrize("code, eps_label, termbank, refused", [
+    ("44054006", "Atrial fibrillation", "Type 2 diabetes mellitus", True),
+    ("80146002", "Appendicitis", "Appendectomy", True),
+    ("49436004", "Atrial fibrillation", "Atrial fibrillation", False),
+    ("49436004", "atrial fibrillation ", "Atrial fibrillation", False),
+    ("35489007", "Depression", "Depressive disorder", False),
+    ("73211009", "Diabetes mellitus type 2", "Diabetes mellitus", False),
+    ("49436004", "Atrial fibrillation", None, False),
+])
+def test_a_label_that_contradicts_its_code_is_not_imported(code, eps_label, termbank, refused):
+    res = _eps(code=code, display=eps_label)
+    if refused:
+        with pytest.raises(imp.Skip, match="contradicts"):
+            imp.to_cdr_condition(res, P, termbank)
+    else:
+        assert imp.to_cdr_condition(res, P, termbank)["code"]["coding"][0]["code"] == code
+
+
+def test_run_passes_termbank_display_through(app, client, fake_canon):
+    _seed_patient(client)
+    with app.app_context():
+        rep = imp.run([{"patient_guid": P, "resource": _eps(code="44054006"),
+                        "termbank_display": "Type 2 diabetes mellitus"}], apply=True)
+        assert rep.skipped == {"EPS label contradicts the code": 1}
+        assert live_model("Condition").query.count() == 0

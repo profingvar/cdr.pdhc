@@ -43,12 +43,39 @@ class Skip(Exception):
     """This row is not imported, for the stated reason."""
 
 
+#: (SNOMED code, EPS display) pairs whose display differs from termbank's
+#: preferred term but does NOT contradict the code. Everything else that
+#: differs is a contradiction (measured 2026-11-16: 44054006 "Type 2 diabetes"
+#: labelled "Atrial fibrillation"; 40055000 "Chronic sinusitis" labelled
+#: "Chronic kidney disease"; 80146002 "Appendectomy" — a procedure — labelled
+#: "Appendicitis"; 1734006 a vertebral fracture labelled "Fracture of radius").
+#: Which half of a contradiction is true cannot be known from the row, so it is
+#: not imported: the CDR is the record and must not start with a guess.
+ACCEPTED_DISPLAY_VARIANTS = {
+    ("35489007", "depression"),                 # synonym of Depressive disorder
+    ("73211009", "diabetes mellitus type 2"),   # true, the code is the broader concept
+}
+
+
+def contradicts(code: str, eps_display: str | None, termbank_display: str | None) -> bool:
+    """True when the EPS label says something the code does not."""
+    if not termbank_display or not eps_display:
+        return False
+    a, b = eps_display.strip().lower(), termbank_display.strip().lower()
+    return a != b and (code, a) not in ACCEPTED_DISPLAY_VARIANTS
+
+
 def cdr_guid_for(ips_resource_id: str) -> str:
     return str(uuid.uuid5(_NS, f"{SOURCE}/Condition/{ips_resource_id}"))
 
 
-def to_cdr_condition(ips_resource: dict, patient_guid: str) -> dict:
-    """The CDR's Condition for one EPS Condition. Raises Skip."""
+def to_cdr_condition(ips_resource: dict, patient_guid: str,
+                     termbank_display: str | None = None) -> dict:
+    """The CDR's Condition for one EPS Condition. Raises Skip.
+
+    `termbank_display` is termbank's preferred term for the SNOMED code; when
+    given, a label that contradicts it is refused (`contradicts`).
+    """
     codings = ((ips_resource.get("code") or {}).get("coding")) or []
     if not codings:
         raise Skip("no coding")
@@ -57,6 +84,8 @@ def to_cdr_condition(ips_resource: dict, patient_guid: str) -> dict:
     snomed = [c for c in codings if c.get("system") == SNOMED and c.get("code")]
     if not snomed:
         raise Skip("no SNOMED coding")
+    if contradicts(snomed[0]["code"], snomed[0].get("display"), termbank_display):
+        raise Skip("EPS label contradicts the code")
     canonical = build_canonical("snomed", snomed[0]["code"])
     if canonical is None:
         raise Skip(f"SNOMED code outside termbank's grammar: {snomed[0]['code']!r}")
@@ -116,7 +145,8 @@ class Report:
 
 
 def run(entries: list[dict], *, apply: bool, write_one=None, canonicaliser=None) -> Report:
-    """entries: [{"patient_guid", "resource"}] — the EPS Conditions, as exported.
+    """entries: [{"patient_guid", "resource", "termbank_display"?}] — the EPS
+    Conditions as exported, each with termbank's term for its SNOMED code.
 
     Dry run canonicalises only (plan validation included) and writes nothing.
     """
@@ -136,7 +166,7 @@ def run(entries: list[dict], *, apply: bool, write_one=None, canonicaliser=None)
             rep.skipped["patient not in this CDR"] += 1
             continue
         try:
-            fhir = to_cdr_condition(res, pg)
+            fhir = to_cdr_condition(res, pg, e.get("termbank_display"))
             org = patient_org_for(pg)
         except Skip as s:
             rep.skipped[str(s)] += 1
