@@ -599,6 +599,22 @@ def register_cli(app):
         db.session.commit()
         click.echo(f"SU {username} ready")
 
+    @app.cli.command("import-eps-conditions")
+    @click.argument("path")
+    @click.option("--apply", is_flag=True, help="Write. Without it: canonicalise only.")
+    def import_eps_conditions(path, apply):
+        """#984: bring the EPS's diagnoses into this CDR (the record)."""
+        import json as _json
+        from app.services.eps_condition_import import run
+        with open(path) as fh:
+            entries = _json.load(fh)
+        rep = run(entries, apply=apply)
+        click.echo(("APPLY " if apply else "DRY ") + " | ".join(rep.lines()[:5]))
+        for line in rep.lines()[5:]:
+            click.echo(line)
+        if rep.refused:
+            raise SystemExit(2)
+
     @app.cli.command("backfill-live-observations")
     @click.option("--dry-run", is_flag=True,
                   help="Show what would be done without committing.")
