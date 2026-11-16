@@ -798,3 +798,7 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 ## 2026-11-15 — #944: the clinical read surface is a role (CDR_CLINICAL_READ)
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/__init__.py — CDR_CLINICAL_READ (default true); clinical_read registered only when on
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_clinical_read_role_944.py (NEW)
+
+## 2026-11-16 — #1005 step 4: icd11.pdhc may assert icd11-mms
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/auth.py — WHOLE_SYSTEM_ASSERTING_SERVICES gains icd11-mms -> icd11.pdhc; comments updated
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_whole_system_assertion_gate.py — exact-map guard updated with the reason; real-map tests; message test names the permitted service

@@ -296,6 +296,13 @@ READ_ONLY_SERVICE_SOURCES = frozenset({"analyse.pdhc", "dashboard.pdhc"})
 # message below, which is the intended failure: loud, named, and pointing at
 # this comment.
 #
+# DONE 2026-11-16 (#1005, operator decision): the projection target is cdr2
+# (D2), icd11.pdhc has its own key there, and it is named below under
+# `icd11-mms`. The residual risk stated further down still holds: a caller
+# holding icd11's key could assert a FABRICATED ICD-11 code, because cdr does
+# not validate against termbank (#857 option (a)). Acceptable while every row
+# is synthetic; required before real patient data (#868).
+#
 # `icd10` is deliberately absent too, and for a different reason: ICD-11 has an
 # entry-point validator (icd11.pdhc, against WHO `codeinfo`) and ICD-10-SE has
 # none, so there is no service that could honestly be trusted to assert one.
@@ -310,8 +317,11 @@ READ_ONLY_SERVICE_SOURCES = frozenset({"analyse.pdhc", "dashboard.pdhc"})
 
 #: Per canonical library, the service identities permitted to assert one of its
 #: codes. A library ABSENT from this mapping admits nobody — the fail-closed
-#: direction, and still the rule for `icd11-mms` and for every library plan
-#: flags in future.
+#: direction, and the rule for every library plan flags in future.
+#:
+#: `icd11-mms` -> icd11.pdhc (#1005, 2026-11-16): the ONE service that validates
+#: an ICD-11 code against WHO's `codeinfo` at entry, which is the trust the
+#: gate needs. It earns nothing for icd10 (test_permission_is_PER_LIBRARY).
 #:
 #: THIS IS THE FIRST ENTRY THAT ADMITS ANYBODY (#874, operator decision
 #: 2026-11-04), so the fail-closed invariant stops being vacuous here. It was
@@ -344,6 +354,7 @@ READ_ONLY_SERVICE_SOURCES = frozenset({"analyse.pdhc", "dashboard.pdhc"})
 #: far named no service at all; the narrowest list that works is the rule.
 WHOLE_SYSTEM_ASSERTING_SERVICES: dict[str, frozenset[str]] = {
     "icd10": frozenset({"sim.pdhc"}),
+    "icd11-mms": frozenset({"icd11.pdhc"}),
 }
 
 #: The libraries this gate refuses even when plan.pdhc cannot be asked. plan is

@@ -73,7 +73,7 @@ def _as(app, source: str | None, fhir: dict) -> str | None:
 # The floor — what the gate does when plan does not answer
 # =======================================================================
 
-def test_the_asserting_map_grants_sim_icd10_and_NOTHING_ELSE(app):
+def test_the_asserting_map_is_exactly_the_two_decided_grants(app):
     """This guard used to assert the map was EMPTY, and its reason is worth
     keeping: `icd11.pdhc` is not in KNOWN_FHIR_SERVICES at all, so "only
     icd11.pdhc may" and "nobody may" were the same rule, and the emptiness was
@@ -85,9 +85,14 @@ def test_the_asserting_map_grants_sim_icd10_and_NOTHING_ELSE(app):
 
     Asserted as an exact equality rather than a membership test, because the
     risk here is a map that grows quietly. A new entry should have to change
-    this line and say why."""
+    this line and say why.
+
+    #1005 (operator, 2026-11-16) is that change: icd11.pdhc for `icd11-mms`,
+    the only service that validates an ICD-11 code against WHO at entry, now
+    that its Condition projection to cdr2 goes live with its own key."""
     assert WHOLE_SYSTEM_ASSERTING_SERVICES == {
         "icd10": frozenset({"sim.pdhc"}),
+        "icd11-mms": frozenset({"icd11.pdhc"}),
     }
 
 
@@ -244,8 +249,18 @@ def test_the_message_names_the_library_the_caller_and_where_to_look(app, monkeyp
     assert "sim.pdhc" in msg
     assert ICD11_CANONICAL_LIB in msg
     assert "WHOLE_SYSTEM_ASSERTING_SERVICES" in msg
-    assert "no service" in msg
+    # #1005: icd11-mms now admits icd11.pdhc, so the refusal names who IS
+    # permitted — the actionable answer — instead of "no service".
+    assert "'icd11.pdhc'" in msg
     assert "#874" in msg
+
+
+def test_a_library_that_admits_NOBODY_says_so(app, monkeypatch):
+    """The "no service" wording still exists for a flagged library with no grant."""
+    _plan_says(monkeypatch, None)
+    monkeypatch.setattr(auth, "WHOLE_SYSTEM_ASSERTING_SERVICES", {})
+    msg = _as(app, "sim.pdhc", _condition(ICD11_WHO_SYSTEM))
+    assert "no service" in msg
 
 
 # =======================================================================
@@ -591,3 +606,20 @@ def test_CONTROL_an_unflagged_row_is_still_skipped(app, monkeypatch):
     got = c.whole_system_systems()
     assert got == {"icd10": "icd10"}
     assert "http://loinc.org" not in got
+
+
+# ---------------------------------------------------------------- #1005
+
+@pytest.mark.parametrize("system", [ICD11_WHO_SYSTEM, ICD11_SYSTEM])
+def test_ICD11_PDHC_may_assert_icd11_with_the_REAL_map(app, system):
+    """No monkeypatch: the decided grant itself, both system spellings."""
+    assert _as(app, "icd11.pdhc", _condition(system)) is None
+
+
+@pytest.mark.parametrize("who", ["sim.pdhc", "gateway.pdhc", "analyse.pdhc", "dashboard.pdhc"])
+def test_every_OTHER_service_is_still_refused_icd11(app, who):
+    assert _as(app, who, _condition(ICD11_WHO_SYSTEM))
+
+
+def test_icd11_pdhc_earns_NOTHING_for_icd10_with_the_REAL_map(app):
+    assert _as(app, "icd11.pdhc", _condition(ICD10_SYSTEM, "A00.9"))
