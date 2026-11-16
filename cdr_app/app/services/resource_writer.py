@@ -41,6 +41,8 @@ from app.models.resources import (
     history_model,
     live_model,
 )
+from app.services.fhir_paths import (medication_concept, procedure_occurrence,
+                                     procedure_occurrence_start)
 
 
 log = logging.getLogger(__name__)
@@ -145,7 +147,7 @@ def _dedup_key(resource_type: str, fhir: dict, *, patient_guid: str | None,
         return _hash([
             patient_guid,
             primary_canonical_uri,
-            fhir.get("performedDateTime") or fhir.get("performedPeriod"),
+            procedure_occurrence(fhir),   # #936: R4 performed[x] or R5 occurrence[x]
         ])
     if resource_type == "DiagnosticReport":
         return _hash([
@@ -207,8 +209,7 @@ def _extract_effective_at(fhir: dict, resource_type: str) -> datetime | None:
     elif resource_type == "MedicationRequest":
         candidates = [fhir.get("authoredOn")]
     elif resource_type == "Procedure":
-        candidates = [fhir.get("performedDateTime"),
-                      (fhir.get("performedPeriod") or {}).get("start")]
+        candidates = [procedure_occurrence_start(fhir)]   # #936
     elif resource_type == "DiagnosticReport":
         candidates = [fhir.get("issued"), fhir.get("effectiveDateTime")]
     elif resource_type == "AllergyIntolerance":
@@ -273,7 +274,7 @@ def _extract_per_type_columns(fhir: dict, resource_type: str) -> dict:
         if vs.get("coding"):
             out["verification_status"] = vs["coding"][0].get("code")
     elif resource_type == "MedicationStatement":
-        med = fhir.get("medicationCodeableConcept") or {}
+        med = medication_concept(fhir)   # #936: R4, R5 or ips's bare shape
         if med.get("coding"):
             out["medication_canonical"] = _coding_canonical_uri(med["coding"][0])
         period = fhir.get("effectivePeriod") or {}
@@ -281,7 +282,7 @@ def _extract_per_type_columns(fhir: dict, resource_type: str) -> dict:
         out["effective_period_end"] = _parse_datetime(period.get("end"))
         out["status"] = fhir.get("status")
     elif resource_type == "MedicationRequest":
-        med = fhir.get("medicationCodeableConcept") or {}
+        med = medication_concept(fhir)
         if med.get("coding"):
             out["medication_canonical"] = _coding_canonical_uri(med["coding"][0])
         out["authored_on"] = _parse_datetime(fhir.get("authoredOn"))
@@ -296,10 +297,7 @@ def _extract_per_type_columns(fhir: dict, resource_type: str) -> dict:
         if cs.get("coding"):
             out["clinical_status"] = cs["coding"][0].get("code")
     elif resource_type == "Procedure":
-        out["performed_at"] = _parse_datetime(
-            fhir.get("performedDateTime")
-            or (fhir.get("performedPeriod") or {}).get("start")
-        )
+        out["performed_at"] = _parse_datetime(procedure_occurrence_start(fhir))
         out["status"] = fhir.get("status")
     elif resource_type == "Encounter":
         period = fhir.get("period") or {}
@@ -450,8 +448,8 @@ def _primary_code_canonical(fhir: dict, resource_type: str) -> str | None:
     (e.g. resource type with no code paths), fall back to inspecting the
     body for a termbank-shaped coding."""
     candidates: list[dict] = []
-    for path in ("code", "valueCodeableConcept", "medicationCodeableConcept"):
-        cc = fhir.get(path)
+    for path in ("code", "valueCodeableConcept", "<medication>"):
+        cc = medication_concept(fhir) if path == "<medication>" else fhir.get(path)
         if cc and cc.get("coding"):
             candidates.append(cc["coding"][0])
             break

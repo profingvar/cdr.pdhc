@@ -810,3 +810,9 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/models/resources.py — org_guid nullable on live, history and change_feed
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/migrations/versions/d9e0f1a2b3c4_org_guid_nullable.py (NEW) — drop NOT NULL, zero guid -> NULL; downgrade restores both
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_org_guid_null_1006.py (NEW); tests/test_live_observation_ingest.py — sentinel-pinning test inverted
+
+## 2026-11-16 — #936 step 1: cdr reads the R5 medication and occurrence names
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/fhir_paths.py (NEW) — the one place that knows R4/R5 spellings (3 medication shapes, performed[x]/occurrence[x])
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/canonicalisation.py — MedicationStatement/Request resolve via fhir_paths; nested write-back
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/resource_writer.py — dedup key, effective_at, performed_at, medication_canonical, fallback sweep via fhir_paths
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_r5_element_names_936.py (NEW)

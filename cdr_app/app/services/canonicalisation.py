@@ -124,12 +124,18 @@ class CanonicalisationResult:
 # Map from FHIR resource type to a list of (json_path, kind) tuples that
 # describe where canonical concepts live. The kind is informational —
 # we walk every coding[] regardless.
+from app.services.fhir_paths import get_path, medication_path, set_path  # noqa: E402
+
+MEDICATION = "<medication>"   # a marker, resolved per resource (#936)
+
 _CODE_PATHS: dict[str, list[str]] = {
     # ``code`` paths produce the row's code_canonical.
     "Observation": ["code", "valueCodeableConcept"],
     "Condition": ["code"],
-    "MedicationStatement": ["medicationCodeableConcept"],
-    "MedicationRequest": ["medicationCodeableConcept"],
+    # MEDICATION resolves per resource to the R4 name, the R5 CodeableReference
+    # (medication.concept) or ips's bare `medication` (#936, fhir_paths).
+    "MedicationStatement": [MEDICATION],
+    "MedicationRequest": [MEDICATION],
     "AllergyIntolerance": ["code"],
     "Procedure": ["code"],
     # Encounter.class is the FHIR-structural coding (HL7 v3-ActCode —
@@ -166,10 +172,12 @@ class Canonicaliser:
         misses: list[CodeMiss] = []
         accepts: list[WholeSystemAccept] = []
 
-        for path in _CODE_PATHS[rt]:
-            cc = rewritten.get(path)
+        for spec in _CODE_PATHS[rt]:
+            keys = medication_path(rewritten) if spec == MEDICATION else (spec,)
+            cc = get_path(rewritten, keys)
             if cc is None:
                 continue
+            path = ".".join(keys)
             try:
                 new_cc, canonical_uri, path_misses = self._canonicalise_codeable_concept(
                     cc, location=f"{rt}.{path}", accepts=accepts
@@ -202,7 +210,7 @@ class Canonicaliser:
                 )
             misses.extend(path_misses)
             if new_cc is not None:
-                rewritten[path] = new_cc
+                set_path(rewritten, keys, new_cc)
                 if primary_canonical is None and canonical_uri:
                     primary_canonical = canonical_uri
 
