@@ -1,0 +1,20 @@
+{
+  "format": "urn:pdhc:concept/<guid>",
+  "owner": "plan.pdhc",
+  "reference": "plan.pdhc/planp/app/concept_urn.py",
+  "ticket": 942,
+  "note": "guid_of(value) returns the lower-case GUID or null. The legacy plan URL form is accepted on read only. Consumers keep a byte-identical copy of this file in their tests.",
+  "guid_of": [
+    {"value": "urn:pdhc:concept/64928bff-9a46-472a-bbf1-dcfc694f945b", "guid": "64928bff-9a46-472a-bbf1-dcfc694f945b"},
+    {"value": "urn:pdhc:concept/64928BFF-9A46-472A-BBF1-DCFC694F945B", "guid": "64928bff-9a46-472a-bbf1-dcfc694f945b"},
+    {"value": "https://plan.pdhc.se/api/v1/concepts/fb6487d7-b473-4ace-bb39-6352d4497009", "guid": "fb6487d7-b473-4ace-bb39-6352d4497009"},
+    {"value": "urn:pdhc:concept/not-a-guid", "guid": null},
+    {"value": "urn:pdhc:concept/", "guid": null},
+    {"value": "urn:pdhc:concept/64928bff-9a46-472a-bbf1-dcfc694f945b ", "guid": null},
+    {"value": "urn:pdhc:concept/64928bff-9a46-472a-bbf1-dcfc694f945b/x", "guid": null},
+    {"value": "urn:pdhc:concept", "guid": null},
+    {"value": "https://termbank.pdhc.se/CodeSystem/loinc/4548-4", "guid": null},
+    {"value": "", "guid": null},
+    {"value": null, "guid": null}
+  ]
+}

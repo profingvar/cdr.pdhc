@@ -160,10 +160,12 @@ def _concept_guid_from_canonical(code: str | None) -> str | None:
     None for termbank URIs, smoke codes, or anything without a GUID tail."""
     if not code:
         return None
-    if code.startswith("urn:pdhc:concept/") or "/api/v1/concepts/" in code:
-        tail = code.rsplit("/", 1)[-1]
-        return tail if _CONCEPT_GUID_RE.match(tail) else None
-    return None
+    # #942: plan.pdhc owns this format (planp/app/concept_urn.py); pinned by
+    # tests/conformance/concept_urn_cases.json. Exact shapes only, lower-case.
+    m = (re.match(r"^urn:pdhc:concept/([^/]+)$", code)
+         or re.match(r"^https?://[^/\s]+/api/v1/concepts/([^/]+)$", code))
+    tail = m.group(1) if m else ""
+    return tail.lower() if _CONCEPT_GUID_RE.match(tail) else None
 
 
 def _plan_client() -> PlanClient:

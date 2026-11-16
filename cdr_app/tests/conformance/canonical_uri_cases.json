@@ -1,0 +1,39 @@
+{
+  "format": "<base>/CodeSystem/<lib>/<code>",
+  "owner": "termbank.pdhc",
+  "reference": "termbank.pdhc/app/canonical_uri.py",
+  "ticket": 942,
+  "note": "The code is everything after the lib's slash, unescaped; it may contain '/' and '&'. Consumers keep a byte-identical copy of this file in their tests and run their own parser/builder over it.",
+  "valid": [
+    {"uri": "https://termbank.pdhc.se/CodeSystem/loinc/4548-4", "base": "https://termbank.pdhc.se", "lib": "loinc", "code": "4548-4"},
+    {"uri": "https://termbank.pdhc.se/CodeSystem/snomed/44054006", "base": "https://termbank.pdhc.se", "lib": "snomed", "code": "44054006"},
+    {"uri": "https://termbank.pdhc.se/CodeSystem/atc/A10BA02", "base": "https://termbank.pdhc.se", "lib": "atc", "code": "A10BA02"},
+    {"uri": "https://termbank.pdhc.se/CodeSystem/atc/-", "base": "https://termbank.pdhc.se", "lib": "atc", "code": "-"},
+    {"uri": "https://termbank.pdhc.se/CodeSystem/icd10/E11.9", "base": "https://termbank.pdhc.se", "lib": "icd10", "code": "E11.9"},
+    {"uri": "https://termbank.pdhc.se/CodeSystem/icd11-mms/5A11", "base": "https://termbank.pdhc.se", "lib": "icd11-mms", "code": "5A11"},
+    {"uri": "https://termbank.pdhc.se/CodeSystem/icd11-mms/BD13&XT8W&XS3A/CA60.3", "base": "https://termbank.pdhc.se", "lib": "icd11-mms", "code": "BD13&XT8W&XS3A/CA60.3"},
+    {"uri": "https://termbank.pdhc.se/CodeSystem/ucum/[m/s2/Hz^(1/2)]", "base": "https://termbank.pdhc.se", "lib": "ucum", "code": "[m/s2/Hz^(1/2)]"},
+    {"uri": "https://termbank.pdhc.se/CodeSystem/ucum/%", "base": "https://termbank.pdhc.se", "lib": "ucum", "code": "%"},
+    {"uri": "http://127.0.0.1:9012/CodeSystem/kva/AA001", "base": "http://127.0.0.1:9012", "lib": "kva", "code": "AA001"}
+  ],
+  "invalid": [
+    "https://termbank.pdhc.se/CodeSystem/loinc",
+    "https://termbank.pdhc.se/CodeSystem/loinc/",
+    "https://termbank.pdhc.se/CodeSystem//4548-4",
+    "https://termbank.pdhc.se/loinc/4548-4",
+    "https://termbank.pdhc.se/CodeSystem/LOINC/4548-4",
+    "https://termbank.pdhc.se/CodeSystem/loinc/4548 4",
+    "termbank.pdhc.se/CodeSystem/loinc/4548-4",
+    "urn:pdhc:concept/64928bff-9a46-472a-bbf1-dcfc694f945b",
+    ""
+  ],
+  "systems_valid": [
+    {"system": "https://termbank.pdhc.se/CodeSystem/loinc", "base": "https://termbank.pdhc.se", "lib": "loinc"},
+    {"system": "https://termbank.pdhc.se/CodeSystem/icd11-mms", "base": "https://termbank.pdhc.se", "lib": "icd11-mms"}
+  ],
+  "systems_invalid": [
+    "https://termbank.pdhc.se/CodeSystem/",
+    "https://termbank.pdhc.se/CodeSystem/loinc/4548-4",
+    "http://loinc.org"
+  ]
+}

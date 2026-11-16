@@ -52,6 +52,7 @@ from app.services.plan_client import (
     PlanClient,
     PlanUnreachable,
     canonical_uri_for,
+    canonical_system_for,
     is_canonicalisable_system,
     parse_canonical_uri,
 )
@@ -389,7 +390,7 @@ class Canonicaliser:
             self._note_whole_system(
                 accepts, plan_outcome, canonical_uri, f"{location}.coding[{i}]")
             canonical_coding = {
-                "system": f"https://termbank.pdhc.se/CodeSystem/{match['canonical_system']}",
+                "system": canonical_system_for(match['canonical_system']),  # #942
                 "code": match["canonical_code"],
                 "display": match.get("display"),
             }

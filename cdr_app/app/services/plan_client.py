@@ -70,13 +70,17 @@ _MAX_RETRIES = 3
 _INITIAL_BACKOFF_SECONDS = 0.25
 
 
-_CANONICAL_RE = re.compile(r"^https?://[^/]+/CodeSystem/([^/]+)/(.+)$")
+#: #942: termbank OWNS this format (termbank.pdhc/app/canonical_uri.py) and
+#: this module implements it; tests/conformance/canonical_uri_cases.json is a
+#: byte-identical copy of termbank's corpus that pins the two together. The
+#: code is everything after the library's slash: it may contain "/" and "&".
+_CANONICAL_RE = re.compile(r"^https?://[^/\s]+/CodeSystem/([a-z][a-z0-9-]*)/([!-~]+)$")
 
 #: The same shape with NO trailing code — a coding's ``system`` rather than a
 #: full canonical URI. Kept beside ``_CANONICAL_RE`` because both spellings of
 #: the canonical form belong to this module; a second copy somewhere else is
 #: how the two drift apart.
-_CANONICAL_SYSTEM_RE = re.compile(r"^https?://[^/]+/CodeSystem/([^/]+)/?$")
+_CANONICAL_SYSTEM_RE = re.compile(r"^https?://[^/\s]+/CodeSystem/([a-z][a-z0-9-]*)/?$")
 
 
 # ---------------------------------------------------------------------------
@@ -137,11 +141,27 @@ def canonical_uri_for(system: str | None, code: str | None) -> str | None:
     if not system or not code:
         return None
     if system.startswith(TERMBANK_PREFIX):
-        return f"{system.rstrip('/')}/{code}"
+        uri = f"{system.rstrip('/')}/{code}"
+        # #942: never emit something termbank's grammar refuses (measured
+        # 2026-11-16: no stored value in cdr1/2/3 does).
+        return uri if _CANONICAL_RE.match(uri) else None
     lib = SYSTEM_ALIASES.get(system)
     if lib:
-        return f"{TERMBANK_PREFIX}CodeSystem/{lib}/{code}"
+        return build_canonical(lib, code)
     return None
+
+
+def build_canonical(lib: str | None, code: str | None) -> str | None:
+    """``<termbank>/CodeSystem/<lib>/<code>``, or None when the grammar refuses it."""
+    if not lib or not code:
+        return None
+    uri = f"{TERMBANK_PREFIX}CodeSystem/{lib}/{code}"
+    return uri if _CANONICAL_RE.match(uri) else None
+
+
+def canonical_system_for(lib: str) -> str:
+    """The coding ``system`` for a termbank library."""
+    return f"{TERMBANK_PREFIX}CodeSystem/{lib}"
 
 
 def is_canonicalisable_system(system: str | None) -> bool:

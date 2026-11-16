@@ -23,10 +23,12 @@ def _canon_guid_fallback(code: str | None) -> str | None:
     and a test asserts the two agree wherever both exist."""
     if not code:
         return None
-    if code.startswith("urn:pdhc:concept/") or "/api/v1/concepts/" in code:
-        tail = code.rsplit("/", 1)[-1]
-        return tail if _CANON_GUID_RE.match(tail) else None
-    return None
+    # #942: plan.pdhc owns this format (planp/app/concept_urn.py); pinned by
+    # tests/conformance/concept_urn_cases.json. Exact shapes only, lower-case.
+    m = (re.match(r"^urn:pdhc:concept/([^/]+)$", code)
+         or re.match(r"^https?://[^/\s]+/api/v1/concepts/([^/]+)$", code))
+    tail = m.group(1) if m else ""
+    return tail.lower() if _CANON_GUID_RE.match(tail) else None
 
 
 def _concept_helpers():
@@ -49,9 +51,14 @@ def _concept_helpers():
 
 # A code-system URI with a code at the tail — the shape termbank publishes,
 # e.g. https://termbank.pdhc.se/CodeSystem/loinc/41653-7.
+#: #942: the code is everything after the library's slash. The first version
+#: took the LAST path segment, which reads an ICD-11 cluster such as
+#: `BD13&XT8W&XS3A/CA60.3` as `unbound` (cdr2 holds three, measured
+#: 2026-11-16). Same grammar as plan_client._CANONICAL_RE, pinned by the
+#: termbank conformance corpus.
 _CODESYSTEM_RE = re.compile(
-    r"^(?P<system>https?://[^\s]+?/CodeSystem/(?P<cs>[^/\s]+))/"
-    r"(?P<code>[^/\s]+)$")
+    r"^(?P<system>https?://[^/\s]+/CodeSystem/(?P<cs>[a-z][a-z0-9-]*))/"
+    r"(?P<code>[!-~]+)$")
 
 
 def _classify(canon: str | None, canon_guid) -> dict:

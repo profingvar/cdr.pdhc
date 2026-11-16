@@ -188,11 +188,11 @@ class XlateClient:
         if not canonical_system or not canonical_code:
             return None
 
-        # Reconstruct the canonical URI. termbank canonical is
-        # "https://termbank.pdhc.se/CodeSystem/<system>/<code>".
-        canonical_uri = (
-            f"https://termbank.pdhc.se/CodeSystem/{canonical_system}/{canonical_code}"
-        )
+        # #942: built by THE builder, not a third literal copy of the format.
+        from app.services.plan_client import build_canonical
+        canonical_uri = build_canonical(canonical_system, canonical_code)
+        if canonical_uri is None:
+            return None
         return {
             "canonical_uri": canonical_uri,
             "canonical_system": canonical_system,

@@ -2066,3 +2066,5 @@ PlanClient's single requests.get now carries X-Source-Service + X-Service-Key
 (read from the environment at call time). cdr1 = cdr.pdhc; cdr2/cdr3 name
 themselves via PLAN_SOURCE_SERVICE. A test pins that chokepoint as the only
 raw requests call in plan_client. pytest: 446 passed.
+
+## #942 (2026-11-16): the canonical URI format is owned by termbank.pdhc (app/canonical_uri.py + conformance/canonical_uri_cases.json); the concept URN by plan.pdhc (planp/app/concept_urn.py + conformance/concept_urn_cases.json). Consumers keep byte-identical corpus copies in their tests; tools/check_canonical_uri_conformance.py in the workspace fails on drift or on a literal that breaks the grammar.
