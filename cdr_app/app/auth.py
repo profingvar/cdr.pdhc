@@ -154,18 +154,14 @@ KNOWN_FHIR_SERVICES = {
     # report ingestion). Key is the same GATEWAY_PDHC_SERVICE_KEY cdr1 already
     # trusts for ingest — this just admits it on the /api/v1/fhir/* write path.
     "gateway.pdhc":   "GATEWAY_PDHC_SERVICE_KEY",
-    # icd11.pdhc projects a FHIR Condition per diagnosis episode. It is the
-    # authority for the episode and its append-only assertion log; this
-    # repository holds the derived CURRENT state so the rest of the platform
-    # reads diagnoses the same way it reads everything else.
+    # icd11.pdhc validates ICD-11 / ICD-10-SE diagnoses and WRITES them here:
+    # since #984 (operator, 2026-11-17) THIS repository is the only diagnosis
+    # register, log included. Each statement is a new Condition version
+    # (condition_history is append-only, DB-enforced), carrying its clinical
+    # valid-from in the `assertion-valid-from` extension; "what did we hold on
+    # date D" is `Condition/$at`, replayed in clinical time, not write order.
     #
-    # WRITE, so deliberately NOT in READ_ONLY_SERVICE_SOURCES below.
-    #
-    # Note for whoever reads this next: condition_history here is NOT the
-    # diagnosis history. It records writes, not statements, and it is
-    # write-ordered — so replaying "what did we hold on date D" from it gives
-    # the wrong answer whenever a clinician states today that something became
-    # true earlier. Ask icd11.pdhc for that.
+    # WRITE (and read), so deliberately NOT in READ_ONLY_SERVICE_SOURCES below.
     "icd11.pdhc":     "ICD11_PDHC_SERVICE_KEY",
 }
 
@@ -352,8 +348,15 @@ READ_ONLY_SERVICE_SOURCES = frozenset({"analyse.pdhc", "dashboard.pdhc"})
 #: icd10, with a control, measured 2026-11-04), so that would have been a right
 #: with no consumer. Three of the service identities found on this platform so
 #: far named no service at all; the narrowest list that works is the rule.
+#:
+#: #984 (operator, 2026-11-17: the CDR is the ONLY diagnosis register) adds
+#: icd11.pdhc for `icd10`: its ICD-10-SE entry path (`api_icd10_mapped`) now
+#: writes the termbank icd10 coding as the PRIMARY code, straight into the
+#: register. Before #984 those went through only because the projection
+#: mislabelled them as MMS; without this entry every ICD-10-SE diagnosis entered
+#: in icd11 would be refused (measured by icd11's #984 tests).
 WHOLE_SYSTEM_ASSERTING_SERVICES: dict[str, frozenset[str]] = {
-    "icd10": frozenset({"sim.pdhc"}),
+    "icd10": frozenset({"sim.pdhc", "icd11.pdhc"}),
     "icd11-mms": frozenset({"icd11.pdhc"}),
 }
 

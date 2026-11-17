@@ -89,9 +89,12 @@ def test_the_asserting_map_is_exactly_the_two_decided_grants(app):
 
     #1005 (operator, 2026-11-16) is that change: icd11.pdhc for `icd11-mms`,
     the only service that validates an ICD-11 code against WHO at entry, now
-    that its Condition projection to cdr2 goes live with its own key."""
+    that its Condition projection to cdr2 goes live with its own key.
+
+    #984 (operator, 2026-11-17): icd11.pdhc for `icd10` too -- the CDR is the
+    only register, and icd11's ICD-10-SE entry path writes that code primary."""
     assert WHOLE_SYSTEM_ASSERTING_SERVICES == {
-        "icd10": frozenset({"sim.pdhc"}),
+        "icd10": frozenset({"sim.pdhc", "icd11.pdhc"}),
         "icd11-mms": frozenset({"icd11.pdhc"}),
     }
 
@@ -621,5 +624,21 @@ def test_every_OTHER_service_is_still_refused_icd11(app, who):
     assert _as(app, who, _condition(ICD11_WHO_SYSTEM))
 
 
-def test_icd11_pdhc_earns_NOTHING_for_icd10_with_the_REAL_map(app):
-    assert _as(app, "icd11.pdhc", _condition(ICD10_SYSTEM, "A00.9"))
+def test_icd11_pdhc_may_assert_icd10_with_the_REAL_map_984(app):
+    """#1005 granted icd11.pdhc nothing for icd10; #984 (operator, 2026-11-17)
+    made the CDR the only register, so its ICD-10-SE path writes here."""
+    assert _as(app, "icd11.pdhc", _condition(ICD10_SYSTEM, "A00.9")) is None
+
+
+@pytest.mark.parametrize("who", ["gateway.pdhc", "analyse.pdhc", "dashboard.pdhc"])
+def test_every_OTHER_service_is_still_refused_icd10_984(app, who):
+    assert _as(app, who, _condition(ICD10_SYSTEM, "A00.9"))
+
+
+def test_icd11_may_assert_icd10_984_and_an_unlisted_service_still_may_not(app, monkeypatch):
+    """#984: icd11.pdhc's ICD-10-SE diagnoses reach the register; the gate
+    still refuses a service that is not listed (control)."""
+    _plan_says(monkeypatch, None)
+    body = _condition("https://termbank.pdhc.se/CodeSystem/icd10")
+    assert _as(app, "icd11.pdhc", body) is None
+    assert _as(app, "gateway.pdhc", body) is not None
