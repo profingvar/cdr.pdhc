@@ -821,3 +821,17 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/plan_client.py — plan_read_headers(); the one HTTP chokepoint (_get_with_retry) sends it with the #408 session headers
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/.env.example — PLAN_SOURCE_SERVICE, PLAN_SERVICE_KEY
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_plan_read_key_931.py (NEW)
+
+## 2026-11-17 — #984: cdr_read_audit is the one access log (user, refusals, break-glass, append-only)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/models/__init__.py — ReadAudit: on_behalf_of_user_guid, outcome, detail; guard installed
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/models/read_audit_guard.py (NEW) — append-only ORM guard + trigger DDL
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/read_audit.py — ON_BEHALF_SERVICES, header claims, break-glass fail-closed hook, X-CDR-Read-Audit-Id
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/read_audit_events.py (NEW) — POST /api/v1/read-audit/events
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_read.py — $at reads record detail.as_of
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/auth.py — READ_AUDIT_EVENTS_PATH exempt from READ_ONLY_SERVICE_SOURCES
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/__init__.py — events blueprint + read-audit after_request hook
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/migrations/versions/a9b8c7d6e5f4_984_read_audit_on_behalf_append_only.py (NEW)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_read_audit_984.py (NEW)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_read_audit.py — cleanup via history_purge (table is append-only)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/docs/01-technical-manual.md — cdr_read_audit section
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/progress.md, /Users/martiningvar/T7_sidewinder/cdr.pdhc/changed_files.md

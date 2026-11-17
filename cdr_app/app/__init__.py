@@ -148,6 +148,13 @@ def create_app(config_override=None):
     if app.config["CDR_CLINICAL_READ"]:
         app.register_blueprint(clinical_read_bp, url_prefix="/api/v1/clinical")
 
+    # #984: the read log takes refusals made upstream (icd11), and a
+    # break-glass read whose log write failed is withheld (after_request).
+    from .api.read_audit_events import bp as read_audit_events_bp
+    app.register_blueprint(read_audit_events_bp, url_prefix="/api/v1")
+    from .services.read_audit import install as install_read_audit
+    install_read_audit(app)
+
     # Start Cambio delivery scheduler if enabled
     if app.config["CAMBIO_DELIVERY_ENABLED"] and not app.config.get("TESTING"):
         _start_delivery_scheduler(app)

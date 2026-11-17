@@ -93,6 +93,48 @@ parses that GUID out and looks it up via plan.pdhc (see §6.2).
   rows returned, HTTP status, and the session/role/purpose/access-basis
   tuple. Machine reads carry `caller_service` with a NULL role tuple.
 
+  **Since #984 (operator 2026-11-17) this is THE ONE access log for
+  diagnoses** (icd11.pdhc's own `read_audit` is no longer written). Migration
+  `a9b8c7d6e5f4` adds three nullable columns:
+  `on_behalf_of_user_guid` (String 36, indexed), `outcome` (String 16:
+  `served` / `denied` / `break_glass`; rows from before the migration are
+  NULL = served) and `detail` (JSON metadata: `reason`, `as_of`, `scope`,
+  `refusal_code`, `action`, `resource` — never clinical content).
+
+  - **On-behalf headers**, accepted ONLY from a service in
+    `app/services/read_audit.py::ON_BEHALF_SERVICES` (`icd11.pdhc`,
+    `dashboard.pdhc`); from anyone else they are ignored with a WARNING:
+    `X-Operator-User-Guid` -> `on_behalf_of_user_guid` (a recorded CLAIM of
+    the calling service, like `X-Operator-Session-Id`; `caller_user_guid`
+    still only holds identities the CDR verified itself);
+    `X-Access-Basis: break_glass` + `X-Break-Glass-Reason` (URL-encoded,
+    <= 500 chars decoded; longer is cut and flagged `reason_truncated`) ->
+    `outcome=break_glass`, `detail.reason`.
+  - **Break-glass fails closed.** Every logged read is confirmed in the
+    response header `X-CDR-Read-Audit-Id`. For an accepted break-glass
+    request whose log write failed, an `after_request` hook replaces the
+    answer with `503 BREAK_GLASS_AUDIT_UNAVAILABLE` (no data). Ordinary reads
+    keep the best-effort posture (a failed write is a WARNING).
+  - `$at` reads record `detail.as_of`; a search with a single `?patient=` is
+    logged against that patient.
+  - **`POST /api/v1/read-audit/events`** (`app/api/read_audit_events.py`) —
+    a refusal made upstream that never reached the CDR. Service key from an
+    `ON_BEHALF_SERVICES` source only (other services 403
+    `SERVICE_NOT_PERMITTED`, operator sessions 403 `SERVICE_KEY_REQUIRED`).
+    Body `{"patient_guid","user_guid","outcome":"denied"|"break_glass",
+    "route","detail":{...}}`, validated strictly (unknown field or detail key,
+    non-string detail value, overlong value, missing reason on break_glass ->
+    400 with a `code`). One INSERT, no repository table read; `response_status`
+    403 for denied; `detail.recorded_via = "event"`. 201 `{"id","outcome"}`;
+    a failed write is 503 `AUDIT_WRITE_FAILED`, never swallowed. It is the
+    one write path `dashboard.pdhc` (read-only, #760) is admitted to
+    (`auth.READ_AUDIT_EVENTS_PATH`).
+  - **Append-only** (`app/models/read_audit_guard.py`): ORM events refuse
+    UPDATE/DELETE of a `ReadAudit` row and a trigger (Postgres + SQLite, same
+    DDL as `history_guard.ddl_for`) refuses them in raw SQL. The only escape
+    is the platform's one escape, `history_purge()`, which opens DELETE for
+    its own transaction and never UPDATE. No production code uses it here.
+
 ### 2.3 Legacy tables (read-mostly)
 
 The pre-platform-plan tables remain in place: `ingest_raw`, `fhir_resources`,

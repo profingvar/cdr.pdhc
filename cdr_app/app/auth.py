@@ -246,6 +246,11 @@ def _service_key_outcome(app):
 # narrowed rather than retired the way monitor.pdhc was (#727).
 READ_ONLY_SERVICE_SOURCES = frozenset({"analyse.pdhc", "dashboard.pdhc"})
 
+# #984: NO exemption from READ_ONLY_SERVICE_SOURCES for the read-audit events
+# endpoint. Only icd11.pdhc posts events (read_audit.EVENT_SERVICES); a
+# read-only service gets no write path, not even this one, until it has a
+# consumer (narrowest list that works).
+
 # ---------------------------------------------------------------------------
 # #857 / #874 — who may ASSERT a code from a WHOLE-SYSTEM answer space
 # ---------------------------------------------------------------------------

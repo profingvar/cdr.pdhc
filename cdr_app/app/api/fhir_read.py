@@ -855,7 +855,8 @@ def condition_at(guid: str):
         return jsonify(_operation_outcome("error", "not-found", "resource not found")), 404
     patient = (versions[0][1].get("subject") or {}).get("reference", "").rsplit("/", 1)[-1] or None
     check_patient_allowed(patient)
-    record_read_audit(resource_type="Condition", patient_guid=patient, n_rows=len(versions))
+    record_read_audit(resource_type="Condition", patient_guid=patient, n_rows=len(versions),
+                      detail={"as_of": as_of.isoformat()})
     st = state_at(versions, as_of)
     if st is None:
         return jsonify(_operation_outcome(
@@ -882,7 +883,8 @@ def conditions_at():
     check_patient_allowed(patient)
     by_guid = _condition_versions("patient_guid", patient)
     record_read_audit(resource_type="Condition", patient_guid=patient,
-                      n_rows=sum(len(v) for v in by_guid.values()))
+                      n_rows=sum(len(v) for v in by_guid.values()),
+                      detail={"as_of": as_of.isoformat()})
     entries = []
     for guid in sorted(by_guid):
         st = state_at(by_guid[guid], as_of)

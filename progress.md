@@ -2070,3 +2070,51 @@ raw requests call in plan_client. pytest: 446 passed.
 ## #942 (2026-11-16): the canonical URI format is owned by termbank.pdhc (app/canonical_uri.py + conformance/canonical_uri_cases.json); the concept URN by plan.pdhc (planp/app/concept_urn.py + conformance/concept_urn_cases.json). Consumers keep byte-identical corpus copies in their tests; tools/check_canonical_uri_conformance.py in the workspace fails on drift or on a literal that breaks the grammar.
 
 ## #984/#985 (2026-11-16): operator decision — the CDR is the record for diagnoses (and observations); icd11 codes into the CDR; the ips EPS is a summary derived from the CDR (`derive-conditions-from-cdr`); the dashboard chips read the EPS. EPS Conditions were backfilled into their home CDR (`import-eps-conditions`); those with no home CDR stay, marked not CDR-backed.
+
+
+## 2026-11-17 — #984: `cdr_read_audit` is THE ONE access log for diagnoses
+Operator decision (ticket #984): icd11.pdhc is now a client of this CDR and its
+own `read_audit` is no longer written, so three gaps had to close here:
+
+1. **The user.** icd11's reads landed as `caller_service=icd11.pdhc` + session
+   id only. Now `X-Operator-User-Guid` from a service in
+   `read_audit.ON_BEHALF_SERVICES = {icd11.pdhc, dashboard.pdhc}` is stored in
+   the new `on_behalf_of_user_guid` — a recorded claim of that service, like
+   the session id. From any other caller the on-behalf headers are ignored and
+   a WARNING is logged.
+2. **Refusals.** `POST /api/v1/read-audit/events` (allow-listed services only,
+   strict validation, 400 by name, append-only, never a read of patient data)
+   lets a refusal that never reached the CDR land as one `outcome=denied` row
+   (`response_status` 403). dashboard.pdhc is read-only (#760); this exact path
+   is the one exemption (`auth.READ_AUDIT_EVENTS_PATH`).
+3. **Break-glass.** `X-Access-Basis: break_glass` + `X-Break-Glass-Reason`
+   (URL-encoded, <= 500) -> `outcome=break_glass`, `detail.reason`. Logged reads
+   are confirmed in `X-CDR-Read-Audit-Id`; a break-glass read whose log write
+   failed is withheld as `503 BREAK_GLASS_AUDIT_UNAVAILABLE`.
+
+The table was NOT guarded before (checked: only `history_guard` existed, for
+condition/encounter history). It is now append-only by ORM event + trigger
+(`app/models/read_audit_guard.py`), sharing `history_purge()` as the single
+escape (DELETE only). `tests/test_read_audit.py`'s cleanup now goes through
+that purge.
+
+Migration **`a9b8c7d6e5f4`** (revises `e1f2a3b4c5d6`): three nullable columns +
+index `ix_cdr_read_audit_on_behalf_of_user_guid` + the trigger. Tested on the
+scratch Postgres 16 cluster: upgrade from base to head, columns/index/trigger
+present, raw UPDATE and DELETE refused, purge flag allows DELETE but not UPDATE;
+downgrade to `e1f2a3b4c5d6` removes columns, index, trigger and function (a raw
+UPDATE then succeeds); upgrade again re-adds them with the old row's
+`outcome` NULL (= served). Cluster stopped afterwards.
+
+pytest: **538 -> 572 passed** (`tests/test_read_audit_984.py`, 34 tests).
+Mutation controls, each reverted:
+- M1 headers accepted from any service -> 2 fail (unlisted service, operator)
+- M2 events accepted from any service -> 1 fails (`..._UNLISTED_service_is_403`)
+- M3 `outcome` dropped from the event row -> 5 fail
+- M4 the break-glass 503 hook disabled -> 1 fails
+- M5 trigger DDL not installed -> 3 fail
+
+Deploy: this CDR must go out BEFORE icd11's matching change (icd11 refuses a
+break-glass read the CDR does not confirm). No .env change; run
+`flask db upgrade` (the trigger comes with it). icd11.pdhc needs its key here
+(already live on cdr2 since #1005); dashboard.pdhc only if it starts posting.

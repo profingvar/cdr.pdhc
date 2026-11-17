@@ -380,3 +380,20 @@ class ReadAudit(db.Model):
     role_guid = db.Column(db.String(64), nullable=True, index=True)
     purpose = db.Column(db.String(32), nullable=True)
     access_basis = db.Column(db.String(32), nullable=True)
+
+    # #984 (operator, 2026-11-17): this table is THE ONE access log for
+    # diagnoses. A service caller in read_audit.ON_BEHALF_SERVICES may state
+    # the end user it acts for (X-Operator-User-Guid) -- a recorded CLAIM of
+    # that service, like the forwarded session id, not something the CDR
+    # verified. Kept apart from caller_user_guid, which only ever holds an
+    # identity the CDR authenticated itself.
+    on_behalf_of_user_guid = db.Column(db.String(36), nullable=True, index=True)
+    #: served / denied / break_glass. NULL on rows written before #984 = served.
+    outcome = db.Column(db.String(16), nullable=True)
+    #: reason, as_of, scope, refusal_code ... -- NEVER clinical content.
+    detail = db.Column(db.JSON, nullable=True)
+
+
+# #984: the read log is append-only (ORM guard + database trigger).
+from app.models import read_audit_guard as _read_audit_guard  # noqa: E402
+_read_audit_guard.install(ReadAudit)

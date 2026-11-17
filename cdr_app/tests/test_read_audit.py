@@ -20,8 +20,10 @@ from tests.test_analysis_consent import (
 @pytest.fixture(autouse=True)
 def _clean_audit(app):
     with app.app_context():
-        db.session.execute(db.text("DELETE FROM cdr_read_audit"))
-        db.session.commit()
+        # #984: the table is append-only; the one escape is history_purge().
+        from app.models.history_guard import history_purge
+        with history_purge(db.session):
+            db.session.execute(db.text("DELETE FROM cdr_read_audit"))
     yield
 
 
