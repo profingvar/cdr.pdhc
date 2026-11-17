@@ -379,6 +379,10 @@ def _build_models():
 
 _build_models()
 
+# #984: the diagnosis register's history is append-only (see history_guard).
+from app.models import history_guard as _history_guard  # noqa: E402
+_history_guard.install(_HISTORY_MODELS)
+
 
 def live_model(fhir_resource_type: str):
     """Return the ORM class for a FHIR resource type string ('Observation' etc)."""

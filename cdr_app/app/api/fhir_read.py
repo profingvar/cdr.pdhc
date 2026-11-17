@@ -814,3 +814,84 @@ def events():
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# #984: a diagnosis AS IT STOOD on a date (replaces icd11.pdhc's state_at)
+#   GET /Condition/<guid>/$at?date=<ISO>        one Condition
+#   GET /Condition/$at?patient=<guid>&date=<ISO> every Condition of a patient
+# Replayed from the version history in CLINICAL time; see
+# app/services/condition_asof.py for the exact rule.
+# ---------------------------------------------------------------------------
+
+def _asof_date():
+    from app.services.condition_asof import parse_instant
+    raw = request.args.get("date")
+    if not raw:
+        raise ValueError("date is required (ISO date or date-time with zone)")
+    return parse_instant(raw)
+
+
+def _condition_versions(filter_col, value) -> dict[str, list[tuple[int, dict]]]:
+    Live, Hist = live_model("Condition"), history_model("Condition")
+    out: dict[str, list[tuple[int, dict]]] = {}
+    for M in (Live, Hist):
+        q = _org_filter(db.session.query(M).filter(getattr(M, filter_col) == value), M)
+        for row in q.all():
+            out.setdefault(row.guid, []).append((row.version_id, row.raw_json))
+    return out
+
+
+@bp.get("/Condition/<guid>/$at")
+@bp.get("/Condition/<guid>/%24at")
+def condition_at(guid: str):
+    from app.services.condition_asof import state_at
+    try:
+        as_of = _asof_date()
+    except ValueError as exc:
+        return jsonify(_operation_outcome("error", "invalid", str(exc))), 400
+    versions = _condition_versions("guid", guid).get(guid)
+    if not versions:
+        return jsonify(_operation_outcome("error", "not-found", "resource not found")), 404
+    patient = (versions[0][1].get("subject") or {}).get("reference", "").rsplit("/", 1)[-1] or None
+    check_patient_allowed(patient)
+    record_read_audit(resource_type="Condition", patient_guid=patient, n_rows=len(versions))
+    st = state_at(versions, as_of)
+    if st is None:
+        return jsonify(_operation_outcome(
+            "information", "not-found", "the diagnosis was not yet asserted at that date")), 404
+    vid, res, src = st
+    resp = jsonify(res)
+    resp.headers["X-CDR-Version"] = str(vid)
+    resp.headers["X-CDR-Valid-From-Source"] = src
+    return resp, 200
+
+
+@bp.get("/Condition/$at")
+@bp.get("/Condition/%24at")
+def conditions_at():
+    from app.services.condition_asof import state_at
+    try:
+        as_of = _asof_date()
+        patients = _requested_patients()
+    except (ValueError, _SearchParamError) as exc:
+        return jsonify(_operation_outcome("error", "invalid", str(exc))), 400
+    if len(patients) != 1:
+        return jsonify(_operation_outcome("error", "invalid", "exactly one patient is required")), 400
+    patient = patients[0]
+    check_patient_allowed(patient)
+    by_guid = _condition_versions("patient_guid", patient)
+    record_read_audit(resource_type="Condition", patient_guid=patient,
+                      n_rows=sum(len(v) for v in by_guid.values()))
+    entries = []
+    for guid in sorted(by_guid):
+        st = state_at(by_guid[guid], as_of)
+        if st is None:
+            continue
+        vid, res, src = st
+        entries.append({"fullUrl": f"Condition/{guid}/_history/{vid}", "resource": res,
+                        "search": {"mode": "match", "extension": [{
+                            "url": "https://cdr.pdhc.se/fhir/StructureDefinition/valid-from-source",
+                            "valueCode": src}]}})
+    return jsonify({"resourceType": "Bundle", "type": "searchset", "timestamp": _now_iso(),
+                    "total": len(entries), "entry": entries}), 200

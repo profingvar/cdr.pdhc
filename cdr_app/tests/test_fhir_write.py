@@ -87,7 +87,8 @@ def fake_canon(app):
 def clean_tables(app):
     """Each test starts with empty per-type tables. Doesn't touch the legacy
     fhir_resources / ingest_raw / etc tables."""
-    with app.app_context():
+    from app.models.history_guard import history_purge
+    with app.app_context(), history_purge(db.session):   # #984: a synthetic purge, by name
         for table in (
             "observation_history", "observation",
             "patient_history", "patient",
