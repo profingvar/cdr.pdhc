@@ -93,17 +93,39 @@ def _classify(canon: str | None, canon_guid) -> dict:
                                "CodeSystem URI, so nothing can resolve it")}
 
 
+def _count_patients() -> int:
+    """Distinct patients this CDR holds data for.
+
+    The union of Patient resources AND the patients its observations are
+    about. It used to be the Patient table alone, falling back to ingest_raw
+    only when that table was EMPTY — so one Patient row switched the method:
+    cdr1 held 2 Patient rows (gateway writes them) and observations for 8
+    patients (sim writes no Patient), and reported 2 (2026-11-18). cdr2/cdr3,
+    with no Patient rows, counted correctly only by the accident of the
+    fallback. ingest_raw stays as the fallback for a CDR with neither.
+    """
+    from sqlalchemy import func, select, union
+    P, O = live_model("Patient"), live_model("Observation")
+    parts = []
+    if P is not None:
+        parts.append(select(P.guid.label("g")))
+    if O is not None:
+        parts.append(select(O.patient_guid.label("g"))
+                     .where(O.patient_guid.isnot(None)))
+    n = 0
+    if parts:
+        u = union(*parts).subquery()
+        n = db.session.execute(select(func.count()).select_from(u)).scalar() or 0
+    return n or (db.session.execute(
+        db.text("SELECT COUNT(DISTINCT patient_guid) FROM ingest_raw")
+    ).scalar() or 0)
+
+
 @bp.get("/stats")
 def stats():
     # Per-type FHIR live tables (Phase-1.2 ingest path).
     fhir_per_type = sum(live_model(name).query.count() for name, *_ in RESOURCES)
-    # Patient count: prefer the per-type `patient` table; fall back to
-    # legacy ingest_raw distinct-by-guid for older CDRs.
-    patients = live_model("Patient").query.count() or (
-        db.session.execute(
-            db.text("SELECT COUNT(DISTINCT patient_guid) FROM ingest_raw")
-        ).scalar() or 0
-    )
+    patients = _count_patients()
     return jsonify({
         "ingest_raw": IngestRaw.query.count(),
         "fhir_resources": FhirResource.query.count() + fhir_per_type,
