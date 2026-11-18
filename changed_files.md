@@ -837,3 +837,7 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/progress.md, /Users/martiningvar/T7_sidewinder/cdr.pdhc/changed_files.md
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/stats.py (2026-11-18, patient count union)
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_stats_patient_count.py (2026-11-18, new)
+
+## 2026-11-18 — count mode (deployed cdr1/2/3)
+- cdr_app/app/api/fhir_read.py
+- cdr_app/tests/test_search_counts.py

@@ -2123,3 +2123,8 @@ break-glass read the CDR does not confirm). No .env change; run
 - `patients` = Patient rows UNION observation patient_guids (ingest_raw only when both empty). It counted the Patient table and fell back only when that table was empty, so cdr1 (2 Patient rows from gateway, observations for 8 patients incl. 6 from sim) reported 2 to analyse.
 - Tests: tests/test_stats_patient_count.py (+2; the key one fails on the old code), 574 pass. Query 5-14 ms on cdr1/2/3.
 - Deployed as overlay images to cdr1, cdr2, cdr3 (rollback tags `:pre_stats`, `stats.py.pre_stats` in each source dir). Health 200, sibling smokes 18/18 on all three. analyse now reports cdr1 8, cdr2 120, cdr3 30.
+
+## 2026-11-18 — Observation count mode deployed (ed8e527)
+`_pdhc_counts=patient,code` on FHIR search, used by analyse's cohort preview.
+Overlay deploy to cdr1/cdr2/cdr3 (baseline 52225111647b → 4cb5607b72dd), health 200,
+sibling smokes 18/18 on each. Rollback: image tag `:pre_counts`, file `fhir_read.py.pre_counts`.
