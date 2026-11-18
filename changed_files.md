@@ -835,3 +835,5 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_read_audit.py — cleanup via history_purge (table is append-only)
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/docs/01-technical-manual.md — cdr_read_audit section
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/progress.md, /Users/martiningvar/T7_sidewinder/cdr.pdhc/changed_files.md
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/stats.py (2026-11-18, patient count union)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_stats_patient_count.py (2026-11-18, new)

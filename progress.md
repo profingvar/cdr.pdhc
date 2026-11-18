@@ -2118,3 +2118,8 @@ Deploy: this CDR must go out BEFORE icd11's matching change (icd11 refuses a
 break-glass read the CDR does not confirm). No .env change; run
 `flask db upgrade` (the trigger comes with it). icd11.pdhc needs its key here
 (already live on cdr2 since #1005); dashboard.pdhc only if it starts posting.
+
+## 2026-11-18 — /stats patient count (b624010)
+- `patients` = Patient rows UNION observation patient_guids (ingest_raw only when both empty). It counted the Patient table and fell back only when that table was empty, so cdr1 (2 Patient rows from gateway, observations for 8 patients incl. 6 from sim) reported 2 to analyse.
+- Tests: tests/test_stats_patient_count.py (+2; the key one fails on the old code), 574 pass. Query 5-14 ms on cdr1/2/3.
+- Deployed as overlay images to cdr1, cdr2, cdr3 (rollback tags `:pre_stats`, `stats.py.pre_stats` in each source dir). Health 200, sibling smokes 18/18 on all three. analyse now reports cdr1 8, cdr2 120, cdr3 30.
