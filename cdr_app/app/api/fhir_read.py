@@ -335,6 +335,38 @@ def search(resource_type: str):
     for id_arg in request.args.getlist("_id"):
         q = q.filter(Live.guid == id_arg)
 
+    # _pdhc_counts=patient,code — how many rows per (patient, code), counted
+    # in SQL (2026-11-18, analyse's cohort preview and its minimum-measures
+    # filter). It rides on THIS search so the org scope above, every filter
+    # above, the consent filter and the read audit apply exactly as they do to
+    # the rows themselves; a separate endpoint would have to re-implement all
+    # four and could drift. Rows are never returned, only counts.
+    counts_arg = request.args.get("_pdhc_counts")
+    if counts_arg is not None:
+        if counts_arg != "patient,code":
+            return jsonify(_operation_outcome(
+                "error", "invalid",
+                "_pdhc_counts supports only 'patient,code'")), 400
+        if not (hasattr(Live, "patient_guid") and hasattr(Live, "code_canonical")):
+            return jsonify(_operation_outcome(
+                "error", "not-supported",
+                f"_pdhc_counts is not available on {resource_type}")), 400
+        from sqlalchemy import func
+        grouped = (q.with_entities(Live.patient_guid, Live.code_canonical,
+                                   func.count())
+                   .filter(Live.patient_guid.isnot(None))
+                   .group_by(Live.patient_guid, Live.code_canonical)
+                   .all())
+        guids = {p for p, _, _ in grouped}
+        allowed = consent_allowed_guids(guids) if guids else set()
+        out = [{"patient": p, "code": c, "n": int(n)}
+               for p, c, n in grouped if p in allowed]
+        record_read_audit(resource_type=resource_type,
+                          n_rows=sum(r["n"] for r in out))
+        return jsonify({"resourceType": "PdhcCounts",
+                        "group_by": ["patient", "code"],
+                        "counts": out}), 200
+
     # _tag — looks at meta_tag JSON array for {system, code} matches.
     tag_arg = request.args.get("_tag")
     if tag_arg:
