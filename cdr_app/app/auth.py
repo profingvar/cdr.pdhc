@@ -129,6 +129,10 @@ def _public_path(path: str) -> bool:
         # to dashboard.pdhc in #291.
         or path.startswith("/api/v1/observations")
         or path.startswith("/static/")
+        # 2026-11-19: the external read door authenticates a time-limited
+        # read grant itself (app/api/external_read.py, validated by sso on
+        # every request). No SSO session or service key reaches it.
+        or path.startswith("/external/")
     )
 
 
