@@ -2135,3 +2135,8 @@ sibling smokes 18/18 on each. Rollback: image tag `:pre_counts`, file `fhir_read
 - Tests: test_external_read.py 12. Suite 591 passed.
 - Deployed as overlay images to cdr1/2/3 (rollback `:pre_extread`, files `*.pre_extread.<ts>`). Verified on each: 401 without a key, 401 invalid_key for a junk key (so sso is consulted), own ips key 200 on external-summary.
 - Not yet verified: a read with a real key (InterSystems' grant is live, unused at time of writing).
+
+## 2026-11-19 — 8 MMD observations relabelled (operator: "märk om")
+- Patient 28a29239… (MMD_plan, SR a4dbcff2): 8 observations had been stored under cgm_mean_glucose (d83a8dac) though they were sleep, systolic/diastolic BP, anxiety and stress. Cause in plan.pdhc (single goal stamped on every activity) + gateway labelling by goal concept; fixed and deployed in plan 3f6d2fe / request 37e274a.
+- Relabelled by transaction_guid in observation (code_canonical, raw_json) and fhir_resources.resource_json; the CGM values stay glucose. ingest_raw and gateway's cdr_delivery_log deliberately left as received. Dump first: ~/backups/predeploy/cdr.pdhc/pre_relabel_mmd_*.pgdump (verified).
+- Values MMD sent AFTER the deploy (18:5x) arrived correctly labelled with no intervention — the end-to-end check of the fix.
