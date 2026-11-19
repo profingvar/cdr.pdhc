@@ -841,3 +841,9 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 ## 2026-11-18 — count mode (deployed cdr1/2/3)
 - cdr_app/app/api/fhir_read.py
 - cdr_app/tests/test_search_counts.py
+
+## 2026-11-19 — external read door /external/v1 (deployed cdr1/2/3)
+- cdr_app/app/api/external_read.py (NEW)
+- cdr_app/app/__init__.py — registers the blueprint at /external/v1
+- cdr_app/app/auth.py — /external/ exempt from the SSO loader (the door authenticates the grant itself)
+- cdr_app/tests/test_external_read.py (NEW)

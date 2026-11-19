@@ -2128,3 +2128,10 @@ break-glass read the CDR does not confirm). No .env change; run
 `_pdhc_counts=patient,code` on FHIR search, used by analyse's cohort preview.
 Overlay deploy to cdr1/cdr2/cdr3 (baseline 52225111647b → 4cb5607b72dd), health 200,
 sibling smokes 18/18 on each. Rollback: image tag `:pre_counts`, file `fhir_read.py.pre_counts`.
+
+## 2026-11-19 — external read door (e8da214, 2e3fa7d)
+- `GET /external/v1/patients` and `/external/v1/patients/<guid>` with `Authorization: Bearer rg.…`. Each request validates the grant with sso (`cdr` = cdr1/cdr2/cdr3 from CDR_INSTANCE). Scope: `patient_org_guid` in the grant's organisations, then ips consent for the grant's OWN purpose and projects (fails closed). Out-of-scope, absent and opted-out patients get the same 404.
+- Patient view: every non-Patient resource as picked fields (type, guid, code, value/unit/code/string, status, effective_at, `day` = whole days since the patient's first datapoint) + the ips summary. Never raw_json. Read audit `caller_service = read-grant:<guid>`.
+- Tests: test_external_read.py 12. Suite 591 passed.
+- Deployed as overlay images to cdr1/2/3 (rollback `:pre_extread`, files `*.pre_extread.<ts>`). Verified on each: 401 without a key, 401 invalid_key for a junk key (so sso is consulted), own ips key 200 on external-summary.
+- Not yet verified: a read with a real key (InterSystems' grant is live, unused at time of writing).
