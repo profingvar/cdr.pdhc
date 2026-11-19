@@ -23,7 +23,8 @@ def _resp(code, body=None):
 
 def _grant(orgs=(ORG_IN,)):
     return {"grant_guid": "g-1", "partner_guid": "p-1", "partner_name": "X",
-            "org_guids": list(orgs), "cdrs": ["cdr1"], "expires_at": "2026-11-21T00:00:00+00:00"}
+            "org_guids": list(orgs), "cdrs": ["cdr1"], "expires_at": "2026-11-21T00:00:00+00:00",
+            "purpose_code": "research", "research_project_guids": ["proj-1"]}
 
 
 IPS = {"patient_guid": None, "sex": "female", "birth_year": 1961,
@@ -33,7 +34,7 @@ IPS = {"patient_guid": None, "sex": "female", "birth_year": 1961,
 @pytest.fixture
 def wired(app):
     """sso answers with the grant, ips with the summary; consent allows all."""
-    calls = {"sso": [], "ips": []}
+    calls = {"sso": [], "ips": [], "consent": []}
 
     def post(url, json=None, headers=None, timeout=None):
         if "read-grants/validate" in url:
@@ -47,7 +48,7 @@ def wired(app):
     from app.services import analysis_consent as ac
     with patch.dict(app.config, cfg), patch.object(er.requests, "post", side_effect=post), \
             patch.object(ac, "_analysis_filter",
-                         side_effect=lambda g, p, pr: {"allowed": list(g)}):
+                         side_effect=lambda g, p, pr: calls["consent"].append((p, pr)) or {"allowed": list(g)}):
         yield calls
 
 
@@ -130,3 +131,16 @@ def test_cdr_id(monkeypatch, inst, name):
     else:
         monkeypatch.setenv("CDR_INSTANCE", inst)
     assert er.cdr_id() == name
+
+
+def test_consent_is_asked_with_the_grants_own_purpose_and_projects(client, wired):
+    _obs(str(uuid.uuid4()), ORG_IN, datetime(2026, 1, 1, tzinfo=timezone.utc), 5.0)
+    client.get("/external/v1/patients", headers=H)
+    assert wired["consent"][-1] == ("research", ["proj-1"])
+
+
+def test_a_grant_without_purpose_is_refused(client, wired):
+    g = _grant(); g["purpose_code"] = None
+    wired["sso_answer"] = _resp(200, g)
+    r = client.get("/external/v1/patients", headers=H)
+    assert r.status_code == 403 and r.get_json()["reason"] == "no_purpose"

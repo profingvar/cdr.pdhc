@@ -25,8 +25,9 @@ free-text notes. Fields are picked out, not filtered away, so a new column or
 JSON field stays out until someone adds it here on purpose.
 
 Scope, in order: the grant's organisations (on `patient_org_guid`, the Rule 24
-column), then ips's research consent verdict (#422) -- a patient who opted out
-of secondary use is not served.
+column), then ips's consent verdict (#422) for the grant's OWN purpose and
+research projects, chosen per key by the SU admin. (The first version asked
+for purpose "research" with no projects, which ips answers with nobody.)
 """
 from __future__ import annotations
 
@@ -48,8 +49,6 @@ bp = Blueprint("external_read", __name__)
 DATA_TYPES = ("Observation", "QuestionnaireResponse", "Condition",
               "MedicationStatement", "MedicationRequest", "AllergyIntolerance",
               "Procedure", "Encounter", "DiagnosticReport")
-#: The secondary-use purpose ips judges consent against.
-PURPOSE = "research"
 MAX_PATIENTS = 5000
 TIMEOUT = 8
 
@@ -108,6 +107,9 @@ def _gate():
         grant = _validate_grant()
     except _Refuse as e:
         return jsonify(e.body), e.status
+    if not grant.get("purpose_code"):
+        return jsonify({"error": "forbidden", "message": "Read key has no purpose",
+                        "reason": "no_purpose"}), 403
     g.read_grant = grant
     # Read-audit attribution: the caller is this grant, not a user or service.
     g.access_blob = {"service_source": f"read-grant:{grant['grant_guid']}"[:64],
@@ -143,7 +145,8 @@ def _consented(guids: set[str]) -> set[str]:
         return set()
     from app.services.analysis_consent import IpsUnreachable, _analysis_filter
     try:
-        verdict = _analysis_filter(sorted(guids), PURPOSE, [])
+        verdict = _analysis_filter(sorted(guids), g.read_grant["purpose_code"],
+                                   list(g.read_grant.get("research_project_guids") or []))
     except IpsUnreachable as e:
         raise _Refuse(503, "consent_unavailable",
                       f"Consent could not be checked, so nothing is served: {e}")
@@ -155,6 +158,7 @@ def _audit(*, patient_guid=None, n_rows=None):
     record_read_audit(resource_type="External", patient_guid=patient_guid, n_rows=n_rows,
                       detail={"grant_guid": g.read_grant.get("grant_guid"),
                               "partner_guid": g.read_grant.get("partner_guid"),
+                              "purpose": g.read_grant.get("purpose_code"),
                               "cdr": cdr_id()})
 
 
@@ -237,6 +241,7 @@ def list_patients():
     guids = guids[:MAX_PATIENTS]
     _audit(n_rows=len(guids))
     return jsonify({"cdr": cdr_id(), "expires_at": g.read_grant.get("expires_at"),
+                    "purpose": g.read_grant.get("purpose_code"),
                     "count": len(guids), "truncated": truncated, "patients": guids})
 
 
