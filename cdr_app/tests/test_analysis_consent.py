@@ -321,3 +321,30 @@ def test_the_session_header_does_not_clobber_the_credential(app):
         seen = _capture_post(app, api_key="k-cdr1-secret")
     assert seen["headers"].get("Authorization") == "ApiKey k-cdr1-secret"
     assert seen["headers"].get("X-Operator-Session-Id") == "sid-1"
+
+
+def test_patient_search_drops_excluded_patient_and_fails_closed(client, fake_canon):
+    """An analysis node reads demographics with `Patient?patient=a,b`. That
+    read must be consent-filtered exactly like the observation read: an
+    excluded patient's sex and birth year never leave the CDR, and an
+    unreachable ips refuses the whole read (2026-11-20)."""
+    for pat in (PAT_OK, PAT_NO):
+        r = client.put(f"/api/v1/fhir/Patient/{pat}",
+                       json={"resourceType": "Patient", "id": pat,
+                             "gender": "female", "birthDate": "1980",
+                             "patient_org_guid": PATIENT_ORG},
+                       headers=WRITE_HEADERS)
+        assert r.status_code in (200, 201), r.get_json()
+    url = f"/api/v1/fhir/Patient?patient={PAT_OK},{PAT_NO}"
+    with patch.object(ac, "_analysis_filter",
+                      side_effect=_verdict_excluding(PAT_NO)):
+        r = client.get(url, headers=DOCTOR)
+    assert r.status_code == 200
+    ids = {e["resource"]["id"] for e in r.get_json().get("entry") or []}
+    assert ids == {PAT_OK}
+
+    def _boom(*a, **kw):
+        raise ac.IpsUnreachable("down")
+
+    with patch.object(ac, "_analysis_filter", side_effect=_boom):
+        assert client.get(url, headers=DOCTOR).status_code == 503

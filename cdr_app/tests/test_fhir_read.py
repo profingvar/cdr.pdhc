@@ -763,3 +763,32 @@ def test_the_writer_accepts_the_patient_org_as_a_header_too(client, fake_canon):
     scoped = client.get(f"/api/v1/fhir/Observation?patient={PATIENT_GUID}",
                         headers={"X-Org-Guids": PATIENT_ORG})
     assert scoped.get_json()["total"] == 1
+
+
+def test_search_patient_by_patient_list_returns_those_patients(client, fake_canon):
+    """An analysis node reads sex and birth year for its cohort in one call:
+    `Patient?patient=a,b`. A Patient row's own guid is the patient, so the
+    filter must match on it — patient_guid is NULL on every Patient row."""
+    other = "pat-9999-8888-7777-6666"
+    third = "pat-5555-4444-3333-2222"
+    for g in (PATIENT_GUID, other, third):
+        _create_patient(client, guid=g, ident_value=f"id-{g}")
+    resp = client.get(
+        f"/api/v1/fhir/Patient?patient={PATIENT_GUID},{other}",
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 200
+    ids = sorted(e["resource"]["id"] for e in resp.get_json()["entry"])
+    assert ids == sorted([PATIENT_GUID, other])
+
+
+def test_patient_with_year_only_birthdate_round_trips(client, fake_canon):
+    body = {"patient_org_guid": PATIENT_ORG, "resourceType": "Patient",
+            "id": PATIENT_GUID, "gender": "male", "birthDate": "1971"}
+    r = client.put(f"/api/v1/fhir/Patient/{PATIENT_GUID}", json=body,
+                   headers=WRITE_HEADERS)
+    assert r.status_code in (200, 201), r.get_data(as_text=True)
+    resp = client.get(f"/api/v1/fhir/Patient?patient={PATIENT_GUID}",
+                      headers=ADMIN_HEADERS)
+    res = resp.get_json()["entry"][0]["resource"]
+    assert res["birthDate"] == "1971" and res["gender"] == "male"

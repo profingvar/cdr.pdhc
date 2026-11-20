@@ -306,7 +306,14 @@ def search(resource_type: str):
     except _SearchParamError as e:
         return jsonify(_operation_outcome("error", "invalid", str(e))), 400
     if patient_guids:
-        col = Live.patient_guid if hasattr(Live, "patient_guid") else Live.guid
+        # A Patient row IS the patient: its own guid is the key and its
+        # patient_guid column (a common column) is always NULL. Filtering
+        # Patient on patient_guid matched nothing, so an analysis node could
+        # not read demographics for its cohort in one call (2026-11-20).
+        if resource_type == "Patient" or not hasattr(Live, "patient_guid"):
+            col = Live.guid
+        else:
+            col = Live.patient_guid
         q = q.filter(col.in_(patient_guids))
 
     code = request.args.get("code")
