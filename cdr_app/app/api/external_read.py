@@ -7,6 +7,9 @@ organisations and chosen CDRs. The partner sends it as
 
     GET /external/v1/patients            the patients the grant covers
     GET /external/v1/patients/<guid>     one patient: IPS summary + datapoints
+    GET /external/v1/patients/<guid>/$everything
+                                         the same datapoints as a FHIR R5
+                                         searchset Bundle (no Patient resource)
 
 On EVERY request this CDR asks sso whether the key may be used here and now
 (`/api/internal/read-grants/validate`, with this CDR's own SSO client pair),
@@ -245,18 +248,12 @@ def list_patients():
                     "count": len(guids), "truncated": truncated, "patients": guids})
 
 
-@bp.get("/patients/<guid>")
-def get_patient(guid: str):
+def _patient_points(guid: str) -> tuple[list[dict], str | None] | None:
+    """The patient's datapoints under this grant, or None when the grant does
+    not cover the patient. Raises _Refuse when scope cannot be decided."""
     orgs = _orgs()
-    try:
-        in_scope = guid in _consented({guid} & _patients_in_orgs_for(guid, orgs))
-    except _Refuse as e:
-        return jsonify(e.body), e.status
-    if not in_scope:
-        _audit(patient_guid=guid, n_rows=0)
-        # Same answer whether the patient is absent, outside the grant or
-        # opted out: the grant learns nothing about patients it does not cover.
-        return jsonify({"error": "not_found", "message": "No such patient under this read key"}), 404
+    if guid not in _consented({guid} & _patients_in_orgs_for(guid, orgs)):
+        return None
     points = []
     for t in DATA_TYPES:
         M = live_model(t)
@@ -267,7 +264,21 @@ def get_patient(guid: str):
             p = _datapoint(t, row)
             if p:
                 points.append(p)
-    points, first = _with_days(points)
+    return _with_days(points)
+
+
+@bp.get("/patients/<guid>")
+def get_patient(guid: str):
+    try:
+        found = _patient_points(guid)
+    except _Refuse as e:
+        return jsonify(e.body), e.status
+    if found is None:
+        _audit(patient_guid=guid, n_rows=0)
+        # Same answer whether the patient is absent, outside the grant or
+        # opted out: the grant learns nothing about patients it does not cover.
+        return jsonify({"error": "not_found", "message": "No such patient under this read key"}), 404
+    points, first = found
     ips, ips_status = _ips_summary(guid)
     _audit(patient_guid=guid, n_rows=len(points))
     return jsonify({"cdr": cdr_id(), "patient_guid": guid,
@@ -288,3 +299,150 @@ def _patients_in_orgs_for(guid: str, orgs: list[str]) -> set[str]:
         if hit:
             return {guid}
     return set()
+
+
+# ------------------------------------------------------------------- FHIR view
+#
+# 2026-11-20 (operator): the same data as /patients/<guid>, as a FHIR R5
+# searchset Bundle, for partners whose tools read FHIR.
+#
+# Built ONLY from the picked-out datapoints above (_datapoint), never from
+# raw_json, so it can carry nothing the JSON view does not: no Patient
+# resource, no name, no personnummer, no notes. Each resource points at
+# `Patient/<guid>` (the pseudonymous GUID the JSON view already gives) without
+# the Patient resource itself. Sex, birth year, diagnoses and medications from
+# ips stay in the JSON view.
+
+FHIR_JSON = "application/fhir+json"
+DAY_EXT = "https://pdhc.se/fhir/StructureDefinition/days-since-first-datapoint"
+TAG_SYSTEM = "https://pdhc.se/CodeSystem/external-read"
+_COND_CLINICAL = "http://terminology.hl7.org/CodeSystem/condition-clinical"
+_PDHC_CONCEPT = "urn:pdhc:concept"
+
+
+def _coding(code: str | None) -> dict | None:
+    """`urn:pdhc:concept/<guid>` -> system urn:pdhc:concept + code <guid>;
+    `<system>|<code>` -> that pair; anything else -> code only."""
+    if not code:
+        return None
+    if code.startswith(_PDHC_CONCEPT + "/"):
+        return {"coding": [{"system": _PDHC_CONCEPT, "code": code[len(_PDHC_CONCEPT) + 1:]}]}
+    if "|" in code:
+        system, _, c = code.partition("|")
+        return {"coding": [{"system": system, "code": c}]}
+    return {"coding": [{"code": code}]}
+
+
+def _fhir_resource(p: dict, patient_ref: dict) -> dict:
+    t, when, cc = p["resource_type"], p.get("effective_at"), _coding(p.get("code"))
+    r: dict = {"resourceType": t, "id": p["guid"]}
+    status = p.get("status")
+    if t == "Observation":
+        r["status"] = status or "final"
+        if cc:
+            r["code"] = cc
+        r["subject"] = patient_ref
+        if when:
+            r["effectiveDateTime"] = when
+        if p.get("care_plan_guid"):
+            r["basedOn"] = [{"reference": f"CarePlan/{p['care_plan_guid']}"}]
+        if "value" in p:
+            q = {"value": p["value"]}
+            if p.get("unit"):
+                q["unit"] = p["unit"]
+            r["valueQuantity"] = q
+        elif p.get("value_code"):
+            r["valueCodeableConcept"] = {"coding": [{"code": p["value_code"]}]}
+        elif p.get("value_string") is not None:
+            r["valueString"] = p["value_string"]
+    elif t == "Condition":
+        if p.get("clinical_status"):
+            r["clinicalStatus"] = {"coding": [{"system": _COND_CLINICAL,
+                                               "code": p["clinical_status"]}]}
+        if cc:
+            r["code"] = cc
+        r["subject"] = patient_ref
+        if when:
+            r["onsetDateTime"] = when
+    elif t in ("MedicationStatement", "MedicationRequest"):
+        r["status"] = status or ("recorded" if t == "MedicationStatement" else "unknown")
+        if t == "MedicationRequest":
+            r["intent"] = "order"
+        if cc:
+            r["medication"] = {"concept": cc}
+        r["subject"] = patient_ref
+        if when:
+            r["effectiveDateTime" if t == "MedicationStatement" else "authoredOn"] = when
+    elif t == "AllergyIntolerance":
+        if cc:
+            r["code"] = cc
+        r["patient"] = patient_ref
+        if when:
+            r["recordedDate"] = when
+    elif t == "Encounter":
+        r["status"] = status or "unknown"
+        if cc:
+            r["type"] = [cc]
+        r["subject"] = patient_ref
+        if when:
+            r["actualPeriod"] = {"start": when}
+    elif t == "QuestionnaireResponse":
+        r["status"] = status or "completed"
+        if p.get("code"):
+            r["questionnaire"] = p["code"]
+        r["subject"] = patient_ref
+        if when:
+            r["authored"] = when
+    else:  # Procedure, DiagnosticReport
+        r["status"] = status or "unknown"
+        if cc:
+            r["code"] = cc
+        r["subject"] = patient_ref
+        if when:
+            r["occurrenceDateTime" if t == "Procedure" else "effectiveDateTime"] = when
+    if "day" in p:
+        r["extension"] = [{"url": DAY_EXT, "valueInteger": p["day"]}]
+    return r
+
+
+def _fhir(body: dict, status: int = 200):
+    resp = jsonify(body)
+    resp.status_code = status
+    resp.mimetype = FHIR_JSON
+    return resp
+
+
+def _outcome(code: str, text: str) -> dict:
+    return {"resourceType": "OperationOutcome",
+            "issue": [{"severity": "error", "code": code, "diagnostics": text}]}
+
+
+@bp.get("/patients/<guid>/$everything")
+@bp.get("/patients/<guid>/%24everything")
+def get_patient_fhir(guid: str):
+    try:
+        found = _patient_points(guid)
+    except _Refuse as e:
+        return _fhir(_outcome("exception", e.body.get("message", "")), e.status)
+    if found is None:
+        _audit(patient_guid=guid, n_rows=0)
+        return _fhir(_outcome("not-found", "No such patient under this read key"), 404)
+    points, _first = found
+    types = set((request.args.get("_type") or "").split(",")) - {""}
+    if types:
+        points = [p for p in points if p["resource_type"] in types]
+    ref = {"reference": f"Patient/{guid}"}
+    entries = [{"fullUrl": f"{p['resource_type']}/{p['guid']}",
+                "resource": _fhir_resource(p, ref),
+                "search": {"mode": "match"}} for p in points]
+    _audit(patient_guid=guid, n_rows=len(entries))
+    return _fhir({
+        "resourceType": "Bundle",
+        "type": "searchset",
+        "timestamp": datetime.now().astimezone().isoformat(),
+        "meta": {"tag": [{"system": TAG_SYSTEM, "code": "pseudonymised",
+                          "display": f"read grant {g.read_grant.get('grant_guid')} on {cdr_id()}"}]},
+        "total": len(entries),
+        "link": [{"relation": "self", "url": request.url}],
+        "entry": entries,
+    })

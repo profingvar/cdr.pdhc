@@ -144,3 +144,80 @@ def test_a_grant_without_purpose_is_refused(client, wired):
     wired["sso_answer"] = _resp(200, g)
     r = client.get("/external/v1/patients", headers=H)
     assert r.status_code == 403 and r.get_json()["reason"] == "no_purpose"
+
+
+# --- FHIR view (2026-11-20) -------------------------------------------------
+
+def _obs_full(patient, org, when, value, code):
+    M = live_model("Observation")
+    row = M(guid=str(uuid.uuid4()), patient_guid=patient, patient_org_guid=org,
+            code_canonical=code, effective_at=when, value_quantity=value, value_unit="mmol/L",
+            care_plan_guid="cp-1",
+            raw_json={"resourceType": "Observation", "status": "final",
+                      "subject": {"reference": "Patient/x", "display": "Greta Hemligsson"},
+                      "note": [{"text": "ringde Greta 0701234567"}],
+                      "identifier": [{"value": "19121212-1212"}]})
+    db.session.add(row)
+    db.session.commit()
+    return row.guid
+
+
+def test_fhir_view_is_a_searchset_of_observations_without_identity(client, wired):
+    p = str(uuid.uuid4())
+    concept = "urn:pdhc:concept/739ae368-f0df-4b14-a6bb-98affed01e3d"
+    g1 = _obs_full(p, ORG_IN, datetime(2026, 1, 1, 8, tzinfo=timezone.utc), 5.0, concept)
+    _obs_full(p, ORG_IN, datetime(2026, 1, 4, 22, tzinfo=timezone.utc), 7.5, concept)
+    _obs_full(p, ORG_OUT, datetime(2026, 1, 2, tzinfo=timezone.utc), 99.0, concept)
+    r = client.get(f"/external/v1/patients/{p}/$everything", headers=H)
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert r.mimetype == "application/fhir+json"
+    b = r.get_json()
+    assert b["resourceType"] == "Bundle" and b["type"] == "searchset" and b["total"] == 2
+    res = [e["resource"] for e in b["entry"]]
+    assert {x["resourceType"] for x in res} == {"Observation"}
+    first = next(x for x in res if x["id"] == g1)
+    assert first["subject"] == {"reference": f"Patient/{p}"}
+    assert first["code"]["coding"][0] == {"system": "urn:pdhc:concept",
+                                          "code": "739ae368-f0df-4b14-a6bb-98affed01e3d"}
+    assert first["valueQuantity"] == {"value": 5.0, "unit": "mmol/L"}
+    assert first["effectiveDateTime"].startswith("2026-01-01T08:00")
+    assert first["basedOn"] == [{"reference": "CarePlan/cp-1"}]
+    assert first["extension"][0]["valueInteger"] == 0
+    text = r.get_data(as_text=True)
+    for leak in ("Greta", "Hemligsson", "0701234567", "19121212", "raw_json", '"Patient"'):
+        assert leak not in text, leak
+    assert 99.0 not in [x.get("valueQuantity", {}).get("value") for x in res]
+
+
+def test_fhir_view_also_answers_on_the_encoded_dollar(client, wired):
+    p = str(uuid.uuid4())
+    _obs(p, ORG_IN, datetime(2026, 1, 1, tzinfo=timezone.utc), 5.0)
+    assert client.get(f"/external/v1/patients/{p}/%24everything", headers=H).status_code == 200
+
+
+def test_fhir_view_outside_the_grant_is_an_operation_outcome_404(client, wired):
+    p = str(uuid.uuid4())
+    _obs(p, ORG_OUT, datetime(2026, 1, 1, tzinfo=timezone.utc), 5.0)
+    r = client.get(f"/external/v1/patients/{p}/$everything", headers=H)
+    assert r.status_code == 404
+    assert r.get_json()["resourceType"] == "OperationOutcome"
+
+
+def test_fhir_view_respects_consent(client, wired):
+    from app.services import analysis_consent as ac
+    p = str(uuid.uuid4())
+    _obs(p, ORG_IN, datetime(2026, 1, 1, tzinfo=timezone.utc), 5.0)
+    with patch.object(ac, "_analysis_filter", return_value={"allowed": []}):
+        r = client.get(f"/external/v1/patients/{p}/$everything", headers=H)
+    assert r.status_code == 404
+
+
+def test_fhir_view_needs_the_read_key(client):
+    assert client.get(f"/external/v1/patients/{uuid.uuid4()}/$everything").status_code == 401
+
+
+def test_fhir_view_type_filter(client, wired):
+    p = str(uuid.uuid4())
+    _obs(p, ORG_IN, datetime(2026, 1, 1, tzinfo=timezone.utc), 5.0)
+    r = client.get(f"/external/v1/patients/{p}/$everything?_type=Condition", headers=H)
+    assert r.get_json()["total"] == 0

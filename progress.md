@@ -87,6 +87,11 @@ clean on fresh Postgres.
 
 Per `../plans/CDR_sim_dashboard_execution_plan.md` §1.
 
+### 2026-11-20 — external read door: FHIR view
+- `GET /external/v1/patients/<guid>/$everything` (also `%24everything`): the same datapoints as `/patients/<guid>`, as a FHIR R5 searchset Bundle (`application/fhir+json`). Same gate (sso read grant), same organisation scope and ips consent; outside the grant is a 404 OperationOutcome. `_type` filters by resource type.
+- Built only from the picked-out datapoints (`_datapoint`), never raw_json: no Patient resource (resources reference `Patient/<guid>`), no name, personnummer or notes. Code `urn:pdhc:concept/<guid>` becomes system+code; care plan as `basedOn`; days since first datapoint as an extension. ips demographics stay in the JSON view.
+- `_patient_points` shared by both views. 6 tests in tests/test_external_read.py (leak, scope and mimetype mutation-checked). Suite 597 passed. Not yet deployed.
+
 ### §1.1 Schema — DONE (2026-04-24)
 - [x] §1.1.a–c — per-type FHIR resource tables (patient, observation,
   questionnaire_response, condition, medication_statement,
