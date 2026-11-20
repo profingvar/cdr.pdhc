@@ -87,6 +87,10 @@ clean on fresh Postgres.
 
 Per `../plans/CDR_sim_dashboard_execution_plan.md` §1.
 
+### 2026-11-20 — backfill: patient_org_guid on gateway's 40 observations
+- 40 observations from MMD's client (via gateway, 19-20 Nov, one patient) had patient_org_guid NULL because gateway dropped it (fixed in gateway 0354efe, deployed today). Every one is basedOn one of three request.pdhc ServiceRequests, all for that patient and all recording patient org Hackathon_klin1; set from that, per row, in one transaction that committed only on exactly 40.
+- Before: pg_dump -Fc ~/backups/predeploy/patorg_backfill/cdr1_pre_backfill_20261120T124229Z.dump (mode 600). After: 0 observations in cdr1 without patient_org_guid.
+
 ### 2026-11-20 — external read door: FHIR view
 - `GET /external/v1/patients/<guid>/$everything` (also `%24everything`): the same datapoints as `/patients/<guid>`, as a FHIR R5 searchset Bundle (`application/fhir+json`). Same gate (sso read grant), same organisation scope and ips consent; outside the grant is a 404 OperationOutcome. `_type` filters by resource type.
 - Built only from the picked-out datapoints (`_datapoint`), never raw_json: no Patient resource (resources reference `Patient/<guid>`), no name, personnummer or notes. Code `urn:pdhc:concept/<guid>` becomes system+code; care plan as `basedOn`; days since first datapoint as an extension. ips demographics stay in the JSON view.
