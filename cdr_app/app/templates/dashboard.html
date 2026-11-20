@@ -4,7 +4,7 @@
 <div class="page-header">
   <div>
     <h1>Clinical Data Repository</h1>
-    <p class="lead">Three-layer storage — FHIR R5 + openEHR dual-standard</p>
+    <p class="lead">Three-layer storage — raw, FHIR R5, canonical (openEHR is rendered by rosetta.pdhc)</p>
   </div>
 </div>
 
@@ -20,12 +20,6 @@
     <h2>FHIR Resources</h2>
     <div class="count" id="cnt-fhir">—</div>
     <p>Observations stored</p>
-  </div>
-  <div class="dash-card">
-    <i data-lucide="file-text"></i>
-    <h2>openEHR Compositions</h2>
-    <div class="count" id="cnt-openehr">—</div>
-    <p>Compositions stored</p>
   </div>
   <div class="dash-card">
     <i data-lucide="activity"></i>
@@ -67,7 +61,6 @@
       <tr><td><code>POST /api/v1/ingest</code></td><td>Single ingest</td></tr>
       <tr><td><code>POST /api/v1/ingest/batch</code></td><td>Batch ingest (max 100)</td></tr>
       <tr><td><code>GET /api/v1/fhir/Observation</code></td><td>FHIR search</td></tr>
-      <tr><td><code>GET /api/v1/openehr/composition</code></td><td>openEHR search</td></tr>
       <tr><td><code>GET /api/v1/canonical/{table}</code></td><td>Canonical query</td></tr>
       <tr><td><code>GET /api/v1/cambio/status</code></td><td>Delivery status</td></tr>
     </table>
@@ -107,7 +100,6 @@ async function loadStats() {
     const d = await r.json();
     document.getElementById('cnt-raw').textContent = d.ingest_raw || 0;
     document.getElementById('cnt-fhir').textContent = d.fhir_resources || 0;
-    document.getElementById('cnt-openehr').textContent = d.openehr_compositions || 0;
     document.getElementById('cnt-canonical').textContent = d.health_observations || 0;
     document.getElementById('cnt-dedup').textContent = d.dedupe_registry || 0;
     document.getElementById('cnt-patients').textContent = d.patients || 0;

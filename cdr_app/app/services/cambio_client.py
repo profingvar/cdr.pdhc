@@ -1,4 +1,8 @@
-"""Cambio CDR sandbox API client — token management + FHIR/openEHR delivery."""
+"""Cambio CDR sandbox API client — token management + FHIR delivery.
+
+openEHR (EHR creation + composition delivery) removed 2026-11-20 (#682):
+rosetta.pdhc renders and delivers openEHR.
+"""
 import logging
 import time
 import requests
@@ -92,19 +96,13 @@ class CambioClient:
 
     @classmethod
     def ensure_patient(cls, pdhc_patient_guid):
-        """Create patient in Cambio if not already mapped. Returns (cambio_patient_id, cambio_ehr_id)."""
+        """Create patient in Cambio if not already mapped. Returns cambio_patient_id."""
         from app import db
         from app.models import CambioPatientMap
 
         mapping = CambioPatientMap.query.filter_by(pdhc_patient_guid=pdhc_patient_guid).first()
         if mapping and mapping.cambio_patient_id:
-            ehr_id = mapping.cambio_ehr_id
-            if not ehr_id:
-                ehr_id = cls._get_or_create_ehr(mapping.cambio_patient_id)
-                if ehr_id:
-                    mapping.cambio_ehr_id = ehr_id
-                    db.session.commit()
-            return mapping.cambio_patient_id, ehr_id
+            return mapping.cambio_patient_id
 
         # Create patient via FHIR Gateway
         patient_resource = {
@@ -127,69 +125,21 @@ class CambioClient:
         created = resp.json()
         cambio_patient_id = created.get("id")
 
-        # Get or create EHR for openEHR compositions
-        ehr_id = cls._get_or_create_ehr(cambio_patient_id)
-
         # Store mapping
         if mapping:
             mapping.cambio_patient_id = cambio_patient_id
-            mapping.cambio_ehr_id = ehr_id
         else:
             db.session.add(CambioPatientMap(
                 pdhc_patient_guid=pdhc_patient_guid,
                 cambio_patient_id=cambio_patient_id,
-                cambio_ehr_id=ehr_id,
             ))
         db.session.commit()
 
         logger.info(
-            "Cambio patient created: pdhc=%s cambio=%s ehr=%s",
-            pdhc_patient_guid, cambio_patient_id, ehr_id,
+            "Cambio patient created: pdhc=%s cambio=%s",
+            pdhc_patient_guid, cambio_patient_id,
         )
-        return cambio_patient_id, ehr_id
-
-    @classmethod
-    def _get_or_create_ehr(cls, cambio_patient_id):
-        """Query for existing EHR, create one if not found."""
-        base = cls._base_url()
-        headers = cls._headers(cls._org_headers())
-
-        # Try to find existing EHR
-        try:
-            resp = requests.get(
-                f"{base}/service.xcdr/rest/openehr/v1/ehr",
-                params={"subject_id": cambio_patient_id, "subject_namespace": "cambio"},
-                headers=headers,
-                timeout=15,
-            )
-            if resp.status_code == 200:
-                return resp.json().get("ehr_id", {}).get("value")
-        except Exception as e:
-            logger.warning("EHR query failed: %s", e)
-
-        # Create EHR
-        try:
-            resp = requests.post(
-                f"{base}/service.xcdr/rest/openehr/v1/ehr",
-                json={
-                    "subject": {
-                        "external_ref": {
-                            "id": {"value": cambio_patient_id},
-                            "namespace": "cambio",
-                            "type": "PERSON",
-                        }
-                    }
-                },
-                headers=headers,
-                timeout=15,
-            )
-            if resp.status_code in (200, 201):
-                return resp.json().get("ehr_id", {}).get("value")
-            logger.warning("EHR creation returned %d: %s", resp.status_code, resp.text[:200])
-        except Exception as e:
-            logger.warning("EHR creation failed: %s", e)
-
-        return None
+        return cambio_patient_id
 
     # ------------------------------------------------------------------
     # FHIR delivery
@@ -211,26 +161,3 @@ class CambioClient:
         resp.raise_for_status()
         created = resp.json()
         return created.get("id")
-
-    # ------------------------------------------------------------------
-    # openEHR delivery
-    # ------------------------------------------------------------------
-
-    @classmethod
-    def deliver_openehr_composition(cls, composition_json, ehr_id, operator_session_id=None):
-        """POST an openEHR composition to the Cambio xCDR. Returns composition uid."""
-        base = cls._base_url()
-        headers = cls._headers(cls._org_headers(), operator_session_id=operator_session_id)
-        headers["Content-Type"] = "application/json"
-
-        comp = composition_json.get("composition", composition_json)
-
-        resp = requests.post(
-            f"{base}/service.xcdr/rest/openehr/v1/ehr/{ehr_id}/composition",
-            json=comp,
-            headers=headers,
-            timeout=15,
-        )
-        resp.raise_for_status()
-        created = resp.json()
-        return created.get("uid", {}).get("value") if isinstance(created.get("uid"), dict) else created.get("uid")

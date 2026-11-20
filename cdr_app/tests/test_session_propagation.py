@@ -77,7 +77,7 @@ def test_worker_replays_captured_session(app):
         db.session.add(log)
         db.session.flush()
         seen = {}
-        with patch.object(CambioClient, "ensure_patient", return_value=("cpat", "ehr")), \
+        with patch.object(CambioClient, "ensure_patient", return_value="cpat"), \
              patch.object(CambioClient, "deliver_fhir_observation",
                           side_effect=lambda *a, **kw: (seen.update(kw), "cambio-id")[1]):
             cambio_worker._deliver_one(log)

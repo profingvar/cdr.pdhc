@@ -1,7 +1,7 @@
 """Ingest pipeline and API tests."""
 import json
 from app import db
-from app.models import IngestRaw, FhirResource, OpenEhrComposition, HealthObservation, DedupeRegistry, CambioDeliveryLog
+from app.models import IngestRaw, FhirResource, HealthObservation, DedupeRegistry, CambioDeliveryLog
 from tests.conftest import SAMPLE_INGEST_BODY
 
 
@@ -33,10 +33,6 @@ def test_ingest_accepted(client, app):
         assert fhir is not None
         assert fhir.loinc_code == "29463-7"
 
-        openehr = OpenEhrComposition.query.first()
-        assert openehr is not None
-        assert "body_weight" in openehr.archetype_id
-
         ho = HealthObservation.query.first()
         assert ho is not None
         assert ho.metric == "body_weight_kg"
@@ -45,6 +41,8 @@ def test_ingest_accepted(client, app):
         # Cambio delivery should be enqueued (has concept_guid)
         delivery = CambioDeliveryLog.query.filter_by(status="pending").all()
         assert len(delivery) >= 1
+        # #682: cdr no longer queues openEHR -- only the FHIR delivery.
+        assert {d.delivery_type for d in delivery} == {"fhir"}
 
 
 def test_ingest_dedup(client, app):
@@ -211,3 +209,23 @@ def test_an_unknown_source_service_is_refused(client):
     )
     assert resp.status_code == 403
     assert "unknown source service" in resp.get_json()["error"]
+
+
+def test_openehr_input_is_refused_and_nothing_is_stored(client, app):
+    """#682 (2026-11-20): cdr neither stores nor converts openEHR any more."""
+    body = dict(SAMPLE_INGEST_BODY, patient_guid="pat-682",
+                openehr_composition={"archetype_id": "openEHR-EHR-OBSERVATION.body_weight.v2"})
+    body.pop("fhir_resource", None)
+    with app.app_context():
+        before = IngestRaw.query.count()
+    resp = client.post("/api/v1/ingest", json=body, headers={
+        "X-Service-Key": "test-gateway-key", "X-Source-Service": "gateway.pdhc"})
+    assert resp.status_code == 422
+    assert "openehr_input_retired" in resp.get_json()["errors"][0]
+    with app.app_context():
+        assert IngestRaw.query.count() == before
+
+
+def test_openehr_routes_are_gone(app):
+    rules = [r.rule for r in app.url_map.iter_rules()]
+    assert rules and not [r for r in rules if "openehr" in r.lower()], rules

@@ -38,11 +38,11 @@
     <thead><tr><th>Layer</th><th>Table(s)</th><th>Purpose</th></tr></thead>
     <tbody>
       <tr><td><strong>Raw</strong></td><td><code>ingest_raw</code></td><td>Immutable payload archive with SHA-256 hash for deduplication</td></tr>
-      <tr><td><strong>Standard</strong></td><td><code>fhir_resources</code>, <code>openehr_compositions</code></td><td>Dual-format clinical data — FHIR R5 Observations and openEHR Compositions, cross-linked</td></tr>
+      <tr><td><strong>Standard</strong></td><td><code>fhir_resources</code> + per-type live tables</td><td>FHIR R5 resources. openEHR is not stored here: rosetta.pdhc renders it from the canonical observation (#682, 2026-11-20)</td></tr>
       <tr><td><strong>Canonical</strong></td><td><code>health_observations</code>, <code>activities</code></td><td>Query-optimised flat tables with metric, value, unit, concept_guid</td></tr>
     </tbody>
   </table>
-  <p class="mt-2">Supporting tables: <code>clinical_context</code> (provenance), <code>dedupe_registry</code>, <code>audit_log</code>, <code>loinc_archetype_map</code>, <code>service_keys</code>, <code>users</code>.</p>
+  <p class="mt-2">Supporting tables: <code>clinical_context</code> (provenance), <code>dedupe_registry</code>, <code>audit_log</code>, <code>service_keys</code>, <code>users</code>.</p>
 </div>
 
 <!-- Data Flow -->
@@ -57,8 +57,7 @@ gateway.pdhc ──POST /api/v1/ingest──▶ cdr.pdhc
          │
          ▼
    3. Store/transform standard layer
-      ├── FHIR provided? Store + generate openEHR
-      └── openEHR provided? Store + generate FHIR
+      └── FHIR stored (an openehr_composition is refused: 422)
          │
          ▼
    4. Store canonical (health_observations / activities)
@@ -77,27 +76,6 @@ gateway.pdhc ──POST /api/v1/ingest──▶ cdr.pdhc
   </pre>
 </div>
 
-<!-- FHIR↔openEHR Transformation -->
-<div class="card">
-  <h2>FHIR ↔ openEHR Transformation</h2>
-  <p>Bidirectional transformation using LOINC-to-archetype mapping. Currently 11 seed mappings:</p>
-  <table>
-    <thead><tr><th>LOINC</th><th>Metric</th><th>Archetype</th><th>Unit</th></tr></thead>
-    <tbody>
-      <tr><td>29463-7</td><td>body_weight_kg</td><td>body_weight.v2</td><td>kg</td></tr>
-      <tr><td>85354-9</td><td>blood_pressure_systolic</td><td>blood_pressure.v2</td><td>mmHg</td></tr>
-      <tr><td>8867-4</td><td>heart_rate_bpm</td><td>pulse.v2</td><td>/min</td></tr>
-      <tr><td>8310-5</td><td>body_temperature_c</td><td>body_temperature.v2</td><td>Cel</td></tr>
-      <tr><td>2708-6</td><td>spo2_percent</td><td>pulse_oximetry.v1</td><td>%</td></tr>
-      <tr><td>8302-2</td><td>body_height_cm</td><td>height.v2</td><td>cm</td></tr>
-      <tr><td>9279-1</td><td>respiratory_rate</td><td>respiration.v2</td><td>/min</td></tr>
-      <tr><td>39156-5</td><td>bmi</td><td>body_mass_index.v2</td><td>kg/m2</td></tr>
-      <tr><td>2339-0</td><td>blood_glucose_mmol</td><td>laboratory_test_result.v1</td><td>mmol/L</td></tr>
-      <tr><td>8280-0</td><td>waist_circumference_cm</td><td>waist_circumference.v2</td><td>cm</td></tr>
-      <tr><td>93832-4</td><td>sleep_hours</td><td>sleep.v0</td><td>h</td></tr>
-    </tbody>
-  </table>
-</div>
 
 <!-- API Reference -->
 <div class="card">
@@ -126,7 +104,6 @@ gateway.pdhc ──POST /api/v1/ingest──▶ cdr.pdhc
   "patient_guid": "uuid",
   "source_type": "fhir",
   "fhir_resource": { FHIR Observation JSON },
-  "openehr_composition": { openEHR Composition JSON },
   "canonical": {
     "table": "health_observations",
     "metric": "body_weight_kg",
@@ -158,8 +135,6 @@ gateway.pdhc ──POST /api/v1/ingest──▶ cdr.pdhc
       <tr><td><code>GET</code></td><td><code>/api/v1/fhir/metadata</code></td><td>FHIR CapabilityStatement</td></tr>
       <tr><td><code>GET</code></td><td><code>/api/v1/fhir/Observation</code></td><td>Search by patient_guid, loinc_code</td></tr>
       <tr><td><code>GET</code></td><td><code>/api/v1/fhir/Observation/&lt;guid&gt;</code></td><td>Read single FHIR resource</td></tr>
-      <tr><td><code>GET</code></td><td><code>/api/v1/openehr/composition</code></td><td>Search by patient_guid, archetype_id</td></tr>
-      <tr><td><code>GET</code></td><td><code>/api/v1/openehr/composition/&lt;guid&gt;</code></td><td>Read single composition</td></tr>
       <tr><td><code>GET</code></td><td><code>/api/v1/canonical/&lt;table_name&gt;</code></td><td>Query health_observations or activities by patient_guid</td></tr>
     </tbody>
   </table>
@@ -191,8 +166,8 @@ gateway.pdhc ──POST /api/v1/ingest──▶ cdr.pdhc
   <h3>Delivery flow</h3>
   <ol style="padding-left:1.5rem;">
     <li>Ingest pipeline creates <code>cambio_delivery_log</code> entries (status: pending)</li>
-    <li>Worker ensures patient exists in Cambio (creates via FHIR Patient + openEHR EHR)</li>
-    <li>Worker delivers FHIR Observation via FHIR Gateway and openEHR Composition via xCDR</li>
+    <li>Worker ensures patient exists in Cambio (creates via FHIR Patient)</li>
+    <li>Worker delivers FHIR Observation via FHIR Gateway</li>
     <li>On success: status → delivered, cambio_resource_id stored</li>
     <li>On failure: retry with backoff (10s, 20s, 40s, 80s, 160s). After 5 failures: status → failed</li>
   </ol>

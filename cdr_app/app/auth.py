@@ -185,7 +185,6 @@ def _is_read_path(path: str) -> bool:
     """
     return (path.startswith("/api/v1/fhir/")
             or path.startswith("/api/v1/canonical/")
-            or path.startswith("/api/v1/openehr/")
             or path.startswith("/api/v1/stats")
             or path.startswith("/api/v1/cambio/")
             # #468 — care-delivery read surface for the clinical dashboard.

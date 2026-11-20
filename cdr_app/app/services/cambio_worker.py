@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timezone
 from app import db
 from app.models import (CambioDeliveryLog, ClinicalContext, FhirResource,
-                        IngestRaw, OpenEhrComposition)
+                        IngestRaw)
 from app.services.synthetic import synthetic_reason
 from .cambio_client import CambioClient
 
@@ -81,7 +81,7 @@ def _deliver_one(log):
     log.last_attempt_at = now
 
     # Ensure patient exists in Cambio
-    cambio_patient_id, ehr_id = CambioClient.ensure_patient(log.patient_guid)
+    cambio_patient_id = CambioClient.ensure_patient(log.patient_guid)
 
     if log.delivery_type == "fhir":
         if not log.fhir_resource_guid:
@@ -97,27 +97,6 @@ def _deliver_one(log):
             operator_session_id=log.operator_session_id,
         )
         log.cambio_resource_id = cambio_id
-        log.status = "delivered"
-        log.delivered_at = now
-        log.last_error = None
-
-    elif log.delivery_type == "openehr":
-        if not ehr_id:
-            _mark_failed(log, "No Cambio EHR ID available")
-            return
-        if not log.openehr_comp_guid:
-            _mark_failed(log, "No openEHR composition linked")
-            return
-        comp_row = OpenEhrComposition.query.get(log.openehr_comp_guid)
-        if not comp_row:
-            _mark_failed(log, "openEHR composition not found")
-            return
-
-        cambio_uid = CambioClient.deliver_openehr_composition(
-            comp_row.composition_json, ehr_id,
-            operator_session_id=log.operator_session_id,
-        )
-        log.cambio_resource_id = cambio_uid
         log.status = "delivered"
         log.delivered_at = now
         log.last_error = None

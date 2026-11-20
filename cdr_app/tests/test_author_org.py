@@ -32,7 +32,7 @@ def _isolate(app):
     def _wipe():
         with app.app_context():
             for table in ("clinical_context", "fhir_resources",
-                          "openehr_compositions", "health_observations",
+                          "health_observations",
                           "activities", "dedupe_registry", "ingest_raw"):
                 db.session.execute(db.text(f"DELETE FROM {table}"))
             db.session.commit()

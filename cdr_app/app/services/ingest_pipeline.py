@@ -4,10 +4,9 @@ from datetime import datetime, timezone
 from flask import request as flask_request
 from app import db
 from app.models import (
-    IngestRaw, FhirResource, OpenEhrComposition, HealthObservation,
+    IngestRaw, FhirResource, HealthObservation,
     Activity, ClinicalContext, DedupeRegistry, AuditLog, CambioDeliveryLog,
 )
-from .transformer import FhirOpenEhrTransformer
 from app.services.synthetic import synthetic_reason
 
 logger = logging.getLogger(__name__)
@@ -84,6 +83,16 @@ class IngestPipeline:
         patient_guid = body["patient_guid"]
         source_type = body.get("source_type", "fhir")
 
+        # #682 (2026-11-20): cdr no longer stores, generates or accepts openEHR.
+        # rosetta.pdhc renders openEHR from the canonical observation. Measured
+        # before removal: no producer had ever sent `openehr_composition` to
+        # cdr1, cdr2 or cdr3, so refusing it loses nothing and says so loudly
+        # instead of silently storing only the raw payload.
+        if "openehr_composition" in body:
+            return {"status": "rejected", "errors": [
+                "openehr_input_retired: send fhir_resource (+ canonical); "
+                "openEHR is rendered by rosetta.pdhc"]}
+
         # X2 (#423): capture the operator session forwarded on the ingest
         # request (X-Operator-Session-Id, set by gateway) so the async
         # cambio_worker can replay it on the cdr1 -> Cambio hop.
@@ -119,12 +128,10 @@ class IngestPipeline:
 
         # 3. Store/transform standard layer
         fhir_resource = body.get("fhir_resource")
-        openehr_comp = body.get("openehr_composition")
         canonical = body.get("canonical")
         context = _clinical_context_from(body)
 
         fhir_row = None
-        openehr_row = None
 
         # Store FHIR resource
         if fhir_resource:
@@ -172,59 +179,6 @@ class IngestPipeline:
                     if live_row is not None:
                         db.session.add(live_row)
                         db.session.flush()
-
-        # Store or generate openEHR composition
-        if openehr_comp:
-            openehr_row = OpenEhrComposition(
-                ingest_raw_guid=raw.guid,
-                fhir_resource_guid=fhir_row.guid if fhir_row else None,
-                patient_guid=patient_guid,
-                archetype_id=openehr_comp.get("archetype_id"),
-                composition_json=openehr_comp,
-                effective_at=fhir_row.effective_at if fhir_row else None,
-                source_service=source_service,
-                received_at=raw.received_at,
-            )
-            db.session.add(openehr_row)
-            db.session.flush()
-        elif fhir_resource:
-            # Generate openEHR from FHIR
-            generated = FhirOpenEhrTransformer.fhir_to_openehr(fhir_resource)
-            if generated:
-                openehr_row = OpenEhrComposition(
-                    ingest_raw_guid=raw.guid,
-                    fhir_resource_guid=fhir_row.guid,
-                    patient_guid=patient_guid,
-                    archetype_id=generated.get("archetype_id"),
-                    composition_json=generated,
-                    effective_at=fhir_row.effective_at,
-                    source_service=source_service,
-                    received_at=raw.received_at,
-                )
-                db.session.add(openehr_row)
-                db.session.flush()
-
-        # Generate FHIR from openEHR if FHIR not provided
-        if not fhir_resource and openehr_comp:
-            generated_fhir = FhirOpenEhrTransformer.openehr_to_fhir(openehr_comp, patient_guid)
-            if generated_fhir:
-                gen_primary_code = _extract_primary_code_hint(generated_fhir)
-                gen_loinc_code = (
-                    gen_primary_code if _loinc_column_writable(gen_primary_code)
-                    else None
-                )
-                fhir_row = FhirResource(
-                    ingest_raw_guid=raw.guid,
-                    patient_guid=patient_guid,
-                    resource_type="Observation",
-                    resource_json=generated_fhir,
-                    loinc_code=gen_loinc_code,
-                    effective_at=_parse_effective(generated_fhir.get("effectiveDateTime")),
-                    source_service=source_service,
-                    received_at=raw.received_at,
-                )
-                db.session.add(fhir_row)
-                db.session.flush()
 
         # 4. Store canonical
         concept_guid = None
@@ -302,19 +256,6 @@ class IngestPipeline:
             sim_run_id=(context or {}).get("sim_run_id"),
         )
         if synthetic:
-            for kind, row in (("fhir", fhir_row), ("openehr", openehr_row)):
-                if row:
-                    db.session.add(CambioDeliveryLog(
-                        ingest_raw_guid=raw.guid,
-                        fhir_resource_guid=row.guid if kind == "fhir" else None,
-                        openehr_comp_guid=row.guid if kind == "openehr" else None,
-                        patient_guid=patient_guid,
-                        delivery_type=kind,
-                        operator_session_id=op_sid,
-                        status="skipped",
-                        last_error=synthetic,
-                    ))
-        elif has_concept_ref:
             if fhir_row:
                 db.session.add(CambioDeliveryLog(
                     ingest_raw_guid=raw.guid,
@@ -322,14 +263,16 @@ class IngestPipeline:
                     patient_guid=patient_guid,
                     delivery_type="fhir",
                     operator_session_id=op_sid,
-                    status="pending",
+                    status="skipped",
+                    last_error=synthetic,
                 ))
-            if openehr_row:
+        elif has_concept_ref:
+            if fhir_row:
                 db.session.add(CambioDeliveryLog(
                     ingest_raw_guid=raw.guid,
-                    openehr_comp_guid=openehr_row.guid,
+                    fhir_resource_guid=fhir_row.guid,
                     patient_guid=patient_guid,
-                    delivery_type="openehr",
+                    delivery_type="fhir",
                     operator_session_id=op_sid,
                     status="pending",
                 ))
@@ -358,7 +301,6 @@ class IngestPipeline:
                 "source_type": source_type,
                 "payload_hash": payload_hash,
                 "has_fhir": fhir_row is not None,
-                "has_openehr": openehr_row is not None,
                 "has_canonical": canonical is not None,
                 "has_context": context is not None,
                 "cambio_eligible": has_concept_ref,
@@ -390,8 +332,7 @@ def _extract_primary_code_hint(fhir_resource):
     column must filter to values that fit — see the ingest site.
 
     Kept exported under the old name `_extract_loinc` too because
-    tests and downstream call sites (`_extract_loinc(generated_fhir)`
-    from the openEHR→FHIR path) reference it verbatim.
+    tests reference it verbatim.
     """
     codings = ((fhir_resource.get("code") or {}).get("coding") or [])
     # LOINC first — it's the external-standard preference.
@@ -408,9 +349,8 @@ def _extract_primary_code_hint(fhir_resource):
     return None
 
 
-# Legacy name preserved for back-compat with existing tests and the
-# openEHR-generated-FHIR ingest branch. New callers should use the
-# explicit `_extract_primary_code_hint` name.
+# Legacy name preserved for back-compat with existing tests. New callers
+# should use the explicit `_extract_primary_code_hint` name.
 _extract_loinc = _extract_primary_code_hint
 
 

@@ -22,12 +22,12 @@ def _remove_my_rows(app):
     (patients pat-1000-*), children before parents."""
     yield
     from app.models import (ClinicalContext, DedupeRegistry, FhirResource,
-                            HealthObservation, OpenEhrComposition)
+                            HealthObservation)
     with app.app_context():
         db.session.rollback()
         raws = [r.guid for r in IngestRaw.query.filter(IngestRaw.patient_guid.like("pat-1000-%"))]
         if raws:
-            for model in (CambioDeliveryLog, OpenEhrComposition, FhirResource,
+            for model in (CambioDeliveryLog, FhirResource,
                           HealthObservation, ClinicalContext):
                 model.query.filter(model.ingest_raw_guid.in_(raws)).delete(synchronize_session=False)
             DedupeRegistry.query.filter(DedupeRegistry.patient_guid.like("pat-1000-%")).delete(
@@ -93,7 +93,7 @@ def test_REAL_data_is_still_queued_pending(client, app):
 def test_data_written_by_SIM_is_never_queued(client, app):
     raw = _ingest(client, _body(), SIM)
     logs = _logs(app, raw)
-    assert {t for t, _, _ in logs} == {"fhir", "openehr"}
+    assert {t for t, _, _ in logs} == {"fhir"}   # openEHR retired (#682)
     assert all(s == "skipped" and "sim.pdhc" in e for _, s, e in logs), logs
 
 
@@ -123,9 +123,8 @@ def test_the_worker_skips_a_PRE_QUEUED_sim_row_before_touching_cambio(client, ap
     sim_raw = _ingest(client, _body(), SIM)
     _requeue_as_pending(app, sim_raw)
     monkeypatch.setitem(app.config, "CAMBIO_DELIVERY_ENABLED", True)
-    with patch.object(cambio_worker.CambioClient, "ensure_patient", return_value=("cp", "ehr")) as ensure, \
-         patch.object(cambio_worker.CambioClient, "deliver_fhir_observation", return_value="f") as fhir, \
-         patch.object(cambio_worker.CambioClient, "deliver_openehr_composition", return_value="o") as oe:
+    with patch.object(cambio_worker.CambioClient, "ensure_patient", return_value="cp") as ensure, \
+         patch.object(cambio_worker.CambioClient, "deliver_fhir_observation", return_value="f") as fhir:
         cambio_worker.run_delivery_cycle(app)
     with app.app_context():
         mine = CambioDeliveryLog.query.filter_by(ingest_raw_guid=sim_raw).all()
@@ -145,8 +144,7 @@ def test_the_worker_still_delivers_REAL_rows(client, app, monkeypatch):
                                                 CambioDeliveryLog.status == "pending"):
             l.status = "skipped"
         db.session.commit()
-    with patch.object(cambio_worker.CambioClient, "ensure_patient", return_value=("cp", "ehr")), \
-         patch.object(cambio_worker.CambioClient, "deliver_fhir_observation", return_value="f"), \
-         patch.object(cambio_worker.CambioClient, "deliver_openehr_composition", return_value="o"):
+    with patch.object(cambio_worker.CambioClient, "ensure_patient", return_value="cp"), \
+         patch.object(cambio_worker.CambioClient, "deliver_fhir_observation", return_value="f"):
         cambio_worker.run_delivery_cycle(app)
     assert {s for _, s, _ in _logs(app, real_raw)} == {"delivered"}

@@ -2141,3 +2141,10 @@ sibling smokes 18/18 on each. Rollback: image tag `:pre_counts`, file `fhir_read
 - Relabelled by transaction_guid in observation (code_canonical, raw_json) and fhir_resources.resource_json; the CGM values stay glucose. ingest_raw and gateway's cdr_delivery_log deliberately left as received. Dump first: ~/backups/predeploy/cdr.pdhc/pre_relabel_mmd_*.pgdump (verified).
 - Values MMD sent AFTER the deploy (18:5x) arrived correctly labelled with no intervention — the end-to-end check of the fix.
 - 2026-11-19 (operator: "ta bort stress 8 och 9"): the two stress values outside the 1-7 scale (78e99b36 = 9, d2d7506b = 8) deleted with their ingest_raw, fhir_resources, clinical_context, openehr_compositions, cambio_delivery_log and dedupe_registry rows (one transaction, exactly 2 targets asserted). Full dump first: ~/backups/predeploy/cdr.pdhc/pre_del_stress_*.pgdump (verified). Stress 4 and 5 remain. Gateway now refuses such values (OUT_OF_SCALE).
+
+## 2026-11-20 — #682 CLIP: cdr's openEHR retired (code done, NOT deployed)
+Operator decision 2026-11-20 "Clip now": the #682 gate counted as met. Rosetta: AQL round-trip proven 2026-07-23, emitter output accepted by ASHA for all templates 2026-11-19; rosetta's own delivery stays OFF by operator decision. cdr's path delivered nothing: CAMBIO_DELIVERY_ENABLED=false on cdr1/2/3, 0 calls to /api/v1/openehr in 30 days, no service outside cdr references it, and no producer ever sent an openehr_composition (ingest_raw, all three CDRs).
+- Removed: transformer, openehr API, Cambio EHR + composition delivery, OpenEhrComposition/LoincArchetypeMap models, delivery_log.openehr_comp_guid. Ingest now refuses an openehr_composition (422) instead of storing it.
+- Migration b0c1d2e3f4a5: delete delivery_log rows of type openehr, drop the column, drop openehr_compositions (4 059 / 52 131 / 19 509 rows on cdr1/2/3) and loinc_archetype_map (0). Downgrade recreates the schema empty; data from the pre-deploy pg_dump.
+- Baseline: the 12 touched files are byte-identical to git in all three containers; all three at alembic a9b8c7d6e5f4.
+- Tests: 588 passed. New tests fail against the old ingest pipeline (6 failed).

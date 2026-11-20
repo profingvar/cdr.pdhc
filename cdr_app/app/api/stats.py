@@ -3,7 +3,7 @@ import re
 import time
 from flask import Blueprint, current_app, jsonify, request
 from app import db
-from app.models import IngestRaw, FhirResource, OpenEhrComposition, HealthObservation, DedupeRegistry
+from app.models import IngestRaw, FhirResource, HealthObservation, DedupeRegistry
 from app.models.resources import RESOURCES, live_model
 
 bp = Blueprint("stats", __name__)
@@ -129,7 +129,6 @@ def stats():
     return jsonify({
         "ingest_raw": IngestRaw.query.count(),
         "fhir_resources": FhirResource.query.count() + fhir_per_type,
-        "openehr_compositions": OpenEhrComposition.query.count(),
         # #756: `observations` is what the platform actually holds — the live
         # per-type table. cdr_6's /stats has always returned this key; cdr1/2/3
         # returned only `health_observations`, which counts the LEGACY table and

@@ -68,27 +68,6 @@ class FhirResource(db.Model):
     )
 
 
-class OpenEhrComposition(db.Model):
-    __tablename__ = "openehr_compositions"
-
-    guid = db.Column(db.String(36), primary_key=True, default=_uuid)
-    ingest_raw_guid = db.Column(db.String(36), db.ForeignKey("ingest_raw.guid"), nullable=False)
-    fhir_resource_guid = db.Column(db.String(36), db.ForeignKey("fhir_resources.guid"), nullable=True)
-    patient_guid = db.Column(db.String(36), nullable=False, index=True)
-    archetype_id = db.Column(db.String(128), nullable=True)
-    template_id = db.Column(db.String(128), default="generic")
-    composition_json = db.Column(db.JSON, nullable=False)
-    effective_at = db.Column(db.DateTime(timezone=True), nullable=True)
-    source_service = db.Column(db.String(64), nullable=True)
-    # #294 RFC E1: see FhirResource.received_at docstring.
-    received_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False)
-    created_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False)
-
-    __table_args__ = (
-        db.Index("ix_openehr_patient_arch_eff", "patient_guid", "archetype_id", effective_at.desc()),
-    )
-
-
 # ---------------------------------------------------------------------------
 # Layer 3 — Canonical Store (query-optimized)
 # ---------------------------------------------------------------------------
@@ -237,26 +216,6 @@ class ServiceKey(db.Model):
 
 
 # ---------------------------------------------------------------------------
-# LOINC-to-archetype mapping
-# ---------------------------------------------------------------------------
-
-class LoincArchetypeMap(db.Model):
-    __tablename__ = "loinc_archetype_map"
-
-    guid = db.Column(db.String(36), primary_key=True, default=_uuid)
-    loinc_code = db.Column(db.String(16), nullable=False, index=True)
-    loinc_display = db.Column(db.String(128), nullable=True)
-    archetype_id = db.Column(db.String(128), nullable=True)
-    archetype_node_id = db.Column(db.String(32), nullable=True)
-    canonical_metric = db.Column(db.String(64), nullable=True)
-    canonical_unit = db.Column(db.String(32), nullable=True)
-    canonical_table = db.Column(db.String(64), nullable=True)
-    active = db.Column(db.Boolean, default=True, nullable=False)
-    created_at = db.Column(db.DateTime(timezone=True), default=_now, nullable=False)
-    updated_at = db.Column(db.DateTime(timezone=True), default=_now, onupdate=_now)
-
-
-# ---------------------------------------------------------------------------
 # Users (SSO-synced)
 # ---------------------------------------------------------------------------
 
@@ -310,9 +269,8 @@ class CambioDeliveryLog(db.Model):
     guid = db.Column(db.String(36), primary_key=True, default=_uuid)
     ingest_raw_guid = db.Column(db.String(36), db.ForeignKey("ingest_raw.guid"), nullable=False)
     fhir_resource_guid = db.Column(db.String(36), db.ForeignKey("fhir_resources.guid"), nullable=True)
-    openehr_comp_guid = db.Column(db.String(36), db.ForeignKey("openehr_compositions.guid"), nullable=True)
     patient_guid = db.Column(db.String(36), nullable=False, index=True)
-    delivery_type = db.Column(db.String(16), nullable=False)  # 'fhir' | 'openehr'
+    delivery_type = db.Column(db.String(16), nullable=False)  # 'fhir' (openEHR retired 2026-11-20, #682)
     cambio_resource_id = db.Column(db.String(128), nullable=True)
     status = db.Column(db.String(32), default="pending", nullable=False)
     attempt_count = db.Column(db.Integer, default=0, nullable=False)
