@@ -2164,3 +2164,9 @@ Operator decision 2026-11-20 "Clip now": the #682 gate counted as met. Rosetta: 
 ## 2026-11-20 — Patient search by patient list (demographics for analysis nodes)
 - `GET /api/v1/fhir/Patient?patient=a,b` matched nothing: the filter used `patient_guid`, NULL on every Patient row. Now matches on the row's own guid. Consent filter and 503 fail-closed apply as for Observation.
 - Year-only `birthDate` round-trips. Tests: test_fhir_read (+2), test_analysis_consent (+1), proven failing without the fix. Suite 591 passed. Not yet deployed.
+
+### 2026-11-21 — #1014 data_origin: patient-generated data flagged
+- Opt-in (operator 2026-11-21): `patient_generated`, or NULL = produced/endorsed by healthcare. A policy meaning, deliberately unlike #665's "NULL = unknown".
+- Stored on clinical_context (indexed) and on every per-type live + history row; returned per point by /clinical/patient/<g>/series and in /clinical/observation/<g> context. Any other value → 422 before ingest_raw or dedupe is written.
+- Migration c1d4e7f0a2b5 (additive, nullable, no backfill). 19 new tests (7 fail with the fix reverted); suite 616 passed.
+- Deployed 2026-11-21 to cdr1, cdr2 and cdr3 (overlay; image tags `*:pre_origin`; pg_dumps in ~/backups/predeploy/origin_cdr{1,2,3}/). Migrated from the old container first, then code. Live check per CDR inside a rolled-back transaction: patient_generated stored on context + row, absent stays NULL, a bad value rejected with nothing stored; ingest_raw count unchanged. 21 data_origin columns on each. Smoke --all green before and after.
