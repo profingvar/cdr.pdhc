@@ -2170,3 +2170,10 @@ Operator decision 2026-11-20 "Clip now": the #682 gate counted as met. Rosetta: 
 - Stored on clinical_context (indexed) and on every per-type live + history row; returned per point by /clinical/patient/<g>/series and in /clinical/observation/<g> context. Any other value → 422 before ingest_raw or dedupe is written.
 - Migration c1d4e7f0a2b5 (additive, nullable, no backfill). 19 new tests (7 fail with the fix reverted); suite 616 passed.
 - Deployed 2026-11-21 to cdr1, cdr2 and cdr3 (overlay; image tags `*:pre_origin`; pg_dumps in ~/backups/predeploy/origin_cdr{1,2,3}/). Migrated from the old container first, then code. Live check per CDR inside a rolled-back transaction: patient_generated stored on context + row, absent stays NULL, a bad value rejected with nothing stored; ingest_raw count unchanged. 21 data_origin columns on each. Smoke --all green before and after.
+
+## 2026-11-22 — #1024 eps rename code DEPLOYED
+
+- Overlay image on the running one, baseline-hashed first; rollback tag `:pre_eps`, replaced release files kept as `*.pre_eps.<ts>`.
+- Health 200 and file hashes verified in the container; sibling smoke green before (pre-rename smoke) and after.
+- No behaviour change until `EPS_*` is set in .env: operator script `/tmp/epsdep/eps_env.sh <group>` (refuses until https://eps.pdhc.se answers as eps.pdhc).
+- cdr2/cdr3 also received the pending `f1c398e` ($everything view of external_read.py), so all three CDRs now run the same external_read.py.
