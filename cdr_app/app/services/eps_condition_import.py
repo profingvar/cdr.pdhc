@@ -25,13 +25,30 @@ from dataclasses import dataclass, field
 
 from app.services.plan_client import build_canonical
 
-SOURCE = "ips.pdhc"
+#: The provenance label this import WRITES (``source`` column, ``meta.source``).
+#: #1024: ips.pdhc is being renamed eps.pdhc, so new writes say "eps.pdhc".
+#: Rows already written say "ips.pdhc" and are NOT rewritten (stored data
+#: values stay, epic #1015); both labels name the same source, see SOURCES.
+SOURCE = "eps.pdhc"
+LEGACY_SOURCE = "ips.pdhc"
+#: Every label that means "this import". A reader or filter asking "did this
+#: row come from the EPS import?" must match on this set, never on SOURCE.
+SOURCES = frozenset({SOURCE, LEGACY_SOURCE})
+#: The namespace string inside the row id (``cdr_guid_for``). FROZEN at the
+#: label the first run used: the id is the idempotency key ("already in this
+#: CDR"), so deriving it from SOURCE would give every EPS Condition a second id
+#: after the rename and a re-run would duplicate all of them (#1024).
+_ID_SOURCE = LEGACY_SOURCE
 REQUEST_ID = "eps-backfill-984"
 SNOMED = "http://snomed.info/sct"
 ABSENT_UNKNOWN = "http://hl7.org/fhir/uv/ips/CodeSystem/absent-unknown-uv-ips"
 MIGRATED_TAG = {"system": "https://cdr.pdhc.se/CodeSystem/provenance",
                 "code": "migrated-from-eps-984",
                 "display": "Migrated from the ips.pdhc EPS (#984)"}
+#: A stored IDENTIFIER namespace, not an address: nothing calls it. Kept as
+#: written by the first run (#1024) — changing it would give re-imported rows
+#: a different identifier from the rows already stored. Stays until a decision
+#: on stored identifiers is taken (epic #1015 keeps stored values).
 IPS_IDENTIFIER_SYSTEM = "https://ips.pdhc.se/fhir/Condition"
 _NS = uuid.UUID("5b0f2a8e-9840-4c6e-a1d4-984984984984")
 _KEEP = ("clinicalStatus", "verificationStatus", "category", "severity",
@@ -66,7 +83,12 @@ def contradicts(code: str, eps_display: str | None, termbank_display: str | None
 
 
 def cdr_guid_for(ips_resource_id: str) -> str:
-    return str(uuid.uuid5(_NS, f"{SOURCE}/Condition/{ips_resource_id}"))
+    return str(uuid.uuid5(_NS, f"{_ID_SOURCE}/Condition/{ips_resource_id}"))
+
+
+def is_eps_import_source(source: str | None) -> bool:
+    """True when a stored ``source`` label names this import, old name or new."""
+    return source in SOURCES
 
 
 def to_cdr_condition(ips_resource: dict, patient_guid: str,

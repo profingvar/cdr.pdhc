@@ -86,7 +86,7 @@ def test_apply_writes_one_row_per_eps_condition_with_the_patients_org(app, clien
         rows = live_model("Condition").query.all()
         assert {r.guid for r in rows} == {imp.cdr_guid_for(r["id"]) for r in twice}
         assert {r.patient_org_guid for r in rows} == {ORG}
-        assert {r.source for r in rows} == {"ips.pdhc"}
+        assert {r.source for r in rows} == {"eps.pdhc"}   # #1024: new writes
         assert {r.code_canonical for r in rows} == {"https://termbank.pdhc.se/CodeSystem/snomed/49436004"}
         # rerun: nothing written, nothing new, no no-op versions
         rep2 = imp.run(entries, apply=True)
@@ -166,3 +166,36 @@ def test_a_patient_with_only_CONDITIONS_here_is_at_home(app, client, fake_canon)
         assert rep.written == {"created": 1}, rep.lines()
         row = live_model("Condition").query.filter_by(guid=imp.cdr_guid_for(_eps()["id"])).one()
         assert row.patient_org_guid == ORG
+
+
+# ---------------------------------------------------------------- #1024 rename
+
+def test_1024_new_writes_say_eps_and_both_labels_name_this_import():
+    assert imp.SOURCE == "eps.pdhc"
+    assert imp.is_eps_import_source("eps.pdhc")
+    assert imp.is_eps_import_source("ips.pdhc"), "rows written before the rename"
+    assert not imp.is_eps_import_source("sim.pdhc")
+    assert not imp.is_eps_import_source(None)
+
+
+def test_1024_the_row_id_is_frozen_at_the_pre_rename_label():
+    """The id is the idempotency key. Pinned to the value the first run
+    (SOURCE == "ips.pdhc") produced, so the rename cannot move it."""
+    assert imp.cdr_guid_for("24814fdd-b769-4fb5-b24f-0dc90e678f08") == \
+        "c5361198-c8e3-56de-a10d-c791cfd06170"
+
+
+def test_1024_a_rerun_after_the_rename_does_not_duplicate_rows_written_as_ips(
+        app, client, fake_canon, monkeypatch):
+    _seed_patient(client)
+    entries = [{"patient_guid": P, "resource": _eps()}]
+    with app.app_context():
+        with monkeypatch.context() as m:     # the import as it ran before #1024
+            m.setattr(imp, "SOURCE", "ips.pdhc")
+            assert imp.run(entries, apply=True).written == {"created": 1}
+        rep = imp.run(entries, apply=True)    # after the rename
+        assert rep.written == {}
+        assert rep.skipped["already in this CDR"] == 1
+        rows = live_model("Condition").query.all()
+        assert len(rows) == 1
+        assert rows[0].source == "ips.pdhc", "stored rows are not rewritten"

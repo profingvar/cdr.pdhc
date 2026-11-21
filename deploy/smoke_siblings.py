@@ -270,9 +270,11 @@ def main(as_json: bool = False) -> int:
         cfg = current_app.config
 
         sso = (cfg.get("SSO_BASE_URL") or "").rstrip("/")
-        ips = (cfg.get("IPS_BASE_URL") or os.environ.get("IPS_BASE_URL", "")).rstrip("/")
+        # #1024: the same resolution the app uses — EPS_* first, IPS_* fallback.
+        from app.services.eps_settings import eps_setting
+        ips = eps_setting("BASE_URL", cfg).rstrip("/")
         plan = (cfg.get("PLAN_BASE_URL") or os.environ.get("PLAN_BASE_URL", "")).rstrip("/")
-        api_key = cfg.get("IPS_API_KEY") or os.environ.get("IPS_API_KEY", "")
+        api_key = eps_setting("API_KEY", cfg)
         cid = cfg.get("SSO_CLIENT_ID") or os.environ.get("SSO_CLIENT_ID", "")
         csec = cfg.get("SSO_CLIENT_SECRET") or os.environ.get("SSO_CLIENT_SECRET", "")
         # cdr1 does not set CDR_INSTANCE; cdr2/cdr3 do. Not a defect, but the
@@ -310,11 +312,11 @@ def main(as_json: bool = False) -> int:
                                f"without both, every bearer read 503s")
             return True, f"id {len(cid)} chars, secret {len(csec)} chars"
 
-        @check("config: IPS_BASE_URL is set")
+        @check("config: EPS_BASE_URL (or deprecated IPS_BASE_URL) is set")
         def _():
             return bool(ips), f"{ips or '(unset)'}  {_scheme_note(ips) if ips else ''}"
 
-        @check("config: IPS_API_KEY is set — the ONLY credential ips reads")
+        @check("config: EPS_API_KEY (or deprecated IPS_API_KEY) is set — the ONLY credential ips reads")
         def _():
             # ips's require_auth reads Authorization only; X-API-Key is ignored
             # outright, so a key in the wrong header is indistinguishable from
@@ -368,7 +370,7 @@ def main(as_json: bool = False) -> int:
         @check("ips: X-API-Key ALONE is refused (the #783 mistake)")
         def _():
             if not (ips and api_key):
-                return False, "IPS_BASE_URL or IPS_API_KEY not set"
+                return False, "EPS_/IPS_BASE_URL or EPS_/IPS_API_KEY not set"
             code, body = _probe(f"{ips}/api/v1/patients/{NOBODY}/clinics",
                                 headers={"X-API-Key": api_key})
             # ips reads Authorization only. A 200 here would mean it had started
@@ -379,7 +381,7 @@ def main(as_json: bool = False) -> int:
         @check("ips: Authorization: ApiKey IS accepted (credential, not path)")
         def _():
             if not (ips and api_key):
-                return False, "IPS_BASE_URL or IPS_API_KEY not set"
+                return False, "EPS_/IPS_BASE_URL or EPS_/IPS_API_KEY not set"
             code, body = _probe(f"{ips}/api/v1/patients/{NOBODY}/clinics",
                                 headers={"Authorization": f"ApiKey {api_key}"})
             if code == 404:
@@ -392,7 +394,7 @@ def main(as_json: bool = False) -> int:
         @check("ips: the analysis-filter path is LIVE (probed, never POSTed)")
         def _():
             if not ips:
-                return False, "IPS_BASE_URL not set"
+                return False, "EPS_BASE_URL (or IPS_BASE_URL) not set"
             # A GET on a POST-only route must be refused (405), not 404. This
             # smoke does not send the POST: a write shape stays unsent even
             # when the operation behind it is a read.
@@ -449,14 +451,14 @@ def main(as_json: bool = False) -> int:
                 _analysis_filter, IpsUnreachable,
             )
             if not ips:
-                return False, "IPS_BASE_URL not set"
+                return False, "EPS_BASE_URL (or IPS_BASE_URL) not set"
             try:
                 out = _analysis_filter([SMOKE_PATIENT], "research", [])
             except IpsUnreachable as e:
                 return False, (f"{str(e)[:70]} — the gate fails CLOSED, which is "
                                "safe but means a service-key caller reads "
                                "NOTHING. Since #730 this service holds its own "
-                               "IPS_API_KEY; check that before suspecting ips")
+                               "EPS_API_KEY (or IPS_API_KEY); check that before suspecting ips")
             if not isinstance(out, dict) or "allowed" not in out:
                 return False, f"unexpected analysis-filter shape: {out!r}"
             return True, (f"allowed={len(out['allowed'])} "

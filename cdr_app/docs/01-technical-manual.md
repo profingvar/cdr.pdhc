@@ -422,7 +422,8 @@ to read the body cross-origin and drive the real status/DB dots.
 | `GATEWAY_PDHC_SERVICE_KEY` / `TWOGATE_PDHC_SERVICE_KEY` / `SIM_PDHC_SERVICE_KEY` | Ingest service keys |
 | `DASHBOARD_PDHC_SERVICE_KEY` / `ANALYSE_PDHC_SERVICE_KEY` | Read/analyse service keys |
 | `PLAN_BASE_URL` | plan.pdhc — canonicalisation + concept display |
-| `IPS_BASE_URL` | ips.pdhc — consent analysis-filter (#422) |
+| `EPS_BASE_URL` / `EPS_API_KEY` | eps.pdhc (formerly ips.pdhc) — consent analysis-filter (#422) and the external-read summary; e.g. `https://eps.pdhc.se`. Read first (#1024) |
+| `IPS_BASE_URL` / `IPS_API_KEY` | **Deprecated** fallback, read only when the `EPS_*` name is empty. Both empty = not configured, no default (#833) |
 | `STRICT_CANONICALISATION` | Relax plan-validate on transient unreachability when `false` |
 | `CAMBIO_DELIVERY_ENABLED` | Activate the delivery worker (CDR 1) |
 | `CAMBIO_CLIENT_ID` / `CAMBIO_CLIENT_SECRET` / `CAMBIO_TOKEN_URL` / `CAMBIO_BASE_URL` / `CAMBIO_TENANT` / `CAMBIO_*_HSA_ID` | Cambio sandbox credentials |

@@ -43,6 +43,7 @@ from flask import Blueprint, current_app, g, jsonify, request
 
 from app import db
 from app.models.resources import live_model
+from app.services.eps_settings import eps_setting
 
 log = logging.getLogger(__name__)
 
@@ -214,8 +215,9 @@ def _with_days(points: list[dict]) -> tuple[list[dict], str | None]:
 
 
 def _ips_summary(patient_guid: str) -> tuple[dict | None, str]:
-    base = (current_app.config.get("IPS_BASE_URL") or os.environ.get("IPS_BASE_URL", "")).rstrip("/")
-    key = current_app.config.get("IPS_API_KEY") or os.environ.get("IPS_API_KEY", "")
+    # #1024: EPS_* first, IPS_* as the deprecated fallback (eps_settings).
+    base = eps_setting("BASE_URL").rstrip("/")
+    key = eps_setting("API_KEY")
     if not (base and key):
         return None, "not_configured"
     try:

@@ -108,8 +108,12 @@ def create_app(config_override=None):
     # step on transient unreachability so seeding doesn't deadlock if
     # plan.pdhc is briefly unreachable.
     app.config["PLAN_BASE_URL"] = os.environ.get("PLAN_BASE_URL", "")
-    # #422 — consent verdicts (analysis-filter) come from ips.pdhc.
-    app.config["IPS_BASE_URL"] = os.environ.get("IPS_BASE_URL", "")
+    # #422 — consent verdicts (analysis-filter) come from ips.pdhc, being
+    # renamed eps.pdhc (#1024): EPS_* is read first, IPS_* is the deprecated
+    # fallback, and both unset stays "" (no default, #833). The config KEYS
+    # keep their IPS_* names; only the environment names moved.
+    from .services.eps_settings import eps_env
+    app.config["IPS_BASE_URL"] = eps_env("BASE_URL")
     app.config["STRICT_CANONICALISATION"] = (
         os.environ.get("STRICT_CANONICALISATION", "true").lower() in ("true", "1", "yes")
     )

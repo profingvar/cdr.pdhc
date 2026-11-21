@@ -30,10 +30,10 @@ Failure mode is CLOSED: no ips verdict → 503, no patient data.
 """
 from __future__ import annotations
 
-import os
-
 import requests
 from flask import abort, current_app, g, request, session
+
+from app.services.eps_settings import eps_setting
 
 
 DEFAULT_TIMEOUT = 4.0
@@ -137,10 +137,11 @@ def declared_service_purpose() -> tuple[str, list] | None:
 
 
 def _analysis_filter(patient_guids: list, purpose: str, projects: list) -> dict:
-    base = (current_app.config.get("IPS_BASE_URL")
-            or os.environ.get("IPS_BASE_URL", "")).rstrip("/")
+    # #1024: EPS_BASE_URL first, IPS_BASE_URL the deprecated fallback.
+    base = eps_setting("BASE_URL").rstrip("/")
     if not base:
-        raise IpsUnreachable("IPS_BASE_URL not configured")
+        raise IpsUnreachable(
+            "EPS_BASE_URL (or the deprecated IPS_BASE_URL) not configured")
     from app.services.session_headers import outbound_session_headers
     headers = {"Accept": "application/json"}
     token = None
@@ -168,11 +169,11 @@ def _analysis_filter(patient_guids: list, purpose: str, projects: list) -> dict:
         # ApiKey. Missing key still fails closed — that is correct, and the
         # message below says which piece is absent rather than leaving a bare
         # 401 to be misread as an outage.
-        api_key = (current_app.config.get("IPS_API_KEY")
-                   or os.environ.get("IPS_API_KEY", ""))
+        api_key = eps_setting("API_KEY")
         if not api_key:
             raise IpsUnreachable(
-                "IPS_API_KEY is not configured, and this read has no operator "
+                "EPS_API_KEY (or the deprecated IPS_API_KEY) is not "
+                "configured, and this read has no operator "
                 "session, so ips cannot be asked for a consent verdict. This "
                 "is a missing credential on this service, NOT an ips outage.")
         headers["Authorization"] = f"ApiKey {api_key}"

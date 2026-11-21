@@ -847,3 +847,14 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 - cdr_app/app/__init__.py — registers the blueprint at /external/v1
 - cdr_app/app/auth.py — /external/ exempt from the SSO loader (the door authenticates the grant itself)
 - cdr_app/tests/test_external_read.py (NEW)
+
+## 2026-11-21 — #1024 EPS rename phase 3: EPS_* first, IPS_* fallback (NOT deployed)
+- cdr_app/app/services/eps_settings.py (NEW) — the one helper: EPS_<x> else IPS_<x> else "" (no default, #833)
+- cdr_app/app/__init__.py — config IPS_BASE_URL read via eps_env
+- cdr_app/app/api/external_read.py — _ips_summary address + key via eps_setting
+- cdr_app/app/services/analysis_consent.py — consent address + key via eps_setting; messages name EPS_* (and IPS_*)
+- cdr_app/app/services/eps_condition_import.py — SOURCE "eps.pdhc" for new writes; LEGACY_SOURCE/SOURCES/is_eps_import_source; row id frozen on "ips.pdhc" so a re-run cannot duplicate
+- cdr_app/.env.example — EPS_BASE_URL/EPS_API_KEY; IPS_* marked deprecated fallback
+- cdr_app/docs/01-technical-manual.md — env table
+- deploy/smoke_siblings.py — same resolution as the app (eps_setting); check titles name EPS_*
+- cdr_app/tests/test_eps_settings_1024.py (NEW), cdr_app/tests/test_eps_condition_import_984.py
