@@ -8,6 +8,7 @@ from app.models import (
     Activity, ClinicalContext, DedupeRegistry, AuditLog, CambioDeliveryLog,
 )
 from app.services.synthetic import synthetic_reason
+from app.services import data_origin as _origin
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,9 @@ _CONTEXT_KEYS = (
     # level like the rest; absent from this list it would be dropped from
     # every flat payload, which is the defect #820 existed to fix.
     "sim_run_id",
+    # #1014: patient-generated or (NULL) healthcare. Listed so a flat payload
+    # keeps it, for the same reason as sim_run_id above.
+    "data_origin",
 )
 
 #: Wire aliases still accepted during the #294 deprecation window.
@@ -92,6 +96,13 @@ class IngestPipeline:
             return {"status": "rejected", "errors": [
                 "openehr_input_retired: send fhir_resource (+ canonical); "
                 "openEHR is rendered by rosetta.pdhc"]}
+
+        # #1014: refuse an unknown origin BEFORE anything is stored or
+        # registered for dedupe, so a corrected resend is not a "duplicate".
+        _ctx0 = _clinical_context_from(body) or {}
+        _, origin_err = _origin.check(_ctx0.get("data_origin"))
+        if origin_err:
+            return {"status": "rejected", "errors": [origin_err]}
 
         # X2 (#423): capture the operator session forwarded on the ingest
         # request (X-Operator-Session-Id, set by gateway) so the async
@@ -218,6 +229,8 @@ class IngestPipeline:
                 # #821: the generation run, so a promoted cohort keeps its
                 # run identity and not only its writer.
                 sim_run_id=context.get("sim_run_id"),
+                # #1014: validated above; NULL = healthcare by policy.
+                data_origin=_origin.check(context.get("data_origin"))[0],
                 resolved_context_json=context.get("resolved_context_json"),
             ))
 
@@ -528,6 +541,9 @@ def build_live_observation_row(fhir_resource, *, patient_guid, source_service,
         # The generic FHIR write path (services/resource_writer.py) still
         # leaves this NULL on purpose; see the #809 response on the board.
         patient_org_guid=ctx.get("patient_org_guid"),
+        # #1014: the same value as clinical_context, on the row the series
+        # read uses. An invalid value never reaches here (refused in process).
+        data_origin=_origin.check(ctx.get("data_origin"))[0],
         code_canonical=code_canonical,
         effective_at=effective_at,
         raw_json=fhir_resource,

@@ -571,3 +571,42 @@ def test_series_without_a_transaction_filter_does_not_claim_one(client):
     h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
     body = client.get("/api/v1/clinical/patient/pat-a1/series", headers=h).get_json()
     assert "transaction_filter" not in body
+
+
+# --- #1014: data_origin reaches the professional ---------------------------
+
+def test_series_carries_data_origin_key_and_value(app, client):
+    """Present (null) on healthcare points, 'patient_generated' on PGD."""
+    Obs = live_model("Observation")
+    with app.app_context():
+        _db.session.add(Obs(
+            guid="o-pgd", patient_guid="pat-a1", org_guid="org-a",
+            code_canonical="sys|weight", value_unit="kg",
+            effective_at=_dt(25), status="final", raw_json={},
+            data_origin="patient_generated",
+        ))
+        _db.session.commit()
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    pts = client.get("/api/v1/clinical/patient/pat-a1/series?code=sys|weight",
+                     headers=h).get_json()["points"]
+    by = {p["observation_guid"]: p for p in pts}
+    assert all("data_origin" in p for p in pts)
+    assert by["o-pgd"]["data_origin"] == "patient_generated"
+    assert {by[g]["data_origin"] for g in ("o1", "o2", "o3")} == {None}
+
+
+def test_detail_carries_data_origin(app, client):
+    Obs = live_model("Observation")
+    with app.app_context():
+        _db.session.add(Obs(
+            guid="o-pgd2", patient_guid="pat-a1", org_guid="org-a",
+            code_canonical="sys|weight", value_unit="kg",
+            effective_at=_dt(26), status="final", raw_json={},
+            data_origin="patient_generated",
+        ))
+        _db.session.commit()
+    h = dict(BASE_H, **{"X-Org-Guids": "org-a"})
+    ctx = client.get(DETAIL.format("o-pgd2"), headers=h).get_json()["context"]
+    assert ctx["data_origin"] == "patient_generated"
+    ctx = client.get(DETAIL.format("o1"), headers=h).get_json()["context"]
+    assert "data_origin" in ctx and ctx["data_origin"] is None

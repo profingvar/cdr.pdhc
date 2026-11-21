@@ -174,6 +174,10 @@ class ClinicalContext(db.Model):
     # that column is THE join to provenance), so "every row from run X" stays
     # answerable.
     sim_run_id = db.Column(db.String(64), nullable=True, index=True)
+    # #1014: 'patient_generated', or NULL = produced/endorsed by healthcare.
+    # Opt-in by operator decision, so NULL here is a POLICY meaning, unlike
+    # author_org_guid's "unknown". See app/services/data_origin.py.
+    data_origin = db.Column(db.String(32), nullable=True, index=True)
 
     # --- bag-of-fields for unmapped extras + ops -----------------------------
     resolved_context_json = db.Column(db.JSON, nullable=True)

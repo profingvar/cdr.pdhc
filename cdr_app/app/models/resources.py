@@ -100,6 +100,10 @@ def _common_live_columns() -> list:
         # so a NOT NULL here would reject every ingest today. Tighten once #774
         # lands and the conformance test (#775) can prove it is always set.
         db.Column("patient_org_guid", db.String(36), nullable=True),
+        # #1014: 'patient_generated', or NULL = produced/endorsed by
+        # healthcare. On the row for the same reason as #769's four: the
+        # series read the professional sees takes no join.
+        db.Column("data_origin", db.String(32), nullable=True),
     ]
 
 
@@ -135,6 +139,7 @@ def _common_history_columns() -> list:
         db.Column("transaction_guid", db.String(36), nullable=True),
         db.Column("care_plan_guid", db.String(36), nullable=True),
         db.Column("patient_org_guid", db.String(36), nullable=True),
+        db.Column("data_origin", db.String(32), nullable=True),   # #1014
     ]
 
 

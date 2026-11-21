@@ -391,7 +391,7 @@ def patient_series(guid):
             Obs.code_canonical, Obs.effective_at, Obs.value_quantity,
             Obs.value_unit, Obs.value_string, Obs.org_guid,
             Obs.guid, Obs.transaction_guid, Obs.ingest_raw_guid,
-            Obs.care_plan_guid,
+            Obs.care_plan_guid, Obs.data_origin,
          )
          .filter(Obs.patient_guid == guid))
     q = _apply_org_scope(q, Obs)
@@ -477,7 +477,11 @@ def patient_series(guid):
         "transaction_guid": txn,
         "ingest_raw_guid": ingest,
         "care_plan_guid": cp,
-    } for code, at, vq, unit, vs, org, obs_guid, txn, ingest, cp in rows]
+        # #1014: 'patient_generated', or null = produced/endorsed by
+        # healthcare (opt-in by policy). Always present, like the others.
+        "data_origin": origin,
+    } for code, at, vq, unit, vs, org, obs_guid, txn, ingest, cp, origin
+        in rows]
     body = dict(patient_guid=guid, points=points, count=len(points),
                 order=order, limit=limit, truncated=truncated,
                 next_cursor=next_cursor)
@@ -520,6 +524,7 @@ _CONTEXT_FIELDS = (
     "contract_guid", "requesting_org_guid", "provider_org_guid",
     "author_org_guid", "care_plan_guid", "transaction_guid", "concept_guid",
     "requester_user_guid", "source_service", "sim_run_id",
+    "data_origin",     # #1014
 )
 
 
@@ -557,7 +562,7 @@ def observation_detail(guid):
     context = {k: (getattr(ctx, k, None) if ctx is not None else None)
                for k in _CONTEXT_FIELDS}
     # The row's own columns win over the side table: #769 put them there.
-    for k in ("transaction_guid", "care_plan_guid"):
+    for k in ("transaction_guid", "care_plan_guid", "data_origin"):
         if getattr(row, k, None):
             context[k] = getattr(row, k)
 
