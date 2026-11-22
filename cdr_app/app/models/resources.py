@@ -52,9 +52,10 @@ def _review_columns() -> list:
     """#1044: care's review of a patient-reported answer (contract s4.1).
 
     On the ORIGINAL (data_origin = 'patient_generated', sent with
-    review_required): `review_status` goes pending -> endorsed | rejected,
-    once, together with who decided and when. Those are the ONLY columns of
-    an original that ever change; its value, timestamps and origin stay as
+    review_required): `review_status` goes pending -> endorsed | rejected
+    (or, for a card answer, superseded by a newer version; #1049), once,
+    together with who decided and when. Those are the ONLY columns of an
+    original that ever change; its value, timestamps and origin stay as
     received (app/services/review.py does the flip with an explicit column
     list, and a test compares every other column before and after).
 
@@ -76,6 +77,13 @@ def _review_columns() -> list:
         db.Column("reviewed_by_name", db.String(255), nullable=True),
         db.Column("reviewed_at", db.DateTime(timezone=True), nullable=True),
         db.Column("endorses_guid", db.String(36), nullable=True),
+        # #1049 (contract s7.4): a "Mitt patientkort" answer belongs to ONE
+        # section of the card and ONE version of it (a uuid minted by the
+        # patient app per send). The version is decided as a whole; a newer
+        # pending version of the same section supersedes an older pending
+        # one. NULL on every v1 answer and on everything not from the card.
+        db.Column("card_section", db.String(16), nullable=True),
+        db.Column("card_version", db.String(36), nullable=True),
     ]
 
 
@@ -376,6 +384,8 @@ def _build_models():
         # derivation and the status route follow endorses_guid.
         live_cols.append(db.Index(f"ix_{table_name}_review_status", "review_status"))
         live_cols.append(db.Index(f"ix_{table_name}_endorses", "endorses_guid"))
+        # #1049: a card version is read and decided as a whole.
+        live_cols.append(db.Index(f"ix_{table_name}_card_version", "card_version"))
 
         live_cls = type(
             fhir_name,

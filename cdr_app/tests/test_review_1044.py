@@ -185,7 +185,10 @@ def test_migration_is_the_single_head_on_top_of_1014():
     cfg = Config()
     cfg.set_main_option("script_location", str(MIGRATIONS))
     script = ScriptDirectory.from_config(cfg)
-    assert script.get_heads() == ["d5e6f7a8b9c0"]
+    # #1049 put e6f7a8b9c0d1 on top; this one stays in the single line.
+    (head,) = script.get_heads()
+    assert "d5e6f7a8b9c0" in {r.revision for r in script.walk_revisions(
+        base="base", head=head)}
     mod = _migration()
     assert mod.down_revision == "c1d4e7f0a2b5"
     assert len(mod.revision) <= 32

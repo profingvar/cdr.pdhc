@@ -881,3 +881,14 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_review_1044.py (+8)
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/docs/00-user-manual.md, /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/docs/01-technical-manual.md
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/progress.md, /Users/martiningvar/T7_sidewinder/cdr.pdhc/changed_files.md
+
+## 2026-11-22 — #1049 patient card section versions (NOT deployed)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/models/resources.py — card_section, card_version + index
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/migrations/versions/e6f7a8b9c0d1_1049_card_version.py — NEW
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/ingest_pipeline.py — card fields, checks, supersede; Patient performer is not org_guid
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/review.py — check_card, supersede_older, approve_card, reject_card, card readers; export fields; approve split into _prepare/_endorse
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/reviews.py — card routes; v1 routes exclude/refuse card rows
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_card_1049.py — NEW; /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_review_1044.py (head assertion)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/docs/00-user-manual.md, /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/docs/01-technical-manual.md
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/progress.md, /Users/martiningvar/T7_sidewinder/cdr.pdhc/changed_files.md
+- /Users/martiningvar/T7_sidewinder/plans/patient_app_contract.md — Deviations [v2 cdr]

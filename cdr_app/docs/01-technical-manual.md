@@ -394,6 +394,65 @@ always present, null when not applicable.
 writes the JSON eps.pdhc derives from: endorsement rows only (`endorses_guid`
 set AND `data_origin` NULL). An original is never in it, whatever its status.
 
+### 4.4c The patient card: section versions (#1049)
+
+Contract `plans/patient_app_contract.md` s7.4. Clinical repository only, like
+§4.4b; an analysis CDR refuses a card answer with `review_not_available_here`
+(a card answer is always a reviewed one) and has none of the routes.
+
+**Storage.** Two more nullable columns beside the review columns, on every
+per-type live table and its history (migration `e6f7a8b9c0d1` on
+`d5e6f7a8b9c0`, additive, no backfill): `card_section` (`allergy`,
+`medication`, `history`, `vaccination`, `contact`) and `card_version` (the
+uuid the patient app mints for one send of one section). One index per live
+table, `ix_<t>_card_version`. `review_status` gains `superseded`.
+
+**Ingest.** gateway's s7.3 path sends, per answer, the s3.2 review context
+plus `clinical_context.card_section` + `card_version` (also accepted flat).
+No `service_request_guid`, care plan or contract is needed: nothing in the
+ingest requires one, and v2 has no care order. Named 422s, nothing stored:
+`incomplete_card` (one without the other), `invalid_card_section`,
+`invalid_card_version` (not a uuid; stored lower-case canonical),
+`card_requires_review` (no `review_required: true`), `card_section_mismatch`
+(the linkId's prefix is another section), `card_needs_patient_org` (no care
+unit: nobody could decide it), `card_version_conflict` (the version already
+belongs to another patient, section or care unit) and `card_version_closed`
+(the version is already decided or superseded). A performer of type
+`Patient` (or a `Patient/` reference) is never read as `org_guid`: the
+patient is not an organisation, so a card answer has `org_guid` NULL.
+
+**Latest wins.** Storing a card answer marks every PENDING row of the same
+patient and `card_section` with ANOTHER `card_version` as `superseded`
+(`reviewed_at` = this ingest's receipt time, no reviewer, no reason), in the
+ingest's own transaction. Rows of the same version, endorsed or rejected
+versions, other sections, other patients and v1 answers (no
+`card_section`) are untouched. "Older" means stored earlier; the CDR has no
+other ordering.
+
+**Routes** (same blueprint, same door and gate as §4.4b):
+
+| Route | Gate / result |
+|-------|---------------|
+| `GET /api/v1/reviews/cards?status=pending\|endorsed\|rejected\|superseded\|all[&patient_guid=][&limit=]` | Doctor/nurse sees versions at their units, admin all, else 403 `no_review_scope`. `{items: [{card_version, patient_guid, patient_org_guid, section, status, submitted_at, decided_at, reason, rows: [{guid, link_id, group, label, value, display}], endorsed: {card_version, reviewed_at, rows: [... + original_guid]} \| null, can_decide}], total, limit, truncated}`. `endorsed` is the version currently in force for that patient and section (endorsed last, by `reviewed_at`), with the values care ENDORSED, for the diff; null when none or when it is the item itself |
+| `POST /api/v1/reviews/cards/<card_version>/approve` body `{"amend": {"<row guid>": <value>}?, "note"?}` | Affiliated to the version's care unit as doctor/nurse. One endorsement row per row (§4.4b rules, `card_section`/`card_version` copied), all originals `endorsed`, one `review.card_approved` audit row, ONE transaction. 201 `{endorsed, amended, card_version, endorsement_guids, review_status}`. `amend` keys must be rows of the version (422 `unknown_row`); values validated as in §4.4b before any write; the same value is not an amendment |
+| `POST /api/v1/reviews/cards/<card_version>/reject` body `{"reason"}` | Same gate; all rows `rejected` with the reason, one `review.card_rejected` row. 422 `reason_required` |
+| `GET /api/v1/reviews/card/by-patient/<patient guid>` | `PATIENTAPP_PDHC_SERVICE_KEY` (§5.2b), GET only. `{sections: {<each of the five>: {latest: {card_version, submitted_at, status, reason, decided_at, answers: [{link_id, group, value, display}]} \| null, endorsed: {card_version, decided_at, answers} \| null}}}`. `latest` = the newest version that is not superseded. Answers are the patient's OWN (from the originals, never care's amended values); who decided is never returned; `reason` only when rejected; `decided_at` null while pending |
+
+A second decision is 409 `already_decided`; a superseded version is 409
+`superseded`. An unknown, malformed or out-of-scope version gets the same flat
+403 as §4.4b. Every flip is the conditional UPDATE of §4.4b, so a version
+superseded or decided between the check and the write leaves nothing written
+and answers 409 `superseded` / `already_decided`.
+
+**v1 alongside.** The per-row routes of §4.4b refuse a card answer with 409
+`card_row` (+ `card_version`), after the scope check, so a version is never
+decided piecemeal. `GET /api/v1/reviews` and `/by-patient/<g>` list only rows
+WITHOUT `card_version`; card answers are in the two card routes.
+
+**Export.** `flask export-eps-endorsements` rows also carry `card_section` and
+`card_version` (null for v1); `reviewed_at` was already there. eps keeps, per
+patient and section, only the rows of the latest endorsed version.
+
 ### 4.5 openEHR read
 
 `GET /api/v1/openehr/composition/<guid>` — a single by-GUID read of a legacy
@@ -449,7 +508,7 @@ A third, separate allowlist, in `app/api/reviews.py`:
 
 | Source service | Config / env var | Admits |
 |----------------|------------------|--------|
-| `patientapp.pdhc` | `PATIENTAPP_PDHC_SERVICE_KEY` | `GET /api/v1/reviews/by-patient/<patient guid>` and nothing else |
+| `patientapp.pdhc` | `PATIENTAPP_PDHC_SERVICE_KEY` | `GET /api/v1/reviews/by-patient/<patient guid>` and (#1049) `GET /api/v1/reviews/card/by-patient/<patient guid>`, nothing else |
 
 The name is in neither `KNOWN_SERVICES` nor `KNOWN_FHIR_SERVICES`, so the key
 is refused (401/403) on every other route, including the other review routes.

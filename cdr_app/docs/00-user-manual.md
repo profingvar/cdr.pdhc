@@ -137,6 +137,26 @@ Who can decide: a doctor or nurse affiliated to the patient's care unit. An
 administrator can see the queue, and cannot decide unless also affiliated.
 Every decision is logged. This exists on the clinical repository (CDR 1) only.
 
+### Mitt patientkort: one section at a time (#1049)
+
+In the patient app's "Mitt patientkort" the patient sends one section of the
+card at a time (for example all their allergies). The CDR keeps that send as
+one **version** of the section, and care decides the version as a whole:
+
+- **Approve**, optionally correcting single values. Every answer in the
+  version gets care's record, as above.
+- **Reject**, with a reason the patient sees.
+
+**The latest send wins.** If the patient sends the same section again before
+care has decided, the earlier, undecided version is set aside ("superseded")
+and only the new one waits for review. An approved version is never set
+aside: it stays the one in force until a newer version is approved.
+
+Care sees the proposed version next to the version currently approved, to see
+what was added, removed or changed. The patient sees, per section, their own
+latest answers with their status, and the answers that are approved; never
+care's corrected values and never who decided.
+
 ## 6. Good to know
 
 - **Nothing is overwritten.** The original payload is immutable; corrections

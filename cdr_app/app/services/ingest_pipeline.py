@@ -35,6 +35,9 @@ _CONTEXT_KEYS = (
     # Not stored on clinical_context (the status lives on the row, once);
     # listed so the flat payload shape carries it like the nested one.
     "review_required",
+    # #1049 (contract s7.4): the patient card's section and version. Stored
+    # on the ROW (beside the review columns), not on clinical_context.
+    "card_section", "card_version",
 )
 # #1044: `clinical_context.group` says which INSTANCE of a repeating group an
 # answer belongs to (one allergy = substance + reaction + severity, three
@@ -129,6 +132,14 @@ class IngestPipeline:
             review_err = _review_target_error(body)
         if not review_err:
             review_err = _review.check_group(_ctx0.get("group"))
+        # #1049: a card answer (card_section + card_version). Checked after
+        # the review flag, because a card answer is always a reviewed one;
+        # it needs no service_request_guid (v2 has no care order).
+        card_section = card_version = None
+        if not review_err:
+            card_section, card_version, review_err = _review.check_card(
+                _ctx0, review_required=review_required,
+                patient_guid=patient_guid)
         if review_err:
             return {"status": "rejected", "errors": [review_err]}
 
@@ -218,6 +229,15 @@ class IngestPipeline:
                     if live_row is not None and review_required:
                         # #1044: the ONLY place a row becomes pending.
                         live_row.review_status = _review.PENDING
+                    if live_row is not None and card_version:
+                        # #1049: latest wins. In THIS transaction, so the
+                        # new version and the retirement of the older
+                        # pending one commit together or not at all.
+                        live_row.card_section = card_section
+                        live_row.card_version = card_version
+                        _review.supersede_older(
+                            patient_guid=patient_guid, section=card_section,
+                            version=card_version, at=raw.received_at)
                     if live_row is not None:
                         db.session.add(live_row)
                         db.session.flush()
@@ -529,6 +549,11 @@ def build_live_observation_row(fhir_resource, *, patient_guid, source_service,
     # Provider org from FHIR Observation.performer[0] (gateway always populates this).
     org_guid = None
     for performer in (fhir_resource.get("performer") or []):
+        # #1049: a patient card answer's performer is the PATIENT. A patient
+        # is never an organisation, so its guid must not land in org_guid.
+        if (performer.get("type") == "Patient"
+                or str(performer.get("reference") or "").startswith("Patient/")):
+            continue
         ident = (performer.get("identifier") or {}).get("value")
         if ident:
             org_guid = ident
