@@ -892,3 +892,4 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/docs/00-user-manual.md, /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/docs/01-technical-manual.md
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/progress.md, /Users/martiningvar/T7_sidewinder/cdr.pdhc/changed_files.md
 - /Users/martiningvar/T7_sidewinder/plans/patient_app_contract.md — Deviations [v2 cdr]
+- 2026-11-22 #1049 e2e seam: /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/review.py (export reviewed_at always carries its UTC offset), /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_card_1049.py, /Users/martiningvar/T7_sidewinder/cdr.pdhc/progress.md, /Users/martiningvar/T7_sidewinder/cdr.pdhc/changed_files.md

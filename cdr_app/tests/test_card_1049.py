@@ -689,6 +689,25 @@ def test_the_export_carries_card_section_version_and_reviewed_at(client, app):
     assert {r["card_version"] for r in json.loads(res.output)} == {v}
 
 
+def test_the_exported_reviewed_at_carries_its_timezone(client, app):
+    """#1049 e2e seam: eps's derivation REFUSES a reviewed_at without an
+    offset (it orders card versions by it). The column is timestamptz and
+    every write is UTC, but a backend that drops tzinfo (SQLite, this suite)
+    handed the export a naive value, and the real eps aborted the run.
+    Through the real CLI, as eps receives it."""
+    import json
+    from datetime import datetime
+    patient = P()
+    v, _ = _version(client, patient, ("substance", "A"))
+    client.post(f"/api/v1/reviews/cards/{v}/approve", headers=_bearer("doctor-a"))
+    res = app.test_cli_runner().invoke(
+        args=["export-eps-endorsements", "--patient", patient])
+    assert res.exit_code == 0, res.output
+    (row,) = json.loads(res.output)
+    at = datetime.fromisoformat(row["reviewed_at"])
+    assert at.tzinfo is not None and at.utcoffset().total_seconds() == 0
+
+
 # ---------------------------------------------------------------------------
 # 9. The analysis repositories (cdr2/cdr3)
 # ---------------------------------------------------------------------------

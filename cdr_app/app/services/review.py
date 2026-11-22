@@ -106,6 +106,18 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _utc_iso(at):
+    """ISO 8601 WITH its offset (#1049). eps orders card versions by
+    reviewed_at and refuses a value without one. Every reviewed_at is written
+    as UTC (`_now`); a backend that drops tzinfo on read (SQLite) returns it
+    naive, so naive here means UTC."""
+    if at is None:
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return at.isoformat()
+
+
 # ---------------------------------------------------------------------------
 # Ingest side
 # ---------------------------------------------------------------------------
@@ -887,7 +899,7 @@ def export_endorsements(patient_guid: str | None = None) -> list[dict]:
             "endorses_guid": row.endorses_guid,
             "reviewed_by_user_guid": row.reviewed_by_user_guid,
             "reviewed_by_name": row.reviewed_by_name,
-            "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
+            "reviewed_at": _utc_iso(row.reviewed_at),
             # #1049 (s7.4): eps keeps, per patient and section, only the
             # rows of the latest endorsed card version (by reviewed_at).
             "card_section": row.card_section,
