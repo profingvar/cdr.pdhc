@@ -46,6 +46,7 @@ from app.services.plan_client import PlanClient
 from app.services.resource_writer import (
     EtagMismatch,
     IntegerPatientReference,
+    ReviewLocked,
     UnknownResourceType,
     WriteContext,
     write_resource,
@@ -227,6 +228,8 @@ def _write_one(fhir: dict, ctx: WriteContext, *,
         return _operation_outcome("error", "not-supported", str(e)), 422, {}
     except EtagMismatch as e:
         return _operation_outcome("error", "conflict", str(e)), 412, {}
+    except ReviewLocked as e:
+        return _operation_outcome("error", "conflict", str(e)), 409, {}
 
     headers = {
         "ETag": outcome.etag,

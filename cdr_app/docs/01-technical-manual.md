@@ -291,6 +291,90 @@ a patient may be treatable while having declined research. Series points
 carry `org_guid` so the dashboard can apply spärr (per-clinic blocks) on its
 side. Concept display names are resolved via plan.pdhc (#471), fail-open.
 
+### 4.4b Review of patient-reported answers, and the endorsement row (#1044)
+
+Clinical repository only: the routes are registered under the same role flag
+as §4.4 (`CDR_CLINICAL_READ`). An analysis CDR (cdr2, cdr3) has none of them
+and its ingest refuses `review_required` with `review_not_available_here`.
+
+**Storage.** Six nullable columns on every per-type live table and its history
+(migration `d5e6f7a8b9c0`, additive, no backfill, no rewrite):
+
+| Column | Meaning |
+|--------|---------|
+| `review_status` | NULL = not subject to review. `pending`, `endorsed`, `rejected`: set on the ORIGINAL |
+| `review_reason` | Text, required on a rejection |
+| `reviewed_by_user_guid`, `reviewed_by_name`, `reviewed_at` | Who decided (on the original); the author (on the endorsement row) |
+| `endorses_guid` | On the ENDORSEMENT row: the original's guid |
+
+`clinical_context` has no copy: the status changes once and has one home. The
+untouched submission is `ingest_raw.payload_json`, as for every ingest.
+
+**Ingest.** `review_required: true` in the clinical context (or at the top
+level) sets `review_status = 'pending'` on the live observation row. It
+requires `data_origin = 'patient_generated'`, a JSON boolean, and a FHIR
+Observation with an id that is not already stored; each failure is a named 422
+(`review_required_without_patient_generated`, `invalid_review_required`,
+`review_required_needs_observation`, `review_required_guid_exists`) and
+nothing is stored. Optional `clinical_context.group` (a string, at most 64
+characters) names the repeating-group instance the answer belongs to; it is
+kept in `clinical_context.resolved_context_json["group"]`.
+
+**Which organisation the gate scopes on: `observation.patient_org_guid`.** The
+organisation the patient was listed at in eps when the request was made
+(request.pdhc snapshots it, gateway forwards it as
+`clinical_context.patient_org_guid`). It is the column the FHIR read filter
+(#818) and the external read door scope on. `org_guid` is the PERFORMER (for a
+patient-app answer, the patient app's own organisation) and is not used. A row
+with no `patient_org_guid` can be listed by an admin and decided by nobody.
+
+**Routes** (mounted at `/api/v1/reviews`; the request loader does not
+authenticate them, the blueprint does):
+
+| Route | Auth | Gate |
+|-------|------|------|
+| `GET /api/v1/reviews?status=pending\|endorsed\|rejected\|all[&patient_guid=][&limit=]` | `Authorization: Bearer <operator's SSO token>`, validated with sso on every request | `user_type = professional`, no forced password change. Sees originals whose `patient_org_guid` is a care unit where the caller's affiliation has role `doctor` or `nurse`. SU admin sees all. Anyone else: 403 `no_review_scope` |
+| `POST /api/v1/reviews/<guid>/approve` body `{"value": <optional amended>, "note": "<optional>"}` | same | Affiliated to the row's `patient_org_guid` as `doctor` or `nurse`. Admin alone is not enough. 201 `{endorsement_guid, amended}` |
+| `POST /api/v1/reviews/<guid>/reject` body `{"reason": "<required>"}` | same | Same gate. 422 `reason_required` without a reason. 200 |
+| `GET /api/v1/reviews/by-patient/<patient guid>` | `X-Source-Service: patientapp.pdhc` + `X-Service-Key` (§5.2b) | That key only. 401 otherwise |
+
+A decision on a guid that does not exist, on a row that is not a review item,
+or on a row outside the caller's care units gets the same 403 body. A second
+decision is 409 `already_decided`, told only to a caller inside the scope. No
+service key opens the three professional routes.
+
+**Approval** is one transaction: a conditional UPDATE flips the original
+(`WHERE review_status = 'pending'`, so two simultaneous decisions cannot both
+win), then the endorsement is written: a new `observation` row with a new
+guid, the original's patient, concept, clinical time, transaction and patient
+organisation, the original's value or the amended one, `data_origin` NULL,
+`endorses_guid` = the original, `org_guid` = the endorsing care unit,
+`reviewed_by_*` = the professional, `source = cdr.pdhc/review`; plus its own
+`ingest_raw` and `clinical_context` rows (`author_org_guid` = the care unit).
+Its FHIR carries `derivedFrom` -> the original, the unit and the professional
+as `performer`, and no patient-generated tag. The flip writes only
+`review_status`, `review_reason`, `reviewed_by_user_guid`, `reviewed_by_name`
+and `reviewed_at`; the original's value, timestamps (including `updated_at`),
+origin and raw FHIR are unchanged. An amended value must be of the original's
+kind (number, text, yes/no, date) within the column limits, else 422.
+
+The generic FHIR write path refuses (409) to rewrite an original or an
+endorsement.
+
+**Audit.** `audit_log`: `review.approved` and `review.rejected` in the same
+transaction as the decision (actor, patient, original, endorsement, care unit,
+role; no clinical value), `review.denied` for a refused decision (no patient).
+The list and the patient-status read write `cdr_read_audit`.
+
+**Readers.** `/clinical/patient/<g>/series` points and
+`/clinical/observation/<g>` (`review` block) carry `review_status`,
+`endorses_guid`, `reviewed_by_user_guid`, `reviewed_by_name`, `reviewed_at`,
+always present, null when not applicable.
+
+**EPS derivation.** `flask export-eps-endorsements [--patient GUID] [--out FILE]`
+writes the JSON eps.pdhc derives from: endorsement rows only (`endorses_guid`
+set AND `data_origin` NULL). An original is never in it, whatever its status.
+
 ### 4.5 openEHR read
 
 `GET /api/v1/openehr/composition/<guid>` — a single by-GUID read of a legacy
@@ -339,6 +423,18 @@ a **read** path; every listed service may still **write**. A valid
 service-key request gets a synthetic `is_su_admin` blob tagged with
 `service_source`, which downstream code uses to distinguish machine writes
 from human operators.
+
+### 5.2b The patient app's one route — `PATIENT_STATUS_SERVICES` (#1044)
+
+A third, separate allowlist, in `app/api/reviews.py`:
+
+| Source service | Config / env var | Admits |
+|----------------|------------------|--------|
+| `patientapp.pdhc` | `PATIENTAPP_PDHC_SERVICE_KEY` | `GET /api/v1/reviews/by-patient/<patient guid>` and nothing else |
+
+The name is in neither `KNOWN_SERVICES` nor `KNOWN_FHIR_SERVICES`, so the key
+is refused (401/403) on every other route, including the other review routes.
+An unset key admits nobody.
 
 ### 5.3 SSO (human operators)
 
@@ -421,6 +517,7 @@ to read the body cross-origin and drive the real status/DB dots.
 | `CDR_READ_LOCKDOWN` | `false` on CDR 1, `true` on CDR 2–5 (#293) |
 | `GATEWAY_PDHC_SERVICE_KEY` / `TWOGATE_PDHC_SERVICE_KEY` / `SIM_PDHC_SERVICE_KEY` | Ingest service keys |
 | `DASHBOARD_PDHC_SERVICE_KEY` / `ANALYSE_PDHC_SERVICE_KEY` | Read/analyse service keys |
+| `PATIENTAPP_PDHC_SERVICE_KEY` | patientapp.pdhc's key for the one patient-status route (#1044, §5.2b). Clinical repository only; empty admits nobody |
 | `PLAN_BASE_URL` | plan.pdhc — canonicalisation + concept display |
 | `EPS_BASE_URL` / `EPS_API_KEY` | eps.pdhc (formerly ips.pdhc) — consent analysis-filter (#422) and the external-read summary; e.g. `https://eps.pdhc.se`. Read first (#1024) |
 | `IPS_BASE_URL` / `IPS_API_KEY` | **Deprecated** fallback, read only when the `EPS_*` name is empty. Both empty = not configured, no default (#833) |

@@ -34,7 +34,10 @@ def test_the_rest_of_the_surface_is_the_same_either_way():
     """Only the clinical routes differ between the two roles."""
     on = _rules(create_app(dict(BASE)))
     off = _rules(create_app(dict(BASE, CDR_CLINICAL_READ=False)))
-    assert on - off == {r for r in on if r.startswith("/api/v1/clinical/")}
+    # #1044: the review queue is care delivery too and follows the same flag.
+    assert on - off == {r for r in on if r.startswith("/api/v1/clinical/")
+                        or r.startswith("/api/v1/reviews")}
+    assert {r for r in on if r.startswith("/api/v1/reviews")}
     assert off <= on
 
 

@@ -392,6 +392,9 @@ def patient_series(guid):
             Obs.value_unit, Obs.value_string, Obs.org_guid,
             Obs.guid, Obs.transaction_guid, Obs.ingest_raw_guid,
             Obs.care_plan_guid, Obs.data_origin,
+            # #1044: original or endorsement, and who endorsed.
+            Obs.review_status, Obs.endorses_guid, Obs.reviewed_by_user_guid,
+            Obs.reviewed_by_name, Obs.reviewed_at,
          )
          .filter(Obs.patient_guid == guid))
     q = _apply_org_scope(q, Obs)
@@ -480,8 +483,18 @@ def patient_series(guid):
         # #1014: 'patient_generated', or null = produced/endorsed by
         # healthcare (opt-in by policy). Always present, like the others.
         "data_origin": origin,
-    } for code, at, vq, unit, vs, org, obs_guid, txn, ingest, cp, origin
-        in rows]
+        # #1044. On a patient-reported ORIGINAL: review_status is pending /
+        # endorsed / rejected and reviewed_by_* names who decided. On an
+        # ENDORSEMENT (care's row, data_origin null): endorses_guid is the
+        # original and reviewed_by_* is its author. All null on every other
+        # row. Always present, so "absent" never has to be read as "null".
+        "review_status": rstatus,
+        "endorses_guid": endorses,
+        "reviewed_by_user_guid": rby,
+        "reviewed_by_name": rname,
+        "reviewed_at": _iso(rat),
+    } for (code, at, vq, unit, vs, org, obs_guid, txn, ingest, cp, origin,
+           rstatus, endorses, rby, rname, rat) in rows]
     body = dict(patient_guid=guid, points=points, count=len(points),
                 order=order, limit=limit, truncated=truncated,
                 next_cursor=next_cursor)
@@ -591,6 +604,15 @@ def observation_detail(guid):
         "org_guid": row.org_guid,
         "ingest_raw_guid": row.ingest_raw_guid,
         "context": context,
+        # #1044: this row's place in a review, every key present or null.
+        "review": {
+            "review_status": row.review_status,
+            "review_reason": row.review_reason,
+            "endorses_guid": row.endorses_guid,
+            "reviewed_by_user_guid": row.reviewed_by_user_guid,
+            "reviewed_by_name": row.reviewed_by_name,
+            "reviewed_at": _iso(row.reviewed_at),
+        },
         "context_found": ctx is not None,
         # Which values came from the FHIR resource rather than the structured
         # columns — a reader auditing provenance should know the difference.

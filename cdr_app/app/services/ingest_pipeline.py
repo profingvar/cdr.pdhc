@@ -1,7 +1,7 @@
 """Ingest processing pipeline — raw → standard → canonical → delivery."""
 import logging
 from datetime import datetime, timezone
-from flask import request as flask_request
+from flask import current_app, request as flask_request
 from app import db
 from app.models import (
     IngestRaw, FhirResource, HealthObservation,
@@ -9,6 +9,7 @@ from app.models import (
 )
 from app.services.synthetic import synthetic_reason
 from app.services import data_origin as _origin
+from app.services import review as _review
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,17 @@ _CONTEXT_KEYS = (
     # #1014: patient-generated or (NULL) healthcare. Listed so a flat payload
     # keeps it, for the same reason as sim_run_id above.
     "data_origin",
+    # #1044: `true` = this patient-reported answer must be reviewed by care.
+    # Not stored on clinical_context (the status lives on the row, once);
+    # listed so the flat payload shape carries it like the nested one.
+    "review_required",
 )
+# #1044: `clinical_context.group` says which INSTANCE of a repeating group an
+# answer belongs to (one allergy = substance + reaction + severity, three
+# rows): any stable string per instance, kept in
+# resolved_context_json["group"]. Honoured in the NESTED context only and
+# deliberately not listed above: `group` is too ordinary a word to start
+# reading off the top level of every producer's payload.
 
 #: Wire aliases still accepted during the #294 deprecation window.
 _CONTEXT_ALIASES = {
@@ -103,6 +114,23 @@ class IngestPipeline:
         _, origin_err = _origin.check(_ctx0.get("data_origin"))
         if origin_err:
             return {"status": "rejected", "errors": [origin_err]}
+
+        # #1044: `review_required` (contract s3.2), refused by name before
+        # anything is stored, for the same reason as the origin above. Read
+        # from the context AND the top level: a nested context wins over flat
+        # keys in `_clinical_context_from`, and a flag silently dropped there
+        # would store the answer as never needing review.
+        _flag = _ctx0.get("review_required")
+        if _flag is None:
+            _flag = body.get("review_required")
+        review_required, review_err = _review.check_required(
+            _flag, _ctx0.get("data_origin"))
+        if not review_err and review_required:
+            review_err = _review_target_error(body)
+        if not review_err:
+            review_err = _review.check_group(_ctx0.get("group"))
+        if review_err:
+            return {"status": "rejected", "errors": [review_err]}
 
         # X2 (#423): capture the operator session forwarded on the ingest
         # request (X-Operator-Session-Id, set by gateway) so the async
@@ -187,6 +215,9 @@ class IngestPipeline:
                         received_at=raw.received_at,
                         context=context,
                     )
+                    if live_row is not None and review_required:
+                        # #1044: the ONLY place a row becomes pending.
+                        live_row.review_status = _review.PENDING
                     if live_row is not None:
                         db.session.add(live_row)
                         db.session.flush()
@@ -231,7 +262,8 @@ class IngestPipeline:
                 sim_run_id=context.get("sim_run_id"),
                 # #1014: validated above; NULL = healthcare by policy.
                 data_origin=_origin.check(context.get("data_origin"))[0],
-                resolved_context_json=context.get("resolved_context_json"),
+                resolved_context_json=_review.with_group(
+                    context.get("resolved_context_json"), context.get("group")),
             ))
 
         # 6. Dedupe registry
@@ -326,6 +358,30 @@ class IngestPipeline:
             "status": "accepted",
             "ingest_raw_guid": raw.guid,
         }
+
+
+def _review_target_error(body) -> str | None:
+    """Why this ingest cannot be put up for review, or None (#1044).
+
+    The pending status lives on the live observation row, so an ingest that
+    would not create one cannot be reviewed, and accepting it anyway would
+    store a patient answer that silently never reaches the queue.
+    """
+    if not current_app.config.get("CDR_CLINICAL_READ", True):
+        return ("review_not_available_here: this repository has no review "
+                "surface (CDR_CLINICAL_READ=false); send answers that need "
+                "review to the clinical repository")
+    fhir = body.get("fhir_resource")
+    if (not isinstance(fhir, dict) or fhir.get("resourceType") != "Observation"
+            or not fhir.get("id")):
+        return ("review_required_needs_observation: review_required applies "
+                "to a FHIR Observation with an id")
+    from app.models.resources import live_model
+    LiveObs = live_model("Observation")
+    if LiveObs.query.filter_by(guid=fhir["id"]).first() is not None:
+        return ("review_required_guid_exists: an observation with this id is "
+                "already stored; a new answer needs a new id")
+    return None
 
 
 def _extract_primary_code_hint(fhir_resource):

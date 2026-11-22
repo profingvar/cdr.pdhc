@@ -107,6 +107,31 @@ service, not here.)*
 
 ---
 
+## 5b. Patient-reported answers and care's approval
+
+Patients can report parts of their own summary in the patient app: allergies,
+medication, earlier illnesses, vaccinations and contact persons. The CDR keeps
+each answer exactly as the patient sent it, marked as patient-generated and
+**waiting for review**.
+
+A doctor or nurse at a care unit where the patient is listed then decides on
+each answer, in the dashboard's queue "EPS att granska":
+
+- **Approve.** A new record is written in care's name. It points at the
+  patient's answer and names who approved it and when.
+- **Change and approve.** The same, with the corrected value in care's record.
+  The patient's own answer is not changed.
+- **Reject.** A reason is required. The patient sees it in the app.
+
+Each answer is decided once. The patient's original is never altered, so it
+stays readable what the patient said and what care confirmed. Only approved
+records can be used for the patient summary (EPS), and the person who approved
+is named there.
+
+Who can decide: a doctor or nurse affiliated to the patient's care unit. An
+administrator can see the queue, and cannot decide unless also affiliated.
+Every decision is logged. This exists on the clinical repository (CDR 1) only.
+
 ## 6. Good to know
 
 - **Nothing is overwritten.** The original payload is immutable; corrections

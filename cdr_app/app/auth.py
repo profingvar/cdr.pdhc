@@ -133,6 +133,12 @@ def _public_path(path: str) -> bool:
         # read grant itself (app/api/external_read.py, validated by sso on
         # every request). No SSO session or service key reaches it.
         or path.startswith("/external/")
+        # #1044: the review surface authenticates itself too
+        # (app/api/reviews.py): the operator's SSO bearer on the professional
+        # routes, the patient app's own key on the one status route. This
+        # loader's session cookie + analysis-phase gate answers neither.
+        or path == "/api/v1/reviews"
+        or path.startswith("/api/v1/reviews/")
     )
 
 
@@ -625,6 +631,23 @@ def register_cli(app):
             click.echo(line)
         if rep.refused:
             raise SystemExit(2)
+
+    @app.cli.command("export-eps-endorsements")
+    @click.option("--patient", default=None, help="One patient guid.")
+    @click.option("--out", default=None, help="Write here instead of stdout.")
+    def export_eps_endorsements(patient, out):
+        """#1044: the endorsed patient-reported answers, as JSON, for the EPS
+        derivation in eps.pdhc. Endorsement rows only; read-only."""
+        import json as _json
+        from app.services.review import export_endorsements
+        rows = export_endorsements(patient)
+        text = _json.dumps(rows, ensure_ascii=False, indent=1, default=str)
+        if out:
+            with open(out, "w") as fh:
+                fh.write(text)
+            click.echo(f"{len(rows)} endorsement row(s) -> {out}")
+        else:
+            click.echo(text)
 
     @app.cli.command("backfill-live-observations")
     @click.option("--dry-run", is_flag=True,

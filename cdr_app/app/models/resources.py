@@ -48,6 +48,37 @@ def _now() -> datetime:
 # Common column factories — used by both live and history tables
 # ---------------------------------------------------------------------------
 
+def _review_columns() -> list:
+    """#1044: care's review of a patient-reported answer (contract s4.1).
+
+    On the ORIGINAL (data_origin = 'patient_generated', sent with
+    review_required): `review_status` goes pending -> endorsed | rejected,
+    once, together with who decided and when. Those are the ONLY columns of
+    an original that ever change; its value, timestamps and origin stay as
+    received (app/services/review.py does the flip with an explicit column
+    list, and a test compares every other column before and after).
+
+    On the ENDORSEMENT row (a NEW row written by care, data_origin NULL):
+    `endorses_guid` = the original's guid, and reviewed_by_* / reviewed_at
+    name its author, so a reader of either row needs no join.
+
+    NULL review_status = not subject to review, which is every row written
+    before this existed. All nullable, no default: adding them rewrites
+    nothing. The status has ONE home, this row; clinical_context does not
+    carry a copy that could drift from it.
+
+    Fresh Column objects per call: a Column belongs to one table.
+    """
+    return [
+        db.Column("review_status", db.String(16), nullable=True),
+        db.Column("review_reason", db.Text, nullable=True),
+        db.Column("reviewed_by_user_guid", db.String(36), nullable=True),
+        db.Column("reviewed_by_name", db.String(255), nullable=True),
+        db.Column("reviewed_at", db.DateTime(timezone=True), nullable=True),
+        db.Column("endorses_guid", db.String(36), nullable=True),
+    ]
+
+
 def _common_live_columns() -> list:
     """Columns shared by every live FHIR per-type table.
 
@@ -104,7 +135,7 @@ def _common_live_columns() -> list:
         # healthcare. On the row for the same reason as #769's four: the
         # series read the professional sees takes no join.
         db.Column("data_origin", db.String(32), nullable=True),
-    ]
+    ] + _review_columns()
 
 
 def _common_history_columns() -> list:
@@ -140,7 +171,7 @@ def _common_history_columns() -> list:
         db.Column("care_plan_guid", db.String(36), nullable=True),
         db.Column("patient_org_guid", db.String(36), nullable=True),
         db.Column("data_origin", db.String(32), nullable=True),   # #1014
-    ]
+    ] + _review_columns()                                         # #1044
 
 
 # Resource types managed by this module. Each entry produces:
@@ -341,6 +372,10 @@ def _build_models():
         # what Rule 24 scoping will filter on once #768 repoints it.
         live_cols.append(db.Index(f"ix_{table_name}_ingest_raw", "ingest_raw_guid"))
         live_cols.append(db.Index(f"ix_{table_name}_patient_org", "patient_org_guid"))
+        # #1044: the review queue reads "pending, in my care units"; the
+        # derivation and the status route follow endorses_guid.
+        live_cols.append(db.Index(f"ix_{table_name}_review_status", "review_status"))
+        live_cols.append(db.Index(f"ix_{table_name}_endorses", "endorses_guid"))
 
         live_cls = type(
             fhir_name,

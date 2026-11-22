@@ -80,6 +80,12 @@ def create_app(config_override=None):
     # #541 — analyse.pdhc's read identity (extracted analyse-layer reader).
     app.config["ANALYSE_PDHC_SERVICE_KEY"] = os.environ.get("ANALYSE_PDHC_SERVICE_KEY", "")
 
+    # #1044: the patient app's key for ONE route, GET
+    # /api/v1/reviews/by-patient/<guid> (app/api/reviews.py owns the
+    # allowlist). Deliberately NOT a KNOWN_FHIR_SERVICES entry: that would
+    # grant the whole FHIR surface. Empty admits nobody.
+    app.config["PATIENTAPP_PDHC_SERVICE_KEY"] = os.environ.get("PATIENTAPP_PDHC_SERVICE_KEY", "")
+
     # Read-side lockdown (#293). When true, only X-Source-Service:
     # dashboard.pdhc is permitted on read endpoints. Ingest paths are
     # public and unaffected. cdr1 (cdr.pdhc.se) deliberately ships
@@ -150,6 +156,12 @@ def create_app(config_override=None):
     # Registered on the clinical repository only (#944, see CDR_CLINICAL_READ).
     if app.config["CDR_CLINICAL_READ"]:
         app.register_blueprint(clinical_read_bp, url_prefix="/api/v1/clinical")
+        # #1044: the review queue for patient-reported EPS answers is care
+        # delivery too, so it follows the same role flag. An analysis CDR has
+        # no review routes, and its ingest refuses `review_required` by name
+        # (ingest_pipeline): a pending answer nobody can review is a dead end.
+        from .api.reviews import bp as reviews_bp
+        app.register_blueprint(reviews_bp, url_prefix="/api/v1/reviews")
 
     # #984: the read log takes refusals made upstream (icd11), and a
     # break-glass read whose log write failed is withheld (after_request).

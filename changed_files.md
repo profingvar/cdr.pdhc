@@ -858,3 +858,18 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 - cdr_app/docs/01-technical-manual.md — env table
 - deploy/smoke_siblings.py — same resolution as the app (eps_setting); check titles name EPS_*
 - cdr_app/tests/test_eps_settings_1024.py (NEW), cdr_app/tests/test_eps_condition_import_984.py
+
+## 2026-11-22 — #1044 review of patient-reported answers (NOT deployed)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/review.py — NEW: gate, flip, endorsement, export
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/reviews.py — NEW: /api/v1/reviews (list, approve, reject, by-patient)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/migrations/versions/d5e6f7a8b9c0_1044_review.py — NEW
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/models/resources.py — six review columns + two indexes on live, columns on history
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/ingest_pipeline.py — review_required, group
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/services/resource_writer.py, /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_write.py — ReviewLocked (409)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/clinical_read.py — review fields on series + detail
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/auth.py — /api/v1/reviews authenticates itself; `export-eps-endorsements` CLI
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/__init__.py — PATIENTAPP_PDHC_SERVICE_KEY, blueprint under CDR_CLINICAL_READ
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/.env.example — PATIENTAPP_PDHC_SERVICE_KEY (no value)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_review_1044.py — NEW; /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_clinical_read_role_944.py
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/docs/00-user-manual.md, /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/docs/01-technical-manual.md (#1046)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/progress.md, /Users/martiningvar/T7_sidewinder/cdr.pdhc/changed_files.md

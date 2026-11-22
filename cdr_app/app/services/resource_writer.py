@@ -75,6 +75,13 @@ class EtagMismatch(WriterError):
     """
 
 
+class ReviewLocked(WriterError):
+    """#1044: the row is a patient's reviewed answer, or care's endorsement
+    of one. Neither is rewritten through the generic FHIR write path: the
+    original must stay as the patient sent it, and an endorsement is what a
+    named professional attested. HTTP layer turns this into 409."""
+
+
 class IntegerPatientReference(WriterError):
     """Rule 18 — patient references must be GUIDs, not integers."""
 
@@ -432,6 +439,12 @@ def write_resource(
                        patient_guid=patient_guid,
                        effective_at=effective_at,
                        code_canonical=code_canonical)
+
+    if (getattr(existing, "review_status", None) is not None
+            or getattr(existing, "endorses_guid", None) is not None):
+        raise ReviewLocked(
+            f"{rt}/{existing.guid} is part of a review (#1044) and cannot be "
+            f"rewritten; decide it through /api/v1/reviews")
 
     # Update path: copy live row to history, bump version_id, update.
     return _update_with_history(
