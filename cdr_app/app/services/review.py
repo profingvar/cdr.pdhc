@@ -217,9 +217,14 @@ def value_of(raw: dict):
 
 def summary_of(raw: dict) -> str | None:
     """The answer as one short text, for the patient's own status list."""
-    _key, value, unit = value_of(raw)
+    key, value, unit = value_of(raw)
     if value is None:
         return None
+    if key == "valueCodeableConcept":
+        # #1044: the patient reads words, not the stored code (`has`, `none`).
+        v = raw.get(key) if isinstance(raw.get(key), dict) else {}
+        coding = (v.get("coding") or [{}])[0] or {}
+        return str(coding.get("display") or v.get("text") or value)
     if isinstance(value, bool):
         return "Ja" if value else "Nej"
     return f"{value} {unit}" if unit else str(value)

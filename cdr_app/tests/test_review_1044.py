@@ -104,7 +104,9 @@ def _body(*, unit=UNIT_A, patient=None, link="allergy.substance", value="Penicil
                               "code": "patient-generated"}]},
             "extension": [{"url": "urn:pdhc:fhir:extension:data-origin",
                            "valueCode": "patient_generated"}]}
-    if isinstance(value, bool):
+    if value is None:
+        pass
+    elif isinstance(value, bool):
         fhir["valueBoolean"] = value
     elif isinstance(value, (int, float)):
         fhir["valueQuantity"] = {"value": value, "unit": "st"}
@@ -753,6 +755,22 @@ def test_status_route_shows_the_patient_what_became_of_their_answers(client):
 
     other = client.get(f"/api/v1/reviews/by-patient/{uuid.uuid4()}", headers=PATIENTAPP)
     assert other.status_code == 200 and other.get_json() == {"items": []}
+
+
+def test_status_route_shows_a_coded_answer_in_words(client):
+    """#1044: the stored value of a coded answer is its code (`has`); the
+    patient's status list shows the display that came with it."""
+    patient = str(uuid.uuid4())
+    coded, _ = _ingest(client, patient=patient, link="allergy.status",
+                       value=None, valueCodeableConcept={
+                           "coding": [{"code": "has", "display": "Ja, jag har allergier"}],
+                           "text": "Ja, jag har allergier"})
+    bare, _ = _ingest(client, patient=patient, link="vaccination.status",
+                      value=None, valueCodeableConcept={"coding": [{"code": "none"}]})
+    r = client.get(f"/api/v1/reviews/by-patient/{patient}", headers=PATIENTAPP)
+    items = {i["original_guid"]: i["summary"] for i in r.get_json()["items"]}
+    assert items[coded] == "Ja, jag har allergier"
+    assert items[bare] == "none"        # no display sent: the code, never empty
 
 
 def test_the_right_key_opens_NO_other_route(client):
