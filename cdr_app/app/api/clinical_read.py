@@ -41,6 +41,7 @@ from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy import and_, func, or_
 
 from app import db
+from app.auth import patient_scope_clause
 from app.models.resources import live_model
 from app.services.plan_client import PlanClient
 
@@ -101,13 +102,35 @@ def _scope_orgs():
 
 def _apply_org_scope(query, Model):
     """Apply care-delivery org scoping. Returns None when a non-admin caller
-    has no orgs (Rule 24 → sees nothing)."""
+    has no orgs (Rule 24 → sees nothing).
+
+    Two clauses, OR-ed (#1044):
+
+    1. THE RULE: the patient is listed at one of the caller's care units,
+       `patient_org_guid` (auth.patient_scope_clause, the same predicate
+       fhir_read uses since #818). `X-Org-Guids` carries the operator's
+       affiliation care units, so this is the question it was always asking.
+
+    2. LEGACY, kept so nothing visible before this change disappears: the
+       PERFORMER is one of those units (`org_guid`). This was the ONLY clause
+       until #1044: #818 repointed fhir_read and did not reach this module,
+       which scopes for itself. On its own it hid every patient-app answer
+       from the treating clinician, because the performer of such a row is
+       the patient app's own organisation. It can still show a row whose
+       patient is listed elsewhere; that is unchanged, not new. Retire it
+       once it is measured to match nothing the first clause does not:
+
+         select count(*) from observation
+          where org_guid = any(:units)
+            and (patient_org_guid is null or patient_org_guid <> all(:units));
+    """
     is_admin, orgs = _scope_orgs()
     if is_admin:
         return query
     if not orgs:
         return None
-    return query.filter(Model.org_guid.in_(orgs))
+    return query.filter(or_(patient_scope_clause(Model, orgs),
+                            Model.org_guid.in_(orgs)))
 
 
 def _limit() -> int:

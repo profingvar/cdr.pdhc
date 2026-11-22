@@ -978,3 +978,173 @@ def test_an_unusable_group_is_refused_by_name(client, group):
     r = client.post("/api/v1/ingest", json=body, headers=GATEWAY)
     assert r.status_code == 422 and "invalid_group" in r.get_json()["errors"][0]
     assert IngestRaw.query.count() == 0
+
+
+# ---------------------------------------------------------------------------
+# 13. The care-delivery read scopes on the PATIENT's care unit (#1044)
+# ---------------------------------------------------------------------------
+#
+# /api/v1/clinical/* is reached by dashboard.pdhc with its service key and
+# the operator's affiliation care units in X-Org-Guids. Until this change it
+# compared those to `org_guid` (the performer) only, so a patient-app answer
+# (performer = the patient app's organisation) was invisible to the treating
+# clinician. Own app: the shared one's header shim would replace the blob.
+
+def _dash(*units, admin=False):
+    h = {"X-Source-Service": "dashboard.pdhc", "X-Service-Key": "test-dash-1044",
+         "X-Access-Purpose": "care-delivery"}
+    if admin:
+        h.update({"X-Is-Admin": "1", "X-Admin-Read-Reason": "test"})
+    elif units:
+        h["X-Org-Guids"] = ",".join(units)
+    return h
+
+
+def _series(client, patient, headers):
+    r = client.get(f"/api/v1/clinical/patient/{patient}/series", headers=headers)
+    assert r.status_code == 200, r.get_json()
+    return {p["observation_guid"]: p for p in r.get_json()["points"]}
+
+
+def _patients(client, headers):
+    r = client.get("/api/v1/clinical/patients", headers=headers)
+    assert r.status_code == 200, r.get_json()
+    return {p["patient_guid"]: p for p in r.get_json()["patients"]}
+
+
+@pytest.fixture
+def seen(clinical_app):
+    """One patient listed at UNIT_A: an endorsed patient-app answer (original
+    + endorsement) and a pending one."""
+    client = clinical_app.test_client()
+    patient = str(uuid.uuid4())
+    original, _ = _ingest(client, patient=patient)
+    pending, _ = _ingest(client, patient=patient, link="medication.name",
+                         value="Alvedon")
+    end = client.post(f"/api/v1/reviews/{original}/approve",
+                      headers=_bearer("doctor-a")).get_json()["endorsement_guid"]
+    return client, patient, original, pending, end
+
+
+def test_an_AFFILIATED_non_admin_sees_the_original_and_the_endorsement(seen):
+    client, patient, original, pending, end = seen
+    assert _row(original).org_guid == PROVIDER != UNIT_A   # performer is not the unit
+    pts = _series(client, patient, _dash(UNIT_A))
+    assert set(pts) == {original, pending, end}
+    assert (pts[original]["data_origin"], pts[original]["review_status"],
+            pts[original]["endorses_guid"]) == ("patient_generated", "endorsed", None)
+    assert (pts[pending]["data_origin"], pts[pending]["review_status"]) == \
+        ("patient_generated", "pending")
+    assert (pts[end]["data_origin"], pts[end]["review_status"],
+            pts[end]["endorses_guid"]) == (None, None, original)
+
+    d = client.get(f"/api/v1/clinical/observation/{original}", headers=_dash(UNIT_A))
+    assert d.status_code == 200
+    d = d.get_json()
+    assert d["context"]["data_origin"] == "patient_generated"
+    assert d["review"]["review_status"] == "endorsed"
+    assert d["review"]["reviewed_by_name"] == "Doctor A"
+    assert d["value_string"] == "Penicillin"                # what the patient wrote
+    d = client.get(f"/api/v1/clinical/observation/{end}", headers=_dash(UNIT_A)).get_json()
+    assert d["review"]["endorses_guid"] == original and d["context"]["data_origin"] is None
+
+    assert _patients(client, _dash(UNIT_A))[patient]["observation_count"] == 3
+    s = client.get(f"/api/v1/clinical/patient/{patient}/summary",
+                   headers=_dash(UNIT_A)).get_json()
+    assert sum(p["count"] for p in s["parameters"]) == 3
+
+
+def test_a_professional_affiliated_ELSEWHERE_sees_neither(seen):
+    client, patient, original, pending, end = seen
+    h = _dash(UNIT_B)
+    assert _series(client, patient, h) == {}
+    assert patient not in _patients(client, h)
+    for guid in (original, pending, end):
+        r = client.get(f"/api/v1/clinical/observation/{guid}", headers=h)
+        assert r.status_code == 404 and r.get_json()["error"] == "not_found"
+    s = client.get(f"/api/v1/clinical/patient/{patient}/summary", headers=h).get_json()
+    assert s["parameters"] == []
+    # and no scope at all is still nothing
+    assert _series(client, patient, _dash()) == {}
+
+
+def test_a_row_with_NO_patient_organisation_stays_out_of_the_care_unit_scope(clinical_app):
+    """Unknown organisation is not 'my unit'. Such a row is reachable as
+    before this change and no further: through its performer, or as admin."""
+    client = clinical_app.test_client()
+    patient = str(uuid.uuid4())
+    guid, _ = _ingest(client, patient=patient, unit=None)
+    assert _row(guid).patient_org_guid is None
+    assert _series(client, patient, _dash(UNIT_A)) == {}
+    assert _series(client, patient, _dash(UNIT_A, UNIT_B)) == {}
+    assert set(_series(client, patient, _dash(PROVIDER))) == {guid}     # as before
+    assert set(_series(client, patient, _dash(admin=True))) == {guid}
+
+
+def test_what_was_visible_through_the_performer_is_still_visible(clinical_app):
+    """The legacy clause: ordinary rows reached via org_guid keep being
+    reached, whether or not they record a patient organisation."""
+    client = clinical_app.test_client()
+    patient = str(uuid.uuid4())
+    for guid, patient_org in (("legacy-null", None), ("legacy-other", UNIT_B)):
+        db.session.add(Obs(guid=guid, patient_guid=patient, org_guid=UNIT_A,
+                           patient_org_guid=patient_org, raw_json={},
+                           code_canonical="sys|x", status="final"))
+    db.session.commit()
+    assert set(_series(client, patient, _dash(UNIT_A))) == {"legacy-null", "legacy-other"}
+    assert set(_series(client, patient, _dash(UNIT_B))) == {"legacy-other"}
+    assert _series(client, patient, _dash(PROVIDER)) == {}
+
+
+def test_nothing_changes_for_an_admin(seen):
+    client, patient, original, pending, end = seen
+    other = str(uuid.uuid4())
+    b, _ = _ingest(client, patient=other, unit=UNIT_B)
+    h = _dash(admin=True)
+    assert set(_series(client, patient, h)) == {original, pending, end}
+    assert set(_series(client, other, h)) == {b}
+    assert set(_patients(client, h)) == {patient, other}
+    # the attestation reason is still required for an admin-override read
+    bare = dict(h)
+    del bare["X-Admin-Read-Reason"]
+    assert client.get("/api/v1/clinical/patients", headers=bare).status_code == 428
+
+
+def test_the_care_delivery_door_itself_is_unchanged(seen):
+    client, patient, *_ = seen
+    url = f"/api/v1/clinical/patient/{patient}/series"
+    assert client.get(url, headers=dict(GATEWAY, **{
+        "X-Access-Purpose": "care-delivery", "X-Org-Guids": UNIT_A})).status_code == 403
+    assert client.get(url, headers=dict(PATIENTAPP, **{
+        "X-Access-Purpose": "care-delivery", "X-Org-Guids": UNIT_A})).status_code == 403
+    h = _dash(UNIT_A)
+    del h["X-Access-Purpose"]
+    assert client.get(url, headers=h).status_code == 400
+
+
+def test_an_analysis_cdr_still_has_no_clinical_surface(analysis_app):
+    c = analysis_app.test_client()
+    for url in ("/api/v1/clinical/patients",
+                f"/api/v1/clinical/patient/{uuid.uuid4()}/series",
+                f"/api/v1/clinical/observation/{uuid.uuid4()}"):
+        assert c.get(url, headers=_dash(UNIT_A)).status_code == 404
+
+
+def test_fhir_read_and_clinical_read_share_ONE_rule24_clause():
+    """Both modules call auth.patient_scope_clause; neither spells the
+    patient-organisation predicate itself. Asserted on the parse tree, so a
+    comment quoting the old form cannot satisfy or trip it."""
+    import ast
+    import app.api.clinical_read as cr
+    import app.api.fhir_read as fr
+    from app import auth
+    assert str(auth.patient_scope_clause(Obs, ["u"]).left) == "observation.patient_org_guid"
+    for mod, fn_name in ((cr, "_apply_org_scope"), (fr, "_org_filter")):
+        tree = ast.parse(pathlib.Path(mod.__file__).read_text())
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == fn_name)
+        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)]
+        assert any(getattr(c.func, "id", None) == "patient_scope_clause" for c in calls), fn_name
+        own = [c for c in calls if isinstance(c.func, ast.Attribute) and c.func.attr == "in_"
+               and getattr(c.func.value, "attr", None) == "patient_org_guid"]
+        assert not own, fn_name

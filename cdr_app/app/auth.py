@@ -56,6 +56,16 @@ def scope_org_guids(blob: dict) -> list:
     return [a["care_unit_guid"] for a in affs if a.get("care_unit_guid")]
 
 
+def patient_scope_clause(Model, care_unit_guids):
+    """THE Rule 24 predicate, in one place: rows whose PATIENT is listed at
+    one of these care units (`patient_org_guid`, #818). Never `org_guid`,
+    which holds the performer. Used by fhir_read._org_filter and by the
+    care-delivery read (clinical_read._apply_org_scope, #1044), so the two
+    cannot come to mean different things again. An empty list matches
+    nothing."""
+    return Model.patient_org_guid.in_(list(care_unit_guids))
+
+
 def _blob_to_user(blob: dict) -> SimpleNamespace:
     return SimpleNamespace(
         guid=blob.get("user_guid"),

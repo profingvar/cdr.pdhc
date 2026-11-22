@@ -291,6 +291,25 @@ a patient may be treatable while having declined research. Series points
 carry `org_guid` so the dashboard can apply spärr (per-clinic blocks) on its
 side. Concept display names are resolved via plan.pdhc (#471), fail-open.
 
+**Scope predicate since #1044.** For a non-admin, all four routes
+(`/patients`, `/patient/<g>/summary`, `/patient/<g>/series`,
+`/observation/<g>`) apply one filter, `_apply_org_scope`:
+
+    patient_org_guid IN (X-Org-Guids)  OR  org_guid IN (X-Org-Guids)
+
+The first clause is the rule: the patient is listed at one of the operator's
+care units. It is `auth.patient_scope_clause`, the same function the FHIR
+read's Rule 24 filter calls, so the service has one definition of that
+predicate. The second clause is the predicate these routes had on their own
+until #1044 (the performer); #818 repointed the FHIR read and did not reach
+this module. It is kept so that no row visible before disappears, and it is
+the only way a row with no `patient_org_guid` is reached by a non-admin. A
+row whose `patient_org_guid` is NULL is never in a care unit's scope through
+the first clause. No `X-Org-Guids` and no admin: nothing. Admin
+(`X-Is-Admin: 1` + reason) is unchanged. Before #1044 a patient-app answer
+(performer = the patient app's organisation) was invisible to the treating
+clinician here.
+
 ### 4.4b Review of patient-reported answers, and the endorsement row (#1044)
 
 Clinical repository only: the routes are registered under the same role flag

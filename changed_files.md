@@ -873,3 +873,11 @@ omitted, patient_guid dropped). Whole cdr suite 395 passed. NOT deployed.
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_review_1044.py — NEW; /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_clinical_read_role_944.py
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/docs/00-user-manual.md, /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/docs/01-technical-manual.md (#1046)
 - /Users/martiningvar/T7_sidewinder/cdr.pdhc/progress.md, /Users/martiningvar/T7_sidewinder/cdr.pdhc/changed_files.md
+
+## 2026-11-22 — #1044 follow-up: clinical read scope (NOT deployed)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/auth.py — patient_scope_clause (the one Rule 24 predicate)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/clinical_read.py — _apply_org_scope: patient organisation OR performer
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/app/api/fhir_read.py — _org_filter calls the shared clause (same behaviour)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/tests/test_review_1044.py (+8)
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/docs/00-user-manual.md, /Users/martiningvar/T7_sidewinder/cdr.pdhc/cdr_app/docs/01-technical-manual.md
+- /Users/martiningvar/T7_sidewinder/cdr.pdhc/progress.md, /Users/martiningvar/T7_sidewinder/cdr.pdhc/changed_files.md

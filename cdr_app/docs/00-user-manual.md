@@ -128,6 +128,11 @@ stays readable what the patient said and what care confirmed. Only approved
 records can be used for the patient summary (EPS), and the person who approved
 is named there.
 
+In the clinical dashboard, staff at a care unit where the patient is listed
+see both records side by side: the patient's own answer, marked as
+patient-generated with its review status, and care's approved record, marked
+with who approved it. Staff at other care units see neither.
+
 Who can decide: a doctor or nurse affiliated to the patient's care unit. An
 administrator can see the queue, and cannot decide unless also affiliated.
 Every decision is logged. This exists on the clinical repository (CDR 1) only.

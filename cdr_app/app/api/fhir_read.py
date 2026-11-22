@@ -44,7 +44,7 @@ from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy import and_, or_
 
 from app import db
-from app.auth import scope_org_guids
+from app.auth import patient_scope_clause, scope_org_guids
 from app.models.resources import (
     ChangeFeed,
     history_model,
@@ -119,7 +119,7 @@ def _org_filter(query, Live, *, request_args=None):
     # _common_live_columns, so this applies to every FHIR resource type.
     org_ids = scope_org_guids(blob)
     if org_ids:
-        return query.filter(Live.patient_org_guid.in_(org_ids))
+        return query.filter(patient_scope_clause(Live, org_ids))
 
     # Legacy header path. Same column, same reason: X-Org-Guids carries the
     # caller's care units, which is the patient-org question.
@@ -128,7 +128,7 @@ def _org_filter(query, Live, *, request_args=None):
     org_guids_hdr = request.headers.get("X-Org-Guids", "").strip()
     if org_guids_hdr:
         orgs = [s.strip() for s in org_guids_hdr.split(",") if s.strip()]
-        return query.filter(Live.patient_org_guid.in_(orgs))
+        return query.filter(patient_scope_clause(Live, orgs))
 
     # Nothing to scope by — non-admin user with no orgs sees nothing.
     # Fail closed, on the same column the two branches above scope by.
