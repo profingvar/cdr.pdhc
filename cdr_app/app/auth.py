@@ -157,6 +157,9 @@ def _public_path(path: str) -> bool:
         # its own key, type allowlist and on-behalf headers. Through the
         # loader it would meet record's READ-ONLY entry below and be refused.
         or path == "/api/v1/record" or path.startswith("/api/v1/record/")
+        # #1059: a patient's extract authenticates a PERSON itself
+        # (app/api/patient_extract.py), like the access log.
+        or path.startswith("/api/v1/patient-extract/")
     )
 
 

@@ -2246,3 +2246,14 @@ Plan: ../plans/record_pdhc_plan.md (approved; s2, s4.1, s5, s7 stage 2).
 - Tests: tests/test_record_stage2_1054.py (75). Test cleanups that deleted history rows now go through `history_purge()` (test_fhir_read, test_analysis_consent, test_card_1049, test_review_1044). Suite 818 -> 898 at this commit.
 - Controls (mutation script, each restored with a hash check): 30 reverts of the stage-2 fixes, each fails a test on its assertion (GUARDED narrowed fails at import, by design: install() refuses).
 - Deploy (operator): pg_dump; `flask db upgrade` e6f7a8b9c0d1 -> f7a8b9c0d1e2 on cdr1, cdr2, cdr3 (same code); then code. `RECORD_PDHC_SERVICE_KEY` in cdr1's .env only (matching record.pdhc); cdr2/cdr3 leave it unset. gateway must send the source's stable id for a correction to become a version.
+
+## 2026-11-24 — #1059 record.pdhc stage 6b, cdr extract endpoint (LOCAL, not deployed)
+Contract: ../plans/record_pdhc_extract_contract.md (`pdhc.patient-extract/1`).
+- `GET /api/v1/patient-extract/<guid>` (app/api/patient_extract.py), on every CDR. Door + gate imported from #1045's access_log.py (SSO bearer; SU, or a professional whose affiliated unit is a patient_org_guid of this patient's rows here). Out of scope = the same flat 403 as a patient not held, never an empty extract. Service keys are not a door.
+- Content: every resource in live + history, ALL versions oldest first; sections encounters, clinical_impressions, observations, questionnaire_responses, conditions, medications, allergies, procedures, diagnostic_reports, endorsements (only non-empty ones; endorsement rows not repeated under observations). Per version: event_time, recorded_at (live updated_at; history version_written_at, else ingest_raw.received_at, else null), author (reviewer / record's on-behalf professional / service only), status, summary_sv, fhir. The Patient row (personnummer) is never included. complete=true always (no cap).
+- Audit: cdr_read_audit resource_type `PatientExtract`, detail.action `patient_extract`, outcome served / denied.
+- Tests: tests/test_patient_extract_1059.py (8); counts compared with a direct DB count (distinct guids, live UNION history, endorsements split). Suite 898 -> 906.
+- Also verified against a throwaway local Postgres 16 (JSONB/timestamptz): versions and recorded_at as on SQLite.
+- Controls: 7 mutations; 6 fail on an assertion (no scope check, refusal not audited, served not audited, history omitted, endorsements double-counted, newest-first). "Patient row included" changes nothing: Patient rows carry no patient_guid, so they cannot enter the extract (an invariant, not a tested check).
+- Open: a professional at ANY of the patient's units gets the WHOLE extract, rows from other units included (contract: "allt tjänsten har"). Large CGM series are returned in full (no cap, complete=true).
+- Deploy: code only, after #1054's migration (the extract reads version_written_at and clinical_impression). No env.

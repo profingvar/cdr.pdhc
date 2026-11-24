@@ -664,6 +664,31 @@ survives the async gap. Status/retry via `/api/v1/cambio/*`.
 - **Logged:** the read in `cdr_read_audit` (resource_type `ReadAudit`), a
   refusal with `outcome='denied'`.
 
+## 7c. Patient extract (#1059)
+
+`GET /api/v1/patient-extract/<guid>` (app/api/patient_extract.py), on every
+CDR. Contract: `plans/record_pdhc_extract_contract.md`, schema
+`pdhc.patient-extract/1`.
+
+- **Door and gate:** the access log's (§7b), imported from
+  `app/api/access_log.py`. Out of scope = the same 403 as a patient not held.
+- **Content:** every resource of the patient in live + history, ALL versions
+  oldest first. Sections (only non-empty ones): `encounters`,
+  `clinical_impressions`, `observations`, `questionnaire_responses`,
+  `conditions`, `medications` (Statement + Request), `allergies`,
+  `procedures`, `diagnostic_reports`, `endorsements` (rows with
+  `endorses_guid`, not repeated under their type). Per version: `version`,
+  `event_time` (`effective_at`), `recorded_at` (live `updated_at`; history
+  `version_written_at`, else its ingest_raw's `received_at`, else null),
+  `author {guid,name,role,service}` (reviewer of an endorsement; record's
+  on-behalf professional; otherwise only the service), `status`,
+  `summary_sv`, `fhir`. `service` = `cdr1.pdhc` / `cdr2.pdhc` / `cdr3.pdhc`
+  (`CDR_INSTANCE`). `complete` is always true (nothing is cut).
+- **Never included:** the Patient row (demographics, personnummer; eps owns
+  identity).
+- **Logged:** `cdr_read_audit` resource_type `PatientExtract`,
+  `detail.action = patient_extract`, outcome served / denied.
+
 ## 8. Health check
 
 `GET /healthz` (and `GET /api/v1/health`) returns:

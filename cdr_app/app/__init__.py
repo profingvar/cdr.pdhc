@@ -179,6 +179,10 @@ def create_app(config_override=None):
     # set on cdr1 only).
     from .api.record_write import bp as record_write_bp
     app.register_blueprint(record_write_bp, url_prefix="/api/v1/record")
+    # #1059: everything this CDR holds about one patient, for record.pdhc's
+    # extract (plans/record_pdhc_extract_contract.md). On every CDR.
+    from .api.patient_extract import bp as patient_extract_bp
+    app.register_blueprint(patient_extract_bp, url_prefix="/api/v1")
     # 2026-11-19: external read door (time-limited sso read grants).
     from .api.external_read import bp as external_read_bp
     app.register_blueprint(external_read_bp, url_prefix="/external/v1")
