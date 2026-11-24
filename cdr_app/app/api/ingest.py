@@ -23,7 +23,10 @@ def ingest_single():
 
     result = IngestPipeline.process(body, g.source_service, request.headers)
 
-    status_code = {"accepted": 202, "duplicate": 200, "rejected": 422}.get(result["status"], 500)
+    # #1054: "conflict" = a report that cannot become the next version of
+    # the observation it names (status regression, id of another patient).
+    status_code = {"accepted": 202, "duplicate": 200, "rejected": 422,
+                   "conflict": 409}.get(result["status"], 500)
     return jsonify(result), status_code
 
 

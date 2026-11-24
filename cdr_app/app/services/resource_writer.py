@@ -112,6 +112,10 @@ class WriteContext:
     if_match_etag: str | None = None  # request header value, if provided
     mapping_version: str | None = None
     primary_canonical_uri: str | None = None  # filled in by canonicaliser
+    #: #1054: the ingest_raw row holding this write as it arrived, when the
+    #: caller keeps one (record.pdhc's writes do). Stored on the row so the
+    #: version's provenance (who, on whose behalf, when) is one join away.
+    ingest_raw_guid: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +225,12 @@ def _extract_effective_at(fhir: dict, resource_type: str) -> datetime | None:
         candidates = [fhir.get("issued"), fhir.get("effectiveDateTime")]
     elif resource_type == "AllergyIntolerance":
         candidates = [fhir.get("recordedDate"), fhir.get("onsetDateTime")]
+    elif resource_type == "ClinicalImpression":
+        # R5: effective[x] is the clinical time of the assessment; `date` is
+        # when it was documented. Clinical time first.
+        candidates = [fhir.get("effectiveDateTime"),
+                      (fhir.get("effectivePeriod") or {}).get("start"),
+                      fhir.get("date")]
     for c in candidates:
         if c:
             return _parse_datetime(c)
@@ -312,6 +322,10 @@ def _extract_per_type_columns(fhir: dict, resource_type: str) -> dict:
         out["period_end"] = _parse_datetime(period.get("end"))
         out["status"] = fhir.get("status")
         cls = fhir.get("class") or {}
+        # #1054: R5 Encounter.class is 0..* CodeableConcept (R4: one Coding).
+        # An R5 body used to crash here ('list' has no 'get').
+        if isinstance(cls, list):
+            cls = cls[0] if cls and isinstance(cls[0], dict) else {}
         if cls.get("coding"):
             out["class_code"] = cls["coding"][0].get("code")
         elif cls.get("code"):
@@ -320,7 +334,27 @@ def _extract_per_type_columns(fhir: dict, resource_type: str) -> dict:
         out["issued_at"] = _parse_datetime(fhir.get("issued"))
         out["status"] = fhir.get("status")
         out["conclusion"] = fhir.get("conclusion")
+    elif resource_type == "ClinicalImpression":
+        out["status"] = fhir.get("status")
+        out["encounter_guid"] = _ref_guid(fhir.get("encounter"), "Encounter")
+        out["date_at"] = _parse_datetime(fhir.get("date"))
+        out["performer_guid"] = _ref_guid(fhir.get("performer"), None)
     return out
+
+
+def _ref_guid(ref, expected_type: str | None) -> str | None:
+    """`{"reference": "<Type>/<guid>"}` -> guid. A reference of another type
+    than expected yields None rather than a guid of the wrong kind."""
+    if not isinstance(ref, dict):
+        return None
+    r = (ref.get("reference") or "").strip()
+    if not r:
+        return None
+    parts = r.split("/")
+    if expected_type and (len(parts) < 2 or parts[-2] != expected_type):
+        return None
+    tail = parts[-1]
+    return tail[:36] or None
 
 
 def _coding_canonical_uri(coding: dict) -> str | None:
@@ -542,6 +576,7 @@ def _insert(Live, fhir: dict, ctx: WriteContext, *,
         sync_group_id=sync_group_id,
         mapping_version=ctx.mapping_version,
         etag=etag,
+        ingest_raw_guid=ctx.ingest_raw_guid,
         created_at=_now(),
         updated_at=_now(),
     )
@@ -603,6 +638,8 @@ def _update_with_history(Live, Hist, existing, fhir: dict, ctx: WriteContext, *,
                  if col.key != "created_at" and col.key != "updated_at"}
     hist_cols["superseded_at"] = _now()
     hist_cols["superseded_by_request_id"] = ctx.source_request_id
+    # #1054: when the superseded version was itself written.
+    hist_cols["version_written_at"] = existing.updated_at
     hist_row = Hist(**{k: v for k, v in hist_cols.items()
                        if k in {c.key for c in inspect(Hist).columns}})
     db.session.add(hist_row)
@@ -633,6 +670,8 @@ def _update_with_history(Live, Hist, existing, fhir: dict, ctx: WriteContext, *,
         etag=new_etag,
         updated_at=_now(),
     )
+    if ctx.ingest_raw_guid:
+        new_cols["ingest_raw_guid"] = ctx.ingest_raw_guid
     new_cols.update(_extract_per_type_columns(persisted, resource_type))
 
     for k, v in new_cols.items():

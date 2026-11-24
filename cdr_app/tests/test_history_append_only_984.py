@@ -82,10 +82,11 @@ def test_the_purge_flag_is_EMPTY_after_test_cleanup(app):
         assert db.session.execute(db.text("select count(*) from cdr_history_purge_flag")).scalar() == 0
 
 
-def test_encounter_history_is_guarded_and_observation_history_is_not_in_scope(app):
+def test_encounter_and_condition_history_are_guarded(app):
+    """#1054 widened the guard to every type (tests/test_record_stage2_1054.py
+    covers the rest); #984's two stay guarded."""
     with app.app_context():
         names = {r[0] for r in db.session.execute(db.text(
             "select name from sqlite_master where type='trigger'"))}
         assert {"encounter_history_no_update", "encounter_history_no_delete",
                 "condition_history_no_update", "condition_history_no_delete"} <= names
-        assert not any(n.startswith("observation_history") for n in names)

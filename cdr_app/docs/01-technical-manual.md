@@ -67,6 +67,49 @@ it is dominantly the **Path-B embedded-GUID form** `urn:pdhc:concept/<guid>`
 — the plan.pdhc Concept GUID is the last path segment. Display resolution
 parses that GUID out and looks it up via plan.pdhc (see §6.2).
 
+### 2.1b Every history is append-only; ClinicalImpression; observation versions (#1054)
+
+- **History guard on all eleven types** (`app/models/history_guard.py`,
+  `GUARDED`): an ORM event refuses UPDATE/DELETE of any `*_history` row and a
+  trigger (Postgres + SQLite) refuses them in raw SQL. `install()` refuses to
+  start if a history model is missing from `GUARDED`. The one escape is
+  `history_purge()` (DELETE only, its own transaction; on psql
+  `BEGIN; SET LOCAL cdr.allow_history_purge = 'on'; DELETE ...; COMMIT;`).
+  UPDATE is refused even then. Measured before widening: nothing in any repo
+  updates or deletes a history row.
+- **`version_written_at`** on every `*_history` table: when that version was
+  written (the live row's `updated_at` when it was superseded). NULL on rows
+  from before #1054.
+- **`ClinicalImpression`** (the medical decision, record.pdhc plan s4.1):
+  `clinical_impression` + `_history`, common columns plus `status`,
+  `encounter_guid` (indexed), `date_at`, `performer_guid`. `effective_at` =
+  `effectiveDateTime` / `effectivePeriod.start` / `date`. FHIR read, vread,
+  `_history`, search by `patient` and `encounter` (`encounter=` on a type
+  without the column is a 400). Written ONLY through `/api/v1/record` (§5.2c);
+  the generic FHIR write path and the Bundle answer 403.
+- **Observation status and versions on ingest.** `status` must be one of
+  `preliminary, final, amended, corrected, entered-in-error` (else 422
+  `invalid_observation_status`; absent is still accepted on a NEW observation).
+  A report whose `fhir_resource.id` equals a stored observation becomes
+  **version n+1**: the current row is copied to `observation_history`, the
+  live row is rewritten as the new version (`version_id`, `etag W/"n"`,
+  `meta.versionId`, the new `ingest_raw_guid` and `received_at`), and a
+  `change_feed` `update` is emitted. Context columns the correction omits
+  (`patient_org_guid`, `org_guid`, `transaction_guid`, `care_plan_guid`,
+  `data_origin`) keep their previous value. A report identical to the stored
+  body is not a version. Refused with **409** (`status: conflict`, nothing
+  stored): `status_regression` (final/amended/corrected -> preliminary),
+  `observation_entered_in_error` (nothing follows it),
+  `observation_id_conflict` (another patient), `observation_source_conflict`
+  (another service), `review_locked` (#1044 rows). A new version without a
+  status: 422 `observation_status_required`.
+- **`ingest_raw.headers_json` never holds credentials** (`safe_headers`):
+  `X-Service-Key`, `Authorization`, `Cookie`, `X-SSO-Client-Secret` and
+  `Proxy-Authorization` are dropped. Rows written before #1054 hold the
+  calling service's key in clear.
+- **R5 `Encounter.class`** (a list of CodeableConcept) is read; it used to
+  crash the writer (R4's single Coding still works).
+
 ### 2.2 Cross-cutting tables
 
 - **`sync_group`** — one row per logical clinical fact, linking the FHIR and
@@ -496,11 +539,39 @@ Sibling services may read/write the FHIR surface with a service key
 | `dashboard.pdhc` | `DASHBOARD_PDHC_SERVICE_KEY` | analyse-layer + clinical reader |
 | `analyse.pdhc` | `ANALYSE_PDHC_SERVICE_KEY` | extracted analyse-layer reader (#541) |
 
+| `record.pdhc` | `RECORD_PDHC_SERVICE_KEY` | journal (#1054): **read-only** here and confined to `/api/v1/fhir/` (`SERVICE_PATH_PREFIXES`); writes go through §5.2c. In `read_audit.ON_BEHALF_SERVICES`. cdr1 only (D1) |
+
 Under `CDR_READ_LOCKDOWN`, only `dashboard.pdhc` and `analyse.pdhc` may take
 a **read** path; every listed service may still **write**. A valid
 service-key request gets a synthetic `is_su_admin` blob tagged with
 `service_source`, which downstream code uses to distinguish machine writes
 from human operators.
+
+### 5.2c record.pdhc's write door — `/api/v1/record` (#1054)
+
+`POST /api/v1/record/fhir/<Encounter|ClinicalImpression>` (create) and
+`PUT /api/v1/record/fhir/<Encounter|ClinicalImpression>/<guid>` (new
+version), `app/api/record_write.py`, self-authenticating
+(`auth._public_path`). No other type, no DELETE, no Bundle.
+
+- Headers, all required: `X-Source-Service: record.pdhc`, `X-Service-Key`
+  (= `RECORD_PDHC_SERVICE_KEY`; unset = the door admits nobody),
+  `X-Operator-User-Guid` (the acting professional), `X-Patient-Org-Guid` (the
+  patient's care unit). Optional `X-Operator-User-Role`, `X-Org-Guid`,
+  `X-Request-Id`. `subject` must be `Patient/<guid>`.
+- POST always creates (an existing body id is 409; the dedup path is never
+  used). PUT versions only a row `record.pdhc` wrote, for the same patient,
+  with `If-Match` (428 without, 412 stale).
+- Stored: an `ingest_raw` row (`source_type record_fhir`, payload with the
+  resource, `on_behalf_of_user_guid`, role, `patient_org_guid`) whose guid is
+  on the resource row; an `audit_log` `record.write` (actor = the
+  professional). Refusals after a valid key: `record.write.refused`.
+- The whole-system assertion gate (#857/#874) applies: record.pdhc is
+  permitted for no library.
+
+Why a door of its own: a write entry in `KNOWN_FHIR_SERVICES` would grant
+POST/PUT/Bundle on every type with an organisation-blind blob, and a per-type
+check would have to be repeated in the Bundle, upsert-by-id and dedup paths.
 
 ### 5.2b The patient app's one route — `PATIENT_STATUS_SERVICES` (#1044)
 
@@ -616,6 +687,7 @@ to read the body cross-origin and drive the real status/DB dots.
 | `CDR_READ_LOCKDOWN` | `false` on CDR 1, `true` on CDR 2–5 (#293) |
 | `GATEWAY_PDHC_SERVICE_KEY` / `TWOGATE_PDHC_SERVICE_KEY` / `SIM_PDHC_SERVICE_KEY` | Ingest service keys |
 | `DASHBOARD_PDHC_SERVICE_KEY` / `ANALYSE_PDHC_SERVICE_KEY` | Read/analyse service keys |
+| `RECORD_PDHC_SERVICE_KEY` | record.pdhc (#1054): FHIR reads (read-only) + `/api/v1/record` writes. **cdr1 only** (D1); empty admits nobody |
 | `PATIENTAPP_PDHC_SERVICE_KEY` | patientapp.pdhc's key for the one patient-status route (#1044, §5.2b). Clinical repository only; empty admits nobody |
 | `PLAN_BASE_URL` | plan.pdhc — canonicalisation + concept display |
 | `EPS_BASE_URL` / `EPS_API_KEY` | eps.pdhc (formerly ips.pdhc) — consent analysis-filter (#422) and the external-read summary; e.g. `https://eps.pdhc.se`. Read first (#1024) |

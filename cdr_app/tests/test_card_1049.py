@@ -41,13 +41,14 @@ def _sso_on(app, monkeypatch):
 @pytest.fixture(autouse=True)
 def _isolate(app):
     def _wipe():
+        from app.models.history_guard import history_purge
         with app.app_context():
             db.session.rollback()
+        with app.app_context(), history_purge(db.session):   # #1054
             for table in ("clinical_context", "observation", "observation_history",
                           "fhir_resources", "cambio_delivery_log", "audit_log",
                           "dedupe_registry", "change_feed", "ingest_raw"):
                 db.session.execute(db.text(f"DELETE FROM {table}"))
-            db.session.commit()
     _wipe()
     yield
     _wipe()
@@ -149,7 +150,10 @@ def test_migration_is_the_single_head_on_top_of_1044():
     from alembic.script import ScriptDirectory
     cfg = Config()
     cfg.set_main_option("script_location", str(MIGRATIONS))
-    assert ScriptDirectory.from_config(cfg).get_heads() == ["e6f7a8b9c0d1"]
+    # #1054 put f7a8b9c0d1e2 on top; this one must stay in the single line.
+    script = ScriptDirectory.from_config(cfg)
+    (head,) = script.get_heads()
+    assert "e6f7a8b9c0d1" in {r.revision for r in script.walk_revisions("base", head)}
     mod = _migration()
     assert mod.down_revision == "d5e6f7a8b9c0" and len(mod.revision) <= 32
 

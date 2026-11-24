@@ -94,6 +94,22 @@ def _clinical_context_from(body: dict) -> dict | None:
     return flat
 
 
+#: #1054: request headers NEVER copied into ingest_raw.headers_json. Until
+#: 2026-11-24 the whole header set was stored, so every ingest_raw row held
+#: the calling service's own X-Service-Key in clear (measured with a test
+#: client: gateway's key, verbatim). Rows written before this fix still do.
+SECRET_HEADERS = frozenset({"x-service-key", "authorization", "cookie",
+                            "x-sso-client-secret", "proxy-authorization"})
+
+
+def safe_headers(headers) -> dict | None:
+    """The request headers minus credentials, for ingest_raw.headers_json."""
+    if not headers:
+        return None
+    return {k: v for k, v in dict(headers).items()
+            if k.lower() not in SECRET_HEADERS}
+
+
 class IngestPipeline:
 
     @staticmethod
@@ -143,6 +159,16 @@ class IngestPipeline:
         if review_err:
             return {"status": "rejected", "errors": [review_err]}
 
+        # #1054: an Observation's status from the source, and a report for an
+        # observation already held (same id) becomes its NEXT VERSION. Both
+        # decided here, before anything is stored, so a refused report leaves
+        # no ingest_raw, no dedupe entry and no partial version behind.
+        version_of, obs_err = observation_version_check(
+            body.get("fhir_resource"), patient_guid=patient_guid,
+            source_service=source_service)
+        if obs_err:
+            return obs_err
+
         # X2 (#423): capture the operator session forwarded on the ingest
         # request (X-Operator-Session-Id, set by gateway) so the async
         # cambio_worker can replay it on the cdr1 -> Cambio hop.
@@ -170,7 +196,7 @@ class IngestPipeline:
             patient_guid=patient_guid,
             payload_json=body,
             payload_hash=payload_hash,
-            headers_json=dict(headers) if headers else None,
+            headers_json=safe_headers(headers),   # #1054: never the key
             source_type=source_type,
         )
         db.session.add(raw)
@@ -217,7 +243,14 @@ class IngestPipeline:
                 existing_live = (LiveObs.query
                                  .filter_by(guid=fhir_resource["id"])
                                  .first()) if LiveObs is not None else None
-                if existing_live is None:
+                if existing_live is not None and version_of is not None:
+                    # #1054: a correction / status change -> version n+1.
+                    _new_observation_version(
+                        existing_live, fhir_resource,
+                        patient_guid=patient_guid,
+                        source_service=source_service, raw=raw,
+                        context=context)
+                elif existing_live is None:
                     live_row = build_live_observation_row(
                         fhir_resource,
                         patient_guid=patient_guid,
@@ -378,6 +411,151 @@ class IngestPipeline:
             "status": "accepted",
             "ingest_raw_guid": raw.guid,
         }
+
+
+# ---------------------------------------------------------------------------
+# #1054: observation status and versions
+# ---------------------------------------------------------------------------
+
+#: The statuses a source may report (record.pdhc plan s5: preliminary,
+#: final, corrected; amended and entered-in-error from FHIR's lifecycle).
+OBSERVATION_STATUSES = ("preliminary", "final", "amended", "corrected",
+                        "entered-in-error")
+#: Order of a report's maturity. A new version may not go DOWN this list
+#: (final -> preliminary), and nothing follows entered-in-error.
+_STATUS_RANK = {"preliminary": 0, "final": 1, "amended": 1, "corrected": 1,
+                "entered-in-error": 2}
+VERSION_REFUSED = "conflict"
+
+
+def _conflict(code: str, text: str) -> dict:
+    return {"status": VERSION_REFUSED, "errors": [f"{code}: {text}"],
+            "code": code}
+
+
+def observation_version_check(fhir, *, patient_guid, source_service):
+    """(existing live row to version, None) / (None, None) / (None, refusal).
+
+    THE IDENTITY of "the same observation" is `Observation.id`: it is the
+    live row's guid, and it was already the ingest's idempotence key (#295 --
+    a second report with the same id used to be dropped silently, so a
+    correction never reached the record). gateway sets it from the source's
+    own id when the source gives one. `Observation.identifier` is not used:
+    no producer sends it today, and two keys could disagree.
+
+    A same-id report must be for the same patient and from the same source
+    service, or it is an id collision rather than a new version (409). A
+    report identical to the stored body is not a new version (None, None);
+    the ingest keeps it as raw only, as before.
+    """
+    if not isinstance(fhir, dict) or fhir.get("resourceType") != "Observation":
+        return None, None
+    status = fhir.get("status")
+    if status is not None and status not in OBSERVATION_STATUSES:
+        return None, {"status": "rejected", "errors": [
+            f"invalid_observation_status: {str(status)[:40]!r}; one of "
+            f"{', '.join(OBSERVATION_STATUSES)}"]}
+    oid = fhir.get("id")
+    if not oid:
+        return None, None
+    from app.models.resources import live_model
+    existing = live_model("Observation").query.filter_by(guid=oid).first()
+    if existing is None:
+        return None, None
+    if _same_report(existing.raw_json, fhir):
+        return None, None
+    if existing.patient_guid != patient_guid:
+        return None, _conflict("observation_id_conflict",
+                               "this id belongs to another patient's observation")
+    if (existing.source or None) != source_service:
+        return None, _conflict("observation_source_conflict",
+                               "this id was reported by another service; a new "
+                               "version comes from the source of the first")
+    if (existing.review_status is not None
+            or existing.endorses_guid is not None):
+        return None, _conflict("review_locked",
+                               "a reviewed answer or endorsement is not "
+                               "re-versioned by ingest (#1044)")
+    if status is None:
+        return None, {"status": "rejected", "errors": [
+            "observation_status_required: a new version of an observation "
+            "must state its status"]}
+    old = existing.status
+    if old == "entered-in-error":
+        return None, _conflict("observation_entered_in_error",
+                               "the observation is entered-in-error; nothing "
+                               "follows it (report a new observation)")
+    if old in _STATUS_RANK and _STATUS_RANK[status] < _STATUS_RANK[old]:
+        return None, _conflict("status_regression",
+                               f"{old} -> {status} is refused; a correction "
+                               f"of a {old} result is 'corrected' or 'amended'")
+    return existing, None
+
+
+def _same_report(stored, incoming) -> bool:
+    """The incoming body equals the stored one, ignoring the versionId this
+    CDR stamps on versions >= 2."""
+    def strip(b):
+        b = dict(b or {})
+        meta = dict(b.get("meta") or {})
+        meta.pop("versionId", None)
+        if meta:
+            b["meta"] = meta
+        else:
+            b.pop("meta", None)
+        return b
+    return strip(stored) == strip(incoming)
+
+
+#: Row context kept from the previous version when a correction omits it:
+#: a correction does not move the observation out of its patient's unit.
+_KEEP_IF_ABSENT = ("org_guid", "patient_org_guid", "transaction_guid",
+                   "care_plan_guid", "data_origin")
+
+
+def _new_observation_version(existing, fhir_resource, *, patient_guid,
+                             source_service, raw, context):
+    """Move the current version to observation_history (append-only) and
+    make the live row version n+1. Never an in-place overwrite: the old
+    version stays readable by vread."""
+    from sqlalchemy import inspect as _inspect
+    from app.models.resources import ChangeFeed, history_model, live_model
+    Live, Hist = live_model("Observation"), history_model("Observation")
+    hist_keys = {c.key for c in _inspect(Hist).columns}
+    hist = {c.key: getattr(existing, c.key) for c in _inspect(Live).columns
+            if c.key in hist_keys}
+    now = datetime.now(timezone.utc)
+    hist.update(superseded_at=now, superseded_by_request_id=raw.guid,
+                version_written_at=existing.updated_at)
+    db.session.add(Hist(**hist))
+
+    new_version = (existing.version_id or 1) + 1
+    body = dict(fhir_resource)
+    body["meta"] = {**(body.get("meta") or {}), "versionId": str(new_version)}
+    fresh = build_live_observation_row(
+        body, patient_guid=patient_guid, source_service=source_service,
+        ingest_raw_guid=raw.guid, received_at=raw.received_at, context=context)
+    for col in _inspect(Live).columns:
+        k = col.key
+        if k in ("guid", "created_at"):
+            continue
+        val = getattr(fresh, k)
+        if k in _KEEP_IF_ABSENT and val is None:
+            continue
+        setattr(existing, k, val)
+    existing.version_id = new_version
+    existing.etag = f'W/"{new_version}"'
+    existing.updated_at = now
+    db.session.flush()
+    db.session.add(ChangeFeed(
+        event_type="update", resource_type="Observation",
+        resource_guid=existing.guid, patient_guid=patient_guid,
+        org_guid=existing.org_guid, version_id=new_version,
+        sync_group_id=existing.sync_group_id,
+        code_canonical=existing.code_canonical,
+        source_request_id=raw.guid,
+        payload_summary={"operation": "update", "from_version": new_version - 1,
+                         "status": existing.status}))
 
 
 def _review_target_error(body) -> str | None:

@@ -19,6 +19,7 @@ _RESOURCE_TYPES = [
     "Patient", "Observation", "QuestionnaireResponse", "Condition",
     "MedicationStatement", "MedicationRequest", "AllergyIntolerance",
     "Procedure", "Encounter", "DiagnosticReport",
+    "ClinicalImpression",   # #1054
 ]
 
 
@@ -70,12 +71,16 @@ def capability_statement():
             "resource": [
                 {
                     "type": rt,
+                    # #1054: ClinicalImpression is written only by
+                    # record.pdhc through /api/v1/record, never here.
                     "interaction": [
                         {"code": "read"},
                         {"code": "vread"},
                         {"code": "search-type"},
+                    ] + ([] if rt == "ClinicalImpression" else [
                         {"code": "create"},
                         {"code": "update"},
+                    ]) + [
                         {"code": "history-instance"},
                     ],
                     "searchParam": [
@@ -85,7 +90,9 @@ def capability_statement():
                         {"name": "_tag", "type": "token"},
                         {"name": "_id", "type": "token"},
                         {"name": "_count", "type": "number"},
-                    ] + _value_search_params(rt),
+                    ] + _value_search_params(rt) + (
+                        [{"name": "encounter", "type": "reference"}]
+                        if rt == "ClinicalImpression" else []),
                 }
                 for rt in _RESOURCE_TYPES
             ],

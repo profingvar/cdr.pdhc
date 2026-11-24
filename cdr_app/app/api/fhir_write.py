@@ -134,18 +134,32 @@ def _operation_outcome(severity: str, code: str, text: str) -> dict:
 # Single-resource write helpers
 # ---------------------------------------------------------------------------
 
+#: #1054: types written ONLY through /api/v1/record by record.pdhc. The
+#: generic surface below is open to every write identity in
+#: KNOWN_FHIR_SERVICES (sim, gateway, icd11), none of which authors medical
+#: decisions; a decision written here would carry no acting professional.
+RECORD_ONLY_TYPES = frozenset({"ClinicalImpression"})
+
+
 def _write_one(fhir: dict, ctx: WriteContext, *,
                resource_id: str | None = None,
-               update_by_guid: str | None = None) -> tuple[dict, int, dict]:
+               update_by_guid: str | None = None,
+               via_record: bool = False) -> tuple[dict, int, dict]:
     """Run the canonicalisation + write path for one resource.
 
     Returns ``(body, http_status, response_headers)``.
+    ``via_record`` is passed only by app/api/record_write.py.
     """
     rt = fhir.get("resourceType")
     if not rt:
         return _operation_outcome(
             "error", "structure", "resource missing resourceType"
         ), 400, {}
+    if rt in RECORD_ONLY_TYPES and not via_record:
+        return _operation_outcome(
+            "error", "forbidden",
+            f"{rt} is written only by record.pdhc through /api/v1/record "
+            f"(#1054)"), 403, {}
 
     # #857 / #874 — checked BEFORE canonicalisation, which costs an upstream
     # round trip we would only throw away. This is an authorisation refusal,

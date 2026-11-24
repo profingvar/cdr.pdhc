@@ -153,6 +153,10 @@ def _public_path(path: str) -> bool:
         # (app/api/access_log.py, the operator's SSO bearer). The loader's
         # service-key path would make any key SU-equivalent there.
         or path.startswith("/api/v1/access-log/")
+        # #1054: record.pdhc's WRITE door (app/api/record_write.py) checks
+        # its own key, type allowlist and on-behalf headers. Through the
+        # loader it would meet record's READ-ONLY entry below and be refused.
+        or path == "/api/v1/record" or path.startswith("/api/v1/record/")
     )
 
 
@@ -187,6 +191,23 @@ KNOWN_FHIR_SERVICES = {
     #
     # WRITE (and read), so deliberately NOT in READ_ONLY_SERVICE_SOURCES below.
     "icd11.pdhc":     "ICD11_PDHC_SERVICE_KEY",
+    # #1054 (record.pdhc, plan s4.1): the journal READS here what it signs
+    # and attests, on behalf of a professional it has authenticated and
+    # checked with eps care-access-check (spärr, nödöppning). READ-ONLY on
+    # this surface (READ_ONLY_SERVICE_SOURCES) and only under /api/v1/fhir/
+    # (SERVICE_PATH_PREFIXES). Its writes -- Encounter and ClinicalImpression
+    # only -- go through its own door, /api/v1/record (app/api/record_write.py).
+    # D1: record writes to cdr1 only, so cdr2/cdr3 leave the key unset and
+    # this entry admits nobody there.
+    "record.pdhc":    "RECORD_PDHC_SERVICE_KEY",
+}
+
+#: #1054: a service whose service-key access is confined to these path
+#: prefixes. Anything else is refused as bad credentials, so record.pdhc
+#: cannot reach /api/v1/clinical, /stats, /cambio or /canonical with an
+#: SU-equivalent blob. Services not listed keep their existing reach.
+SERVICE_PATH_PREFIXES: dict[str, tuple[str, ...]] = {
+    "record.pdhc": ("/api/v1/fhir/",),
 }
 
 # #293 read-lockdown allow-list: under CDR_READ_LOCKDOWN only these
@@ -233,6 +254,12 @@ def _service_key_outcome(app):
     expected = app.config.get(cfg_var, "")
     if not expected or key != expected:
         return False
+    prefixes = SERVICE_PATH_PREFIXES.get(source)
+    if prefixes is not None and not request.path.startswith(prefixes):
+        logger.warning("service-key caller %s is confined to %s; refused %s %s "
+                       "(#1054)", source, ",".join(prefixes), request.method,
+                       request.path)
+        return False
     if (app.config.get("CDR_READ_LOCKDOWN")
             and _is_read_path(request.path)
             and source not in _ANALYSE_READER_SOURCES):
@@ -267,7 +294,11 @@ def _service_key_outcome(app):
 # transport, `_get_json`, built on requests.get. Its only two POSTs go to sso
 # (token exchange) and ips — neither is a CDR. It is an active READER, so it is
 # narrowed rather than retired the way monitor.pdhc was (#727).
-READ_ONLY_SERVICE_SOURCES = frozenset({"analyse.pdhc", "dashboard.pdhc"})
+#
+# record.pdhc added by #1054: it writes, but never through this surface; its
+# writes have their own door (/api/v1/record) with a two-type allowlist.
+READ_ONLY_SERVICE_SOURCES = frozenset({"analyse.pdhc", "dashboard.pdhc",
+                                       "record.pdhc"})
 
 # #984: NO exemption from READ_ONLY_SERVICE_SOURCES for the read-audit events
 # endpoint. Only icd11.pdhc posts events (read_audit.EVENT_SERVICES); a

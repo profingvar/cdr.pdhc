@@ -73,6 +73,7 @@ _RESOURCE_TYPES = [
     "Patient", "Observation", "QuestionnaireResponse", "Condition",
     "MedicationStatement", "MedicationRequest", "AllergyIntolerance",
     "Procedure", "Encounter", "DiagnosticReport",
+    "ClinicalImpression",   # #1054
 ]
 
 
@@ -341,6 +342,17 @@ def search(resource_type: str):
     # _id
     for id_arg in request.args.getlist("_id"):
         q = q.filter(Live.guid == id_arg)
+
+    # encounter=<guid> or Encounter/<guid> (#1054): on a type whose table
+    # carries the encounter (ClinicalImpression). Elsewhere a 400, not a
+    # silently ignored filter that returns MORE rows than were asked for.
+    enc_arg = request.args.get("encounter")
+    if enc_arg is not None:
+        if not hasattr(Live, "encounter_guid"):
+            return jsonify(_operation_outcome(
+                "error", "not-supported",
+                f"encounter is not a search parameter on {resource_type}")), 400
+        q = q.filter(Live.encounter_guid == enc_arg.strip().rsplit("/", 1)[-1])
 
     # _pdhc_counts=patient,code — how many rows per (patient, code), counted
     # in SQL (2026-11-18, analyse's cohort preview and its minimum-measures

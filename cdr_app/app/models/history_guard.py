@@ -13,9 +13,20 @@ THE ONE ESCAPE is a deliberate purge of SYNTHETIC data (generations are purged
 as a unit -- cdr_6, 2026-10-09). It must be asked for by name, inside
 `history_purge()`, and it is the only way past all three layers.
 
-Scope: the register's tables only (Condition, and Encounter, which carries the
-primary/secondary diagnosis per encounter). Widening it to every resource is a
-separate decision; nothing in #984 needs it.
+Scope: EVERY resource type's history (#1054, record.pdhc stage 2). #984
+guarded only Condition and Encounter. record.pdhc signs, attests and
+corrects a SPECIFIC version (`<Type>/<id>/_history/<n>`), and a
+version-specific reference is worthless if that version can be rewritten,
+so the widening came before record points at anything (plan s9, risk 1).
+`install()` refuses to start if a history model exists that GUARDED does not
+name, so a new type cannot arrive unguarded.
+
+Measured 2026-11-24 before widening: no code path in cdr.pdhc, and no tool in
+any workspace repo, UPDATEs or DELETEs a `*_history` row. The documented
+manual deletions (seed_2026-04-28, the 2026-11-19 stress rows, the cdr2 sim
+orphans) touched LIVE tables, ingest_raw and side tables only. A future purge
+of synthetic data that must reach history goes through `history_purge()`, or
+on psql: `BEGIN; SET LOCAL cdr.allow_history_purge = 'on'; DELETE ...; COMMIT;`.
 """
 from __future__ import annotations
 
@@ -24,7 +35,13 @@ import contextvars
 
 from sqlalchemy import event, text
 
-GUARDED = ("Condition", "Encounter")
+#: Every per-type history table (#1054). Listed literally so a review sees it;
+#: `install()` checks it against the models.
+GUARDED = (
+    "Patient", "Observation", "QuestionnaireResponse", "Condition",
+    "MedicationStatement", "MedicationRequest", "AllergyIntolerance",
+    "Procedure", "Encounter", "DiagnosticReport", "ClinicalImpression",
+)
 PG_FLAG = "cdr.allow_history_purge"
 SQLITE_FLAG_TABLE = "cdr_history_purge_flag"
 
@@ -75,7 +92,7 @@ BEGIN
   IF coalesce(current_setting('{PG_FLAG}', true), '') = 'on' AND TG_OP = 'DELETE' THEN
     RETURN OLD;
   END IF;
-  RAISE EXCEPTION '{table} is append-only (#984): % refused', TG_OP;
+  RAISE EXCEPTION '{table} is append-only: % refused', TG_OP;
 END $$""",
         f"DROP TRIGGER IF EXISTS {fn}_trg ON {table}",
         f"CREATE TRIGGER {fn}_trg BEFORE UPDATE OR DELETE ON {table} "
@@ -87,10 +104,10 @@ def _sqlite_ddl(table: str) -> list[str]:
     return [
         f"CREATE TABLE IF NOT EXISTS {SQLITE_FLAG_TABLE} (x INTEGER)",
         f"""CREATE TRIGGER IF NOT EXISTS {table}_no_update BEFORE UPDATE ON {table}
-BEGIN SELECT RAISE(ABORT, '{table} is append-only (#984): UPDATE refused'); END""",
+BEGIN SELECT RAISE(ABORT, '{table} is append-only: UPDATE refused'); END""",
         f"""CREATE TRIGGER IF NOT EXISTS {table}_no_delete BEFORE DELETE ON {table}
 WHEN NOT EXISTS (SELECT 1 FROM {SQLITE_FLAG_TABLE})
-BEGIN SELECT RAISE(ABORT, '{table} is append-only (#984): DELETE refused'); END""",
+BEGIN SELECT RAISE(ABORT, '{table} is append-only: DELETE refused'); END""",
     ]
 
 
@@ -100,18 +117,23 @@ def ddl_for(table: str, dialect: str) -> list[str]:
 
 def install(history_models: dict) -> None:
     """Attach the ORM guard and the create_all DDL to each guarded class."""
+    unguarded = set(history_models) - set(GUARDED)
+    if unguarded:
+        raise RuntimeError(
+            f"history models without the append-only guard: {sorted(unguarded)}; "
+            f"add them to history_guard.GUARDED and to a migration (#1054)")
     for name in GUARDED:
         cls = history_models[name]
         table = cls.__table__
 
         @event.listens_for(cls, "before_update", propagate=True)
         def _no_update(mapper, connection, target, _t=table.name):
-            raise HistoryIsAppendOnly(f"{_t} is append-only (#984): UPDATE refused")
+            raise HistoryIsAppendOnly(f"{_t} is append-only: UPDATE refused")
 
         @event.listens_for(cls, "before_delete", propagate=True)
         def _no_delete(mapper, connection, target, _t=table.name):
             if not _purging.get():
-                raise HistoryIsAppendOnly(f"{_t} is append-only (#984): DELETE refused")
+                raise HistoryIsAppendOnly(f"{_t} is append-only: DELETE refused")
 
         @event.listens_for(table, "after_create")
         def _ddl(target, connection, **kw):

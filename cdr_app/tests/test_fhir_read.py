@@ -58,7 +58,8 @@ def fake_canon(app):
 
 @pytest.fixture(autouse=True)
 def clean_tables(app):
-    with app.app_context():
+    from app.models.history_guard import history_purge
+    with app.app_context(), history_purge(db.session):   # #1054: history is append-only
         for table in (
             "observation_history", "observation",
             "patient_history", "patient",
@@ -68,7 +69,6 @@ def clean_tables(app):
             "change_feed", "sync_group", "cdr_audit_plan_miss",
         ):
             db.session.execute(db.text(f"DELETE FROM {table}"))
-        db.session.commit()
     yield
 
 

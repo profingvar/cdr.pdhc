@@ -85,6 +85,10 @@ def create_app(config_override=None):
     # allowlist). Deliberately NOT a KNOWN_FHIR_SERVICES entry: that would
     # grant the whole FHIR surface. Empty admits nobody.
     app.config["PATIENTAPP_PDHC_SERVICE_KEY"] = os.environ.get("PATIENTAPP_PDHC_SERVICE_KEY", "")
+    # #1054: record.pdhc. Reads /api/v1/fhir/* (read-only entry in
+    # KNOWN_FHIR_SERVICES) and writes Encounter + ClinicalImpression through
+    # /api/v1/record. cdr1 only (D1); empty admits nobody.
+    app.config["RECORD_PDHC_SERVICE_KEY"] = os.environ.get("RECORD_PDHC_SERVICE_KEY", "")
 
     # Read-side lockdown (#293). When true, only X-Source-Service:
     # dashboard.pdhc is permitted on read endpoints. Ingest paths are
@@ -171,6 +175,10 @@ def create_app(config_override=None):
     # CDR: each holds its own read log.
     from .api.access_log import bp as access_log_bp
     app.register_blueprint(access_log_bp, url_prefix="/api/v1")
+    # #1054: record.pdhc's write door. On every CDR; the key decides (D1:
+    # set on cdr1 only).
+    from .api.record_write import bp as record_write_bp
+    app.register_blueprint(record_write_bp, url_prefix="/api/v1/record")
     # 2026-11-19: external read door (time-limited sso read grants).
     from .api.external_read import bp as external_read_bp
     app.register_blueprint(external_read_bp, url_prefix="/external/v1")

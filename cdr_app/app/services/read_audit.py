@@ -55,7 +55,9 @@ log = logging.getLogger(__name__)
 #: Service callers whose on-behalf headers (X-Operator-User-Guid,
 #: X-Access-Basis, X-Break-Glass-Reason) are recorded, and who may post
 #: refusals to POST /api/v1/read-audit/events. Anyone else: ignored + WARNING.
-ON_BEHALF_SERVICES = frozenset({"icd11.pdhc", "dashboard.pdhc"})
+#: record.pdhc (#1054) reads for an authenticated professional, and its
+#: nödöppning (eps EmergencyAccess) is a break-glass read.
+ON_BEHALF_SERVICES = frozenset({"icd11.pdhc", "dashboard.pdhc", "record.pdhc"})
 #: Who may POST /api/v1/read-audit/events (a refusal that never reached the
 #: CDR). Narrower than ON_BEHALF_SERVICES: dashboard.pdhc is read-only (#760)
 #: and has no consumer for it (operator review, 2026-11-17).

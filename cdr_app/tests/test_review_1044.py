@@ -78,14 +78,15 @@ def _sso_on(app, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolate(app):
+    from app.models.history_guard import history_purge
     def _wipe():
         with app.app_context():
             db.session.rollback()
+        with app.app_context(), history_purge(db.session):   # #1054
             for table in ("clinical_context", "observation", "observation_history",
                           "fhir_resources", "cambio_delivery_log", "audit_log",
                           "dedupe_registry", "change_feed", "ingest_raw"):
                 db.session.execute(db.text(f"DELETE FROM {table}"))
-            db.session.commit()
     _wipe()
     yield
     _wipe()

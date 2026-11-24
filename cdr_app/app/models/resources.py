@@ -179,6 +179,12 @@ def _common_history_columns() -> list:
         db.Column("care_plan_guid", db.String(36), nullable=True),
         db.Column("patient_org_guid", db.String(36), nullable=True),
         db.Column("data_origin", db.String(32), nullable=True),   # #1014
+        # #1054: WHEN this version was written (the live row's updated_at at
+        # the moment it was superseded). Without it an older version's
+        # registration time was recoverable only through ingest_raw, and not
+        # at all for a FHIR-API write. NULL on every row written before #1054
+        # -- never back-filled with a guess (the extract says null).
+        db.Column("version_written_at", db.DateTime(timezone=True), nullable=True),
     ] + _review_columns()                                         # #1044
 
 
@@ -349,6 +355,27 @@ RESOURCES = [
             db.Column("conclusion", db.Text, nullable=True),
         ],
     ),
+    # #1054 (record.pdhc stage 2, plan s4.1): the MEDICAL DECISION. Clinical
+    # data, so it lives here beside the findings it rests on (#984: the CDR
+    # is the record); record.pdhc stores only the signatures about it.
+    # Written ONLY through /api/v1/record (app/api/record_write.py) by
+    # record.pdhc; the generic FHIR write path refuses the type.
+    (
+        "ClinicalImpression",
+        "clinical_impression",
+        [
+            db.Column("status", db.String(32), nullable=True),
+            db.Column("encounter_guid", db.String(36), nullable=True, index=True),
+            db.Column("date_at", db.DateTime(timezone=True), nullable=True),
+            db.Column("performer_guid", db.String(36), nullable=True),
+        ],
+        [
+            db.Column("status", db.String(32), nullable=True),
+            db.Column("encounter_guid", db.String(36), nullable=True),
+            db.Column("date_at", db.DateTime(timezone=True), nullable=True),
+            db.Column("performer_guid", db.String(36), nullable=True),
+        ],
+    ),
 ]
 
 
@@ -429,7 +456,7 @@ def _build_models():
 
 _build_models()
 
-# #984: the diagnosis register's history is append-only (see history_guard).
+# #984/#1054: every type's history is append-only (see history_guard).
 from app.models import history_guard as _history_guard  # noqa: E402
 _history_guard.install(_HISTORY_MODELS)
 

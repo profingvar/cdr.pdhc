@@ -146,6 +146,11 @@ _CODE_PATHS: dict[str, list[str]] = {
     "DiagnosticReport": ["code"],
     "QuestionnaireResponse": [],  # references a Questionnaire by canonical, no CodeableConcept on the body
     "Patient": [],  # no canonical concept on Patient
+    # #1054: a medical decision (R5 has no ClinicalImpression.code). Its
+    # findings point at Conditions/Observations by reference; any coding it
+    # does carry still meets the whole-system assertion gate, which walks
+    # every coding regardless of this table.
+    "ClinicalImpression": [],
 }
 
 
