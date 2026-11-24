@@ -167,6 +167,10 @@ def create_app(config_override=None):
     # break-glass read whose log write failed is withheld (after_request).
     from .api.read_audit_events import bp as read_audit_events_bp
     app.register_blueprint(read_audit_events_bp, url_prefix="/api/v1")
+    # #1045: one patient's access log, for a person (loggkontroll). On every
+    # CDR: each holds its own read log.
+    from .api.access_log import bp as access_log_bp
+    app.register_blueprint(access_log_bp, url_prefix="/api/v1")
     # 2026-11-19: external read door (time-limited sso read grants).
     from .api.external_read import bp as external_read_bp
     app.register_blueprint(external_read_bp, url_prefix="/external/v1")

@@ -572,6 +572,27 @@ with backoff. The X2 operator session id captured at ingest is replayed as
 `X-Operator-Session-Id` on the CDR 1 → Cambio hop so chain-of-custody
 survives the async gap. Status/retry via `/api/v1/cambio/*`.
 
+## 7b. Access log of one patient, for a person (#1045)
+
+`GET /api/v1/access-log/patients/<guid>?from=<ISO>&to=<ISO, exclusive>&limit=<n ≤ 5000>`
+(app/api/access_log.py), on every CDR. For dashboard.pdhc's loggkontroll
+(patientdatalagen 4 kap. 3 §).
+
+- **Door:** `Authorization: Bearer <operator SSO token>`, validated with sso
+  every request; the path authenticates itself (`auth._public_path`), and a
+  service key is never looked at.
+- **Gate:** SU; or a professional when the patient has a row in this CDR whose
+  `patient_org_guid` is one of their `affiliations[].care_unit_guid`
+  (`auth.patient_scope_clause`). Otherwise the same 403 as a patient not held.
+- **Rows:** `cdr_read_audit` (`read <type>`, outcome served/denied/break_glass,
+  `user_guid` = the authenticated caller or the on-behalf claim, `via_service`),
+  `ingest_raw` (`write <source_type>`, the source service), review decisions
+  (`review endorsed|rejected`, reviewer). Keys: `id, at, user_guid,
+  user_label, actor_type, via_service, action, outcome, route, resource_type,
+  session_id, actor_units, basis, detail`.
+- **Logged:** the read in `cdr_read_audit` (resource_type `ReadAudit`), a
+  refusal with `outcome='denied'`.
+
 ## 8. Health check
 
 `GET /healthz` (and `GET /api/v1/health`) returns:

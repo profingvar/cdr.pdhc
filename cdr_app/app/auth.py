@@ -149,6 +149,10 @@ def _public_path(path: str) -> bool:
         # loader's session cookie + analysis-phase gate answers neither.
         or path == "/api/v1/reviews"
         or path.startswith("/api/v1/reviews/")
+        # #1045: a patient's access log authenticates a PERSON itself
+        # (app/api/access_log.py, the operator's SSO bearer). The loader's
+        # service-key path would make any key SU-equivalent there.
+        or path.startswith("/api/v1/access-log/")
     )
 
 

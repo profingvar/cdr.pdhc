@@ -2219,3 +2219,11 @@ Contract: ../plans/patient_app_contract.md s7.4 (epic #1039, v2 #1049). Builds o
 ## 2026-11-22 — #1049 end-to-end seam check (local, loopback)
 - Real sso -> eps -> gateway -> cdr -> dashboard -> patientapp chain run over HTTP. One cdr defect: `export-eps-endorsements` emitted `reviewed_at` WITHOUT an offset when the backend drops tzinfo (SQLite), and eps's derivation refuses such a file ("cannot be ordered across offsets"), so nothing reached the EPS. Fix: `_utc_iso` in app/services/review.py (every reviewed_at is written as UTC, so naive = UTC). On Postgres (timestamptz) the value was already aware; the export is now backend-independent.
 - Test: test_card_1049.py::test_the_exported_reviewed_at_carries_its_timezone (real CLI); fails without the fix on its assertion. Suite 809 -> 810 passed.
+
+
+## 2026-11-24 — #1045 loggkontroll: a patient's access log for a person (LOCAL, not deployed)
+
+- `GET /api/v1/access-log/patients/<guid>?from&to&limit` (app/api/access_log.py), on every CDR. Rows: `cdr_read_audit` (served/denied/break_glass, incl. reads a service made on a user's behalf), `ingest_raw` (writes: which service, when), review decisions (who endorsed/rejected). One shape shared with eps and request; dashboard.pdhc merges them.
+- Door: the professional's own SSO bearer (reviews door), self-authenticating (`auth._public_path`); a service key is never looked at. Gate: SU, or a professional when the patient has a row here whose `patient_org_guid` is one of their affiliated care units (`auth.patient_scope_clause`, the clinical-read predicate). Otherwise the same flat 403 as a patient not held. The read is logged in `cdr_read_audit` (resource_type `ReadAudit`), the refusal as `outcome='denied'` (`record_read_audit` gained an `outcome` argument; a service's break-glass claim still wins).
+- Tests: tests/test_access_log_1045.py (8). Suite 810 -> 818 passed. 7 mutation controls (scope, SU, read audit, patient type, denied outcome, loader bypass), each fails on an assertion.
+- Deploy: code only, no migration, no `.env` key. cdr1 first (dashboard asks cdr1 only); cdr2/cdr3 get the same code.

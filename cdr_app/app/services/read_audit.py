@@ -153,7 +153,8 @@ def record_read_audit(*, resource_type: str | None = None,
                       patient_guid: str | None = None,
                       n_rows: int | None = None,
                       response_status: int = 200,
-                      detail: dict | None = None) -> None:
+                      detail: dict | None = None,
+                      outcome: str | None = None) -> None:
     """One row for this read. `detail` is metadata only (e.g. as_of) --
     NEVER clinical content."""
     g._read_audit_attempted = True
@@ -161,7 +162,10 @@ def record_read_audit(*, resource_type: str | None = None,
         blob = getattr(g, "access_blob", None)
         blob = blob if isinstance(blob, dict) else {}
         service = blob.get("service_source")
-        on_behalf, outcome, claim_detail = on_behalf_claims(service)
+        on_behalf, claimed, claim_detail = on_behalf_claims(service)
+        # #1045: a route that REFUSED a person states it (`denied`); a
+        # service's break-glass claim still wins over that.
+        outcome = claimed or outcome
         merged = {**(detail or {}), **claim_detail}
 
         row = ReadAudit(
