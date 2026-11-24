@@ -11,10 +11,15 @@ imported rather than copied so the two cannot drift:
   * the professional's own SSO bearer, validated with sso.pdhc per request;
     a service key is never looked at (this path is self-authenticating in
     `auth._public_path`);
-  * SU reads any patient; a professional only when the patient has a row in
-    this CDR whose `patient_org_guid` is one of their affiliated care units
-    (`auth.patient_scope_clause`). Otherwise the same flat 403 as a patient
-    not held here, so probing learns nothing -- never an empty extract.
+  * THE GATE IS NARROWER than the access log's (D9): SU, or a professional
+    holding an affiliation in role `doctor` or `nurse` to a care unit that
+    is the `patient_org_guid` of a row of this patient here
+    (`d9_allows`). sso puts only ACTIVE affiliations in the blob
+    (`build_affiliations_for_blob`), so an ended one is never seen; the
+    role is `affiliations[].role`, as in eps 211a7c7 and sso 013f544. Any
+    other role at the unit (e.g. `other_care`, who may read the access log)
+    gets the same flat 403 as a patient not held here, so probing learns
+    nothing -- never an empty extract.
   * Every call is logged in `cdr_read_audit`, refusals included
     (resource_type `PatientExtract`, detail.action `patient_extract`,
     outcome served / denied).
@@ -33,12 +38,52 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify
 
 from app import db
-from app.api.access_log import _FORBIDDEN, _err, _person, patient_in_scope
+from app.api.access_log import _FORBIDDEN, _RESOURCE_MODELS, _err, _person
+from app.auth import patient_scope_clause
 from app.models import IngestRaw
 from app.models.resources import history_model, live_model
 from app.services.read_audit import record_read_audit
 
 bp = Blueprint("patient_extract", __name__)
+
+#: D9: the affiliation roles that may take out an extract (läkare,
+#: sjuksköterska). Same set as eps and sso.
+EXTRACT_ROLES = frozenset({"doctor", "nurse"})
+
+
+def d9_units(blob: dict) -> list[str]:
+    """The care units where the caller is affiliated in an
+    extract role. An affiliation that says it is not active is skipped
+    (sso emits active ones only; this is belt and braces)."""
+    out = set()
+    for a in blob.get("affiliations") or []:
+        if not isinstance(a, dict) or not a.get("care_unit_guid"):
+            continue
+        if str(a.get("role") or "").strip().lower() not in EXTRACT_ROLES:
+            continue
+        if a.get("status") not in (None, "active") or a.get("ended_at"):
+            continue
+        out.add(a["care_unit_guid"])   # as given, like auth.scope_org_guids
+    return sorted(out)
+
+
+def d9_allows(blob: dict, patient_guid: str) -> bool:
+    """D9: SU; or a professional whose doctor/nurse unit holds a
+    `patient_org_guid` of this patient in this CDR."""
+    if blob.get("is_su_admin"):
+        return True
+    if blob.get("user_type") != "professional":
+        return False
+    units = d9_units(blob)
+    if not units:
+        return False
+    for Model in _RESOURCE_MODELS.values():
+        if (db.session.query(Model.guid)
+                .filter(Model.patient_guid == patient_guid)
+                .filter(patient_scope_clause(Model, units))
+                .first()) is not None:
+            return True
+    return False
 
 SCHEMA = "pdhc.patient-extract/1"
 
@@ -247,7 +292,7 @@ def patient_extract(patient_guid: str):
         guid = str(uuid.UUID(patient_guid))
     except (ValueError, TypeError):
         return _err(400, "invalid_patient_guid", "the patient guid is not a GUID")
-    if not patient_in_scope(blob, guid):
+    if not d9_allows(blob, guid):
         record_read_audit(resource_type="PatientExtract", patient_guid=guid,
                           response_status=403, outcome="denied",
                           detail={"refusal_code": "OUT_OF_SCOPE",

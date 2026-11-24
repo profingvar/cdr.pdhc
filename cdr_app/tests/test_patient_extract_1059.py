@@ -210,3 +210,53 @@ def test_patients_and_must_change_are_refused(client, patient):
     assert client.get(X(patient["pid"]), headers=_bearer("mustchange")).status_code == 403
     assert client.get(X(patient["pid"]), headers=_bearer("nope")).status_code == 401
     assert client.get(X("not-a-guid"), headers=_bearer("admin")).status_code == 400
+
+
+# ---------------------------------------------------------------- D9 gate
+# The extract is a stricter question than the access log: SU, or a doctor or
+# nurse affiliated to a unit holding the patient. Every other professional
+# gets exactly the refusal of a patient not held here.
+
+from tests.test_review_1044 import _aff, _prof  # noqa: E402
+
+
+def _refusal(client, who):
+    r = client.get(X(NOBODY), headers=_bearer(who))
+    assert r.status_code == 403
+    return r.get_json()
+
+
+def test_d9_doctor_and_nurse_at_the_unit_get_it(client, patient):
+    for who in ("doctor-a", "nurse-a", "admin"):
+        assert client.get(X(patient["pid"]), headers=_bearer(who)).status_code == 200, who
+
+
+def test_d9_other_role_at_the_unit_is_the_same_refusal_and_is_logged(client, patient):
+    r = client.get(X(patient["pid"]), headers=_bearer("othercare-a"))
+    assert r.status_code == 403
+    assert r.get_json() == _refusal(client, "othercare-a") == _refusal(client, "nurse-b")
+    rows = ReadAudit.query.filter_by(patient_guid=patient["pid"],
+                                     resource_type="PatientExtract").all()
+    assert len(rows) == 1 and rows[0].outcome == "denied"
+    assert rows[0].detail == {"refusal_code": "OUT_OF_SCOPE", "action": "patient_extract"}
+
+
+def test_d9_does_not_narrow_the_access_log(client, patient):
+    # The same caller the extract refuses still reads the access log (#1045).
+    r = client.get(f"/api/v1/access-log/patients/{patient['pid']}",
+                   headers=_bearer("othercare-a"))
+    assert r.status_code == 200, r.get_json()
+
+
+def test_d9_the_role_must_be_held_at_the_patients_unit(client, patient, monkeypatch):
+    # doctor elsewhere, other_care here: the doctor role does not carry over.
+    monkeypatch.setitem(BLOBS, "split", _prof(
+        "Split", [_aff(UNIT_B, "doctor"), _aff(UNIT_A, "other_care")]))
+    r = client.get(X(patient["pid"]), headers=_bearer("split"))
+    assert r.status_code == 403 and r.get_json() == _refusal(client, "nurse-b")
+
+
+def test_d9_an_ended_affiliation_does_not_count(client, patient, monkeypatch):
+    ended = dict(_aff(UNIT_A, "doctor"), status="ended")
+    monkeypatch.setitem(BLOBS, "ended", _prof("Ended", [ended]))
+    assert client.get(X(patient["pid"]), headers=_bearer("ended")).status_code == 403

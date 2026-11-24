@@ -670,8 +670,14 @@ survives the async gap. Status/retry via `/api/v1/cambio/*`.
 CDR. Contract: `plans/record_pdhc_extract_contract.md`, schema
 `pdhc.patient-extract/1`.
 
-- **Door and gate:** the access log's (§7b), imported from
-  `app/api/access_log.py`. Out of scope = the same 403 as a patient not held.
+- **Door:** the access log's (§7b), imported from `app/api/access_log.py`.
+- **Gate (D9, `d9_allows`), narrower than the access log's:** SU, or a
+  professional with an affiliation in role `doctor` or `nurse`
+  (`affiliations[].role`) to a care unit that is the `patient_org_guid` of a
+  row of this patient. sso emits only active affiliations; one marked
+  ended/inactive is skipped anyway. Any other role (e.g. `other_care`, who
+  still reads the access log) and any other unit = the same 403 as a patient
+  not held. Same rule as eps 211a7c7 and sso 013f544.
 - **Content:** every resource of the patient in live + history, ALL versions
   oldest first. Sections (only non-empty ones): `encounters`,
   `clinical_impressions`, `observations`, `questionnaire_responses`,
