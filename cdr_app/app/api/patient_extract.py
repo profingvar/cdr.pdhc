@@ -92,7 +92,7 @@ SCHEMA = "pdhc.patient-extract/1"
 #: they are NOT also counted under their type's own section.
 SECTIONS = (
     ("encounters", "Vårdkontakter", ("Encounter",)),
-    ("clinical_impressions", "Medicinska beslut", ("ClinicalImpression",)),
+    ("clinical_impressions", "Journalanteckningar och medicinska beslut", ("ClinicalImpression",)),
     ("observations", "Observationer och svar", ("Observation",)),
     ("questionnaire_responses", "Formulärsvar", ("QuestionnaireResponse",)),
     ("conditions", "Diagnoser", ("Condition",)),
@@ -152,6 +152,11 @@ def _num(v) -> str:
     return s.replace(".", ",")
 
 
+#: record.pdhc's JournalBeslut profile (#1057): marks a ClinicalImpression
+#: that is a medical decision rather than a journal note.
+DECISION_PROFILE = "https://record.pdhc.se/fhir/StructureDefinition/journal-beslut"
+
+
 def summary_sv(rtype: str, body: dict, term: str | None = None) -> str:
     """One short human line for the PDF.
 
@@ -176,8 +181,12 @@ def summary_sv(rtype: str, body: dict, term: str | None = None) -> str:
             (body.get("actualPeriod") or {}).get("start")
         return " ".join(x for x in ("Vårdkontakt", cls, start) if x)
     if rtype == "ClinicalImpression":
+        # #1057: a decision carries record's JournalBeslut profile; a stage-3
+        # journal note is a ClinicalImpression too and must not be called one.
+        label = ("Medicinskt beslut" if DECISION_PROFILE in
+                 ((body.get("meta") or {}).get("profile") or []) else "Journalanteckning")
         text = body.get("summary") or body.get("description") or ""
-        return ("Medicinskt beslut: " + str(text))[:160].rstrip() if text else "Medicinskt beslut"
+        return (f"{label}: " + str(text))[:160].rstrip() if text else label
     if rtype in ("MedicationStatement", "MedicationRequest"):
         med = body.get("medication")
         med = _text(med.get("concept") if isinstance(med, dict) and "concept" in med else med) \

@@ -2277,3 +2277,19 @@ Contract: ../plans/record_pdhc_extract_contract.md (`pdhc.patient-extract/1`).
   performer's org_guid (3).
 - Deploy: all three CDRs share this code (#944); cdr1 is the one record reads.
   No migration, no env change. Must precede record's stage 4 deploy.
+
+## 2026-11-25 #1057 — record stage 5 (medicinska beslut), local, NOT deployed
+
+- A decision is a ClinicalImpression with `meta.profile` journal-beslut, written
+  through the record door (#1054) unchanged. `tests/test_decision_shape_1057.py`
+  proves supportingInfo, finding, problem (logical ref to a cdr2 Condition),
+  the patient-information extension and meta.profile survive create with a
+  pre-minted id, a PUT v2 and `_history`.
+- `patient_extract.summary_sv` now labels a ClinicalImpression "Medicinskt
+  beslut" only with that profile, else "Journalanteckning" (before, every note
+  was called a decision). Section renamed "Journalanteckningar och medicinska
+  beslut". This changes text in record's PDF extract.
+- Suite: 920 passed (was 918). Revert control: labelling every CI a decision
+  fails the new test.
+- No migration, no env, no key. gateway→cdr1, cdr1→rosetta, cdr1→analyse
+  untouched. Deploy any time before record's stage 5.
