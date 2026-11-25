@@ -260,3 +260,36 @@ def test_d9_an_ended_affiliation_does_not_count(client, patient, monkeypatch):
     ended = dict(_aff(UNIT_A, "doctor"), status="ended")
     monkeypatch.setitem(BLOBS, "ended", _prof("Ended", [ended]))
     assert client.get(X(patient["pid"]), headers=_bearer("ended")).status_code == 403
+
+
+def test_a_nameless_observation_is_named_by_plan_not_by_its_guid(client, patient, app, monkeypatch):
+    """Most ingested observations carry only the concept GUID in `code` (522 of
+    Tolvan's 562 on 2026-11-25), so the extract printed `urn:pdhc:concept/...`.
+    The summary now takes plan.pdhc's display for the row's code_canonical, the
+    same label the dashboard's charts use."""
+    import app.api.clinical_read as cr
+    concept = str(uuid.uuid4())
+    asked = []
+    monkeypatch.setitem(app.config, "PLAN_BASE_URL", "http://plan.invalid")
+
+    class FakePlan:
+        def lookup_display(self, guid):
+            asked.append(guid)
+            return "Stress" if guid == concept else None
+    monkeypatch.setattr(cr, "_plan_client", lambda: FakePlan())
+    body = {"patient_guid": patient["pid"], "source_type": "fhir",
+            "source_system_id": str(uuid.uuid4()),
+            "fhir_resource": {"resourceType": "Observation", "id": str(uuid.uuid4()),
+                              "status": "final",
+                              "subject": {"reference": f"Patient/{patient['pid']}"},
+                              "code": {"coding": [{"system": "urn:pdhc:concept", "code": concept}]},
+                              "effectiveDateTime": "2026-11-21T08:00:00+00:00",
+                              "valueQuantity": {"value": 3, "unit": "score"}},
+            "clinical_context": {"patient_org_guid": UNIT_A}}
+    r = client.post("/api/v1/ingest", json=body, headers=GATEWAY)
+    assert r.status_code == 202, r.get_json()
+    b = client.get(X(patient["pid"]), headers=_bearer("admin")).get_json()
+    lines = [v["summary_sv"] for i in _section(b, "observations")["items"] for v in i["versions"]]
+    assert "Stress 3 score" in lines, lines
+    assert not any("urn:pdhc:concept" in x for x in lines), lines
+    assert concept in asked

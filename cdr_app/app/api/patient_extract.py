@@ -152,10 +152,15 @@ def _num(v) -> str:
     return s.replace(".", ",")
 
 
-def summary_sv(rtype: str, body: dict) -> str:
-    """One short human line for the PDF."""
+def summary_sv(rtype: str, body: dict, term: str | None = None) -> str:
+    """One short human line for the PDF.
+
+    `term` is plan.pdhc's name for the row's concept (the same label the
+    dashboard's charts show). It wins over the FHIR body because most ingested
+    observations carry only the concept GUID there, so the extract printed
+    `urn:pdhc:concept/<guid>` where a reader needs "Stress"."""
     body = body if isinstance(body, dict) else {}
-    name = _text(body.get("code"))
+    name = term or _text(body.get("code"))
     if rtype == "Observation":
         if "valueQuantity" in body and isinstance(body["valueQuantity"], dict):
             vq = body["valueQuantity"]
@@ -183,6 +188,17 @@ def summary_sv(rtype: str, body: dict) -> str:
     if rtype == "DiagnosticReport":
         return " ".join(x for x in (name or "Svarsrapport", body.get("conclusion")) if x)[:160]
     return name or rtype
+
+
+def _term(row) -> str | None:
+    """plan.pdhc's display for the row's code_canonical; None when the row has
+    none, plan is not configured or does not answer (cosmetic, never raises,
+    cached per concept by the plan client)."""
+    code = getattr(row, "code_canonical", None)
+    if not code:
+        return None
+    from app.api.clinical_read import resolve_display  # lazy: avoid an import cycle
+    return resolve_display(code)
 
 
 def _author(row, raws: dict) -> dict:
@@ -214,7 +230,7 @@ def _version(rtype: str, row, raws: dict, *, live: bool) -> dict:
         "recorded_at": _iso(recorded),
         "author": _author(row, raws),
         "status": _status_of(row),
-        "summary_sv": summary_sv(rtype, row.raw_json),
+        "summary_sv": summary_sv(rtype, row.raw_json, _term(row)),
         "fhir": row.raw_json,
     }
 
