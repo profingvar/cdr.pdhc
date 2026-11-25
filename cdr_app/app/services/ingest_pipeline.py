@@ -274,6 +274,12 @@ class IngestPipeline:
                     if live_row is not None:
                         db.session.add(live_row)
                         db.session.flush()
+                        # #1056: a NEW observation is a change too. Only a
+                        # new VERSION used to reach the change feed, so a
+                        # reader of the feed (record.pdhc's vidimering sync)
+                        # never saw a first, final result at all.
+                        _emit_observation_feed(live_row, "create", raw=raw,
+                                               context=context)
 
         # 4. Store canonical
         concept_guid = None
@@ -547,15 +553,40 @@ def _new_observation_version(existing, fhir_resource, *, patient_guid,
     existing.etag = f'W/"{new_version}"'
     existing.updated_at = now
     db.session.flush()
+    _emit_observation_feed(existing, "update", raw=raw, context=context,
+                           extra={"from_version": new_version - 1})
+
+
+#: #1056: what an observation's change-feed row says about it, beside the
+#: columns the feed already had. NOT clinical values: the status (does this
+#: version need vidimering?), the PATIENT's unit at order time
+#: (`observation.patient_org_guid`, #809 -- not `org_guid`, which is the
+#: performer, #768) and the orderer (`clinical_context.requester_user_guid`,
+#: request.pdhc's ServiceRequest.requester_user_guid forwarded by gateway).
+#: A key the producer did not send is null, never a guess.
+FEED_OBSERVATION_KEYS = ("status", "patient_org_guid", "requester_user_guid",
+                         "service_request_guid", "data_origin", "source")
+
+
+def _emit_observation_feed(row, event_type, *, raw, context, extra=None):
+    from app.models.resources import ChangeFeed
+    ctx = context or {}
+    summary = {"operation": event_type,
+               "status": row.status,
+               "patient_org_guid": row.patient_org_guid,
+               "requester_user_guid": ctx.get("requester_user_guid"),
+               "service_request_guid": ctx.get("service_request_guid"),
+               "data_origin": row.data_origin,
+               "source": row.source}
+    summary.update(extra or {})
     db.session.add(ChangeFeed(
-        event_type="update", resource_type="Observation",
-        resource_guid=existing.guid, patient_guid=patient_guid,
-        org_guid=existing.org_guid, version_id=new_version,
-        sync_group_id=existing.sync_group_id,
-        code_canonical=existing.code_canonical,
+        event_type=event_type, resource_type="Observation",
+        resource_guid=row.guid, patient_guid=row.patient_guid,
+        org_guid=row.org_guid, version_id=row.version_id,
+        sync_group_id=row.sync_group_id,
+        code_canonical=row.code_canonical,
         source_request_id=raw.guid,
-        payload_summary={"operation": "update", "from_version": new_version - 1,
-                         "status": existing.status}))
+        payload_summary=summary))
 
 
 def _review_target_error(body) -> str | None:

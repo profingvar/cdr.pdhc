@@ -2261,3 +2261,19 @@ Contract: ../plans/record_pdhc_extract_contract.md (`pdhc.patient-extract/1`).
 ## 2026-11-24 — #1059 follow-up: extract gate follows D9 (LOCAL, not deployed)
 - The extract reused the #1045 access-log gate (any professional whose unit holds the patient). Now `patient_extract.d9_allows`: SU, or a doctor/nurse affiliation (`affiliations[].role`) to a unit holding a `patient_org_guid` of the patient; an affiliation marked ended/inactive is skipped. Matches eps 211a7c7 / sso 013f544. Access-log endpoint unchanged (a test proves other_care still reads it). Refusal unchanged: same flat 403 + denied audit.
 - Tests: +5 in tests/test_patient_extract_1059.py (doctor/nurse/SU served; other_care same refusal as not-held, logged; access log unaffected; doctor elsewhere + other_care here refused; ended affiliation refused). Controls: revert to the #1045 gate fails 3 tests; role check removed, role from any affiliation, ended counted, SU dropped each fail on an assertion. Suite 906 -> 911 passed.
+
+## 2026-11-25 — #1056 record.pdhc stage 4 (vidimering), cdr part (LOCAL, not deployed) — readme 6.d
+
+- `ingest_pipeline.py`: `_emit_observation_feed()` writes a change_feed row for
+  a new Observation (`create`) as well as a new version (`update`); the
+  payload_summary carries status, patient_org_guid, requester_user_guid,
+  service_request_guid, data_origin, source (`FEED_OBSERVATION_KEYS`).
+  FOUND: before this, a v1 Observation never reached the feed.
+- `fhir_read.py` events: those fields on each row. `clinical_read.py`
+  observation detail: `version`, `status`.
+- Tests: **918 passed** (912 before); `tests/test_vidimering_feed_1056.py` (6).
+  Revert controls (PYTHONDONTWRITEBYTECODE=1): no create emission (4 fail) ·
+  no event fields (4) · no version in detail (1) · patient_org taken from the
+  performer's org_guid (3).
+- Deploy: all three CDRs share this code (#944); cdr1 is the one record reads.
+  No migration, no env change. Must precede record's stage 4 deploy.

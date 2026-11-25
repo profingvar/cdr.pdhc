@@ -853,10 +853,19 @@ def events():
             "code_canonical": r.code_canonical,
             "source_request_id": r.source_request_id,
             "occurred_at": r.occurred_at.isoformat() if r.occurred_at else None,
+            # #1056: what the ingest feed rows say about an observation
+            # (status, the patient's unit, the orderer...), null when absent.
+            **_feed_observation_fields(r),
         } for r in rows],
         "next_since": next_since,
         "count": len(rows),
     }), 200
+
+
+def _feed_observation_fields(row) -> dict:
+    from app.services.ingest_pipeline import FEED_OBSERVATION_KEYS
+    summary = row.payload_summary if isinstance(row.payload_summary, dict) else {}
+    return {k: summary.get(k) for k in FEED_OBSERVATION_KEYS}
 
 
 # ---------------------------------------------------------------------------

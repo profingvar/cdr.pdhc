@@ -782,6 +782,19 @@ Both adapters must handle CDR downtime:
 
 ---
 
+### 6.d Observation change feed for record.pdhc vidimering (#1056)
+
+- The ingest path writes a `change_feed` row (`create`) for a NEW Observation;
+  before, only a new version (`update`) emitted one, so a first result was
+  invisible to a feed reader.
+- `GET /api/v1/fhir/events` carries, for Observation rows, `status`,
+  `patient_org_guid` (the patient's unit at order time, #809),
+  `requester_user_guid` (the orderer, from the clinical context),
+  `service_request_guid`, `data_origin` and `source`. Read by record.pdhc with
+  its existing read-only key; nothing about record's grant changed.
+- The clinical observation detail (`/api/v1/clinical/observations/<g>`) returns
+  `version` and `status`, so dashboard's limit verdict names the version it judged.
+
 ## Phase 7 — Frontend (CDR admin dashboard)
 
 ### 7.a Dashboard

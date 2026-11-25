@@ -618,6 +618,10 @@ def observation_detail(guid):
     return jsonify({
         "observation_guid": row.guid,
         "patient_guid": row.patient_guid,
+        # #1056: which version this is, so a caller judging it (dashboard's
+        # limit for record's vidimering) can say WHICH version it judged.
+        "version": row.version_id,
+        "status": row.status,
         "code": row.code_canonical,
         "at": _iso(row.effective_at),
         "received_at": _iso(row.received_at),
