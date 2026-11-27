@@ -57,6 +57,51 @@ from app.services.analysis_consent import (
 from app.services.read_audit import record_read_audit
 
 
+# ---------------------------------------------------------------------------
+# #1061: the patient's care unit for record.pdhc, and for nobody else
+# ---------------------------------------------------------------------------
+#
+# record.pdhc reads Observations here with its own READ-ONLY key (#1054), so
+# this service answers it organisation-blind, and record must apply spärr
+# itself (eps care-access-check). That check needs the unit the result was
+# AUTHORED under: the patient's care unit at order time,
+# `observation.patient_org_guid` (#768/#809) -- never `org_guid`, which is the
+# PERFORMER. That column is not in the stored FHIR body, so record could only
+# find it through its own vidimering tasks, which exist for results after the
+# sync started; every older result was withheld.
+#
+# So, on a read made with record's key and only then, each Observation carries
+#     meta.tag {system: "urn:pdhc:patient-org-guid", code: <guid>}
+# A meta.tag is security/workflow metadata in FHIR, never clinical content,
+# and record strips it before anything is exported. The STORED raw_json is
+# never touched: the tag goes on a copy. A row with no patient_org_guid gets
+# no tag (record then withholds the result and counts it). Other callers see
+# exactly what they saw before (narrowest list that works).
+PATIENT_ORG_TAG_SYSTEM = "urn:pdhc:patient-org-guid"
+PATIENT_ORG_TAG_SERVICES = frozenset({"record.pdhc"})
+
+
+def _out(row, resource_type: str):
+    """The FHIR body to serve for `row`: its stored raw_json, or for record's
+    key a copy of an Observation with the patient-org tag added."""
+    body = row.raw_json
+    if (resource_type != "Observation"
+            or getattr(g, "source_service", None) not in PATIENT_ORG_TAG_SERVICES
+            or not isinstance(body, dict)):
+        return body
+    org = getattr(row, "patient_org_guid", None)
+    if not org:
+        return body
+    out = dict(body)
+    meta = dict(out.get("meta") or {})
+    tags = [t for t in (meta.get("tag") or [])
+            if not (isinstance(t, dict) and t.get("system") == PATIENT_ORG_TAG_SYSTEM)]
+    tags.append({"system": PATIENT_ORG_TAG_SYSTEM, "code": str(org)})
+    meta["tag"] = tags
+    out["meta"] = meta
+    return out
+
+
 def _row_patient_guid(row) -> str | None:
     """Patient rows identify themselves; every other type carries
     patient_guid (§1.1.b common columns)."""
@@ -157,7 +202,7 @@ def read_instance(resource_type: str, guid: str):
     check_patient_allowed(_row_patient_guid(row))  # #422
     record_read_audit(resource_type=resource_type,  # X1 #443
                       patient_guid=_row_patient_guid(row), n_rows=1)
-    resp = jsonify(row.raw_json)
+    resp = jsonify(_out(row, resource_type))
     resp.headers["ETag"] = row.etag or f'W/"{row.version_id}"'
     return resp, 200
 
@@ -194,12 +239,12 @@ def history_list(resource_type: str, guid: str):
     if live_row is not None:
         entries.append({
             "fullUrl": f"{resource_type}/{guid}/_history/{live_row.version_id}",
-            "resource": live_row.raw_json,
+            "resource": _out(live_row, resource_type),
         })
     for r in hist_rows:
         entries.append({
             "fullUrl": f"{resource_type}/{guid}/_history/{r.version_id}",
-            "resource": r.raw_json,
+            "resource": _out(r, resource_type),
         })
     bundle = {
         "resourceType": "Bundle",
@@ -233,7 +278,7 @@ def vread(resource_type: str, guid: str, vid: int):
         check_patient_allowed(_row_patient_guid(live_row))  # #422
         record_read_audit(resource_type=resource_type,  # X1 #443
                           patient_guid=_row_patient_guid(live_row), n_rows=1)
-        resp = jsonify(live_row.raw_json)
+        resp = jsonify(_out(live_row, resource_type))
         resp.headers["ETag"] = live_row.etag or f'W/"{vid}"'
         return resp, 200
 
@@ -246,7 +291,7 @@ def vread(resource_type: str, guid: str, vid: int):
     check_patient_allowed(_row_patient_guid(hist_row))  # #422
     record_read_audit(resource_type=resource_type,  # X1 #443
                       patient_guid=_row_patient_guid(hist_row), n_rows=1)
-    resp = jsonify(hist_row.raw_json)
+    resp = jsonify(_out(hist_row, resource_type))
     resp.headers["ETag"] = hist_row.etag or f'W/"{vid}"'
     return resp, 200
 
@@ -671,7 +716,7 @@ def _bundle_searchset(rows, resource_type: str, *, with_includes: bool = True) -
 
     Honours ``_include`` / ``_revinclude`` (§1.3.g) when requested.
     """
-    entries = [{"resource": r.raw_json,
+    entries = [{"resource": _out(r, resource_type),
                 "fullUrl": f"{resource_type}/{r.guid}",
                 "search": {"mode": "match"}}
                for r in rows]

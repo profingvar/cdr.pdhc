@@ -67,6 +67,20 @@ it is dominantly the **Path-B embedded-GUID form** `urn:pdhc:concept/<guid>`
 — the plan.pdhc Concept GUID is the last path segment. Display resolution
 parses that GUID out and looks it up via plan.pdhc (see §6.2).
 
+### 2.1c The patient's care unit on record.pdhc's Observation reads (#1061)
+
+On a `GET /api/v1/fhir/Observation` search, read, `_history` or vread made with
+**record.pdhc's key only**, each Observation carries
+`meta.tag {system: "urn:pdhc:patient-org-guid", code: <patient_org_guid>}` -
+the patient's care unit at order time (#768/#809), never `org_guid` (the
+performer). record reads organisation-blind with its read-only key and applies
+spärr itself (eps care-access-check per author unit); this is the author unit.
+The tag goes on a copy: the stored `raw_json` is never modified. A row with no
+`patient_org_guid` gets no tag, and a stored tag in that system is replaced,
+not duplicated. Every other caller sees exactly the stored body
+(`fhir_read.PATIENT_ORG_TAG_SERVICES`). record strips the tag before export.
+Tests: `tests/test_patient_org_tag_1061.py`.
+
 ### 2.1b Every history is append-only; ClinicalImpression; observation versions (#1054)
 
 - **History guard on all eleven types** (`app/models/history_guard.py`,

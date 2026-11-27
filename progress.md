@@ -2293,3 +2293,6 @@ Contract: ../plans/record_pdhc_extract_contract.md (`pdhc.patient-extract/1`).
   fails the new test.
 - No migration, no env, no key. gateway→cdr1, cdr1→rosetta, cdr1→analyse
   untouched. Deploy any time before record's stage 5.
+
+## #1061 patient-org tag for record.pdhc (2026-11-27, local)
+- Observation reads with record.pdhc's key carry meta.tag urn:pdhc:patient-org-guid = patient_org_guid (never org_guid); stored raw_json untouched; other callers unchanged. Suite 920 -> 926 passed; the 3 positive tests fail with the tagging removed. Not yet deployed (cdr1/2/3, fhir_read.py only).
